@@ -1,0 +1,36 @@
+{
+  "CM_code": "sample-pms",
+  "active_manager": {
+    "manager_name": "KENNY G",
+    "manager_phone": "+60123348877",
+    "hotel_name": "HARBOR VIEW HOTEL",
+    "role": "MANAGER",
+    "nationality": "MALAYSIAN",
+    "preferred_languages": [
+      "ENGLISH",
+      "BAHASA MALAYSIA"
+    ],
+    "language_expertise": {
+      "ENGLISH": [
+        "hotel operations",
+        "guest service"
+      ],
+      "BAHASA MALAYSIA": [
+        "hotel operations",
+        "guest service"
+      ]
+    },
+    "cultural_context": {
+      "greeting_style": "professional_adaptive",
+      "business_hours": "9:00-17:00",
+      "cultural_notes": [
+        "cultural_adaptability",
+        "international_standards",
+        "diverse_awareness"
+      ]
+    },
+    "created_at": "2025-07-18T08:21:00.036000",
+    "updated_at": "2025-07-18T08:21:00.036000",
+    "status": "active"
+  }
+}
