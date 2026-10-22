@@ -53,21 +53,24 @@ async function probe(port) {
   if (!response.ok) throw new Error("Health check returned " + response.status);
 }
 
+function errorText(error) {
+  return error && error.message ? error.message : String(error);
+}
+
 async function waitHealthy(container) {
-  const port = container.getTcpPort(PORT);
   let lastError;
-  for (let attempt = 0; attempt < 15; attempt++) {
+  for (let attempt = 0; attempt < 20; attempt++) {
     try {
-      await probe(port);
+      if (!container.running) throw new Error("container is not running");
+      await probe(container.getTcpPort(PORT));
       return;
     } catch (error) {
       lastError = error;
-      console.log("health probe failed", error && error.message ? error.message : String(error));
+      console.log("health probe failed", errorText(error));
       await scheduler.wait(1000);
     }
   }
-  const detail = lastError && lastError.message ? lastError.message : String(lastError);
-  throw new Error("PMS container did not become ready: " + detail, { cause: lastError });
+  throw new Error("PMS container did not become ready: " + errorText(lastError), { cause: lastError });
 }
 
 export class PmsContainer extends DurableObject {
@@ -104,24 +107,29 @@ export class PmsContainer extends DurableObject {
 
   async startAndWait() {
     const container = this.ctx.container;
-    const key = imageKey(container.images.base);
-    const previous = await this.ctx.storage.get("image");
-    if (container.running && typeof previous === "string" && previous !== "" && previous !== key) {
-      console.log("stopping container for image change");
-      await container.destroy();
+    if (container.running) {
+      try {
+        await probe(container.getTcpPort(PORT));
+        await container.setInactivityTimeout(IDLE_MS);
+        return;
+      } catch (error) {
+        console.log("replacing container", errorText(error));
+        try {
+          await container.destroy();
+        } catch (destroyError) {
+          console.log("destroy failed", errorText(destroyError));
+        }
+      }
     }
-    for (let attempt = 0; attempt < 15 && !container.running; attempt++) {
+    if (!container.running) {
       try {
         await this.startContainer(container);
       } catch (error) {
-        console.log("container start failed", error && error.message ? error.message : String(error));
+        console.log("container start failed", errorText(error));
+        throw error;
       }
-      await scheduler.wait(2000);
     }
-    if (!container.running) {
-      throw new Error("There is no container instance that can be provided to this Durable Object");
-    }
-    await this.ctx.storage.put("image", key);
+    await this.ctx.storage.put("image", imageKey(container.images.base));
     await container.setInactivityTimeout(IDLE_MS);
     await waitHealthy(container);
   }
@@ -129,9 +137,9 @@ export class PmsContainer extends DurableObject {
 
 export default {
   fetch(request, env) {
-    return env.PMS.getByName("leon-pms").fetch(request);
+    return env.PMS.getByName("leon-pms-v2").fetch(request);
   },
   scheduled(_event, env, ctx) {
-    ctx.waitUntil(env.PMS.getByName("leon-pms").fetch("https://api.inap.ai/health"));
+    ctx.waitUntil(env.PMS.getByName("leon-pms-v2").fetch("https://api.inap.ai/health"));
   },
 };
