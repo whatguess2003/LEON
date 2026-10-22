@@ -31,6 +31,45 @@ function passedEnv(env) {
   return out;
 }
 
+function imageKey(image) {
+  if (typeof image === "string") return image;
+  if (image && typeof image.digest === "string") return image.digest;
+  if (image && typeof image.tag === "string") return image.tag;
+  try {
+    return JSON.stringify(image);
+  } catch (error) {
+    return "current";
+  }
+}
+
+async function probe(port) {
+  const response = await Promise.race([
+    port.fetch("http://container/health", { signal: AbortSignal.timeout(3000) }),
+    scheduler.wait(4000).then(() => {
+      throw new Error("health probe timed out");
+    }),
+  ]);
+  await response.body?.cancel();
+  if (!response.ok) throw new Error("Health check returned " + response.status);
+}
+
+async function waitHealthy(container) {
+  const port = container.getTcpPort(PORT);
+  let lastError;
+  for (let attempt = 0; attempt < 15; attempt++) {
+    try {
+      await probe(port);
+      return;
+    } catch (error) {
+      lastError = error;
+      console.log("health probe failed", error && error.message ? error.message : String(error));
+      await scheduler.wait(1000);
+    }
+  }
+  const detail = lastError && lastError.message ? lastError.message : String(lastError);
+  throw new Error("PMS container did not become ready: " + detail, { cause: lastError });
+}
+
 export class PmsContainer extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
@@ -54,34 +93,37 @@ export class PmsContainer extends DurableObject {
     return this.ctx.container.getTcpPort(PORT).fetch(forwarded);
   }
 
+  startContainer(container) {
+    container.start({
+      image: container.images.base,
+      instance: "standard-1",
+      enableInternet: true,
+      env: passedEnv(this.env),
+    });
+  }
+
   async startAndWait() {
     const container = this.ctx.container;
+    const key = imageKey(container.images.base);
+    const previous = await this.ctx.storage.get("image");
+    if (container.running && previous !== key) {
+      console.log("stopping container for image change");
+      await container.destroy();
+    }
     if (!container.running) {
-      container.start({
-        image: container.images.base,
-        instance: "standard-1",
-        enableInternet: true,
-        env: passedEnv(this.env),
-      });
+      this.startContainer(container);
+      await this.ctx.storage.put("image", key);
     }
     await container.setInactivityTimeout(IDLE_MS);
-    const port = container.getTcpPort(PORT);
-    let lastError;
-    for (let attempt = 0; attempt < 180; attempt++) {
-      try {
-        const response = await port.fetch("http://container/health", {
-          signal: AbortSignal.timeout(2000),
-        });
-        await response.body?.cancel();
-        if (!response.ok) throw new Error("Health check returned " + response.status);
-        return;
-      } catch (error) {
-        lastError = error;
-        await scheduler.wait(1000);
-      }
+    try {
+      await waitHealthy(container);
+    } catch (error) {
+      console.log("restarting container", error && error.message ? error.message : String(error));
+      await container.destroy();
+      this.startContainer(container);
+      await this.ctx.storage.put("image", key);
+      await waitHealthy(container);
     }
-    const detail = lastError && lastError.message ? lastError.message : String(lastError);
-    throw new Error("PMS container did not become ready: " + detail, { cause: lastError });
   }
 }
 
