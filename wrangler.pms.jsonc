@@ -9,6 +9,7 @@
   "containers": [
     {
       "class_name": "PmsContainer",
+      "max_instances": 2,
       "scheduling_policy": "durable_object",
       "images": {
         "base": {

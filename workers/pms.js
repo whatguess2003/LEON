@@ -93,8 +93,8 @@ export class PmsContainer extends DurableObject {
     return this.ctx.container.getTcpPort(PORT).fetch(forwarded);
   }
 
-  startContainer(container) {
-    container.start({
+  async startContainer(container) {
+    await container.start({
       image: container.images.base,
       instance: "standard-1",
       enableInternet: true,
@@ -106,24 +106,24 @@ export class PmsContainer extends DurableObject {
     const container = this.ctx.container;
     const key = imageKey(container.images.base);
     const previous = await this.ctx.storage.get("image");
-    if (container.running && previous !== key) {
+    if (container.running && typeof previous === "string" && previous !== "" && previous !== key) {
       console.log("stopping container for image change");
       await container.destroy();
     }
+    for (let attempt = 0; attempt < 15 && !container.running; attempt++) {
+      try {
+        await this.startContainer(container);
+      } catch (error) {
+        console.log("container start failed", error && error.message ? error.message : String(error));
+      }
+      await scheduler.wait(2000);
+    }
     if (!container.running) {
-      this.startContainer(container);
-      await this.ctx.storage.put("image", key);
+      throw new Error("There is no container instance that can be provided to this Durable Object");
     }
+    await this.ctx.storage.put("image", key);
     await container.setInactivityTimeout(IDLE_MS);
-    try {
-      await waitHealthy(container);
-    } catch (error) {
-      console.log("restarting container", error && error.message ? error.message : String(error));
-      await container.destroy();
-      this.startContainer(container);
-      await this.ctx.storage.put("image", key);
-      await waitHealthy(container);
-    }
+    await waitHealthy(container);
   }
 }
 
