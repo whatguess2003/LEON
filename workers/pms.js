@@ -80,7 +80,8 @@ export class PmsContainer extends DurableObject {
         await scheduler.wait(1000);
       }
     }
-    throw new Error("PMS container did not become ready", { cause: lastError });
+    const detail = lastError && lastError.message ? lastError.message : String(lastError);
+    throw new Error("PMS container did not become ready: " + detail, { cause: lastError });
   }
 }
 

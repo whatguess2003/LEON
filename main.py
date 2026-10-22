@@ -46,6 +46,8 @@ def _get_tz_from_jwt(token: str) -> str:
 # ZoneInfo not used in server; hotel timezone is obtained from JWT and applied downstream
 
 load_dotenv(override=True)
+os.environ.setdefault("PGCONNECT_TIMEOUT", "10")
+print("LEON process starting", flush=True)
 REDIS_URL = os.getenv('REDIS_URL')
 # Add booking_system to path to import LEON
 sys.path.append(os.path.join(os.path.dirname(__file__), 'booking_system'))
@@ -227,14 +229,9 @@ def record_activity(text: str, hotel_name: _Optional[str] = None, manager_name: 
 async def startup_event():
     """Initialize LEON on startup"""
     global leon_instance
+    print("LEON server startup", flush=True)
     try:
-        from setup_schema import setup_schema
-        await run_in_threadpool(setup_schema)
-    except Exception as e:
-        logger.error(f"Schema setup failed: {e}")
-        raise
-    try:
-        print("🚀 Initializing LEON Chat Server...")
+        print("Initializing LEON Chat Server...", flush=True)
         leon_instance = LEONMetaOrchestrator()
         # Ensure booking_system tools referencing module-level 'orchestrator'
         # use the same runtime instance created here
@@ -243,10 +240,9 @@ async def startup_event():
             _lmo.orchestrator = leon_instance
         except Exception:
             pass
-        print("✅ LEON Chat Server initialized successfully")
+        print("LEON Chat Server initialized", flush=True)
     except Exception as e:
-        logger.error(f"❌ Failed to initialize LEON: {e}")
-        raise
+        logger.error("Failed to initialize LEON: %s", e)
     # Start background PM runner
     try:
         setup_scheduled_maintenance(app)
