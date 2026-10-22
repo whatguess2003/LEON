@@ -8,24 +8,26 @@
   },
   "containers": [
     {
-      "class_name": "PmsContainer",
-      "scheduling_policy": "durable_object",
-      "images": {
-        "base": {
-          "dockerfile": "./Dockerfile.pms"
-        }
-      }
+      "class_name": "PmsService",
+      "scheduling_policy": "default",
+      "image": "./Dockerfile.pms",
+      "instance_type": "standard-1",
+      "max_instances": 2
     }
   ],
   "durable_objects": {
     "bindings": [
       {
         "name": "PMS",
-        "class_name": "PmsContainer"
+        "class_name": "PmsService"
       }
     ]
   },
   "exports": {
+    "PmsService": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    },
     "PmsContainer": {
       "type": "durable-object",
       "storage": "sqlite"

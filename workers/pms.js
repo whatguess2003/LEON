@@ -31,15 +31,8 @@ function passedEnv(env) {
   return out;
 }
 
-function imageKey(image) {
-  if (typeof image === "string") return image;
-  if (image && typeof image.digest === "string") return image.digest;
-  if (image && typeof image.tag === "string") return image.tag;
-  try {
-    return JSON.stringify(image);
-  } catch (error) {
-    return "current";
-  }
+function errorText(error) {
+  return error && error.message ? error.message : String(error);
 }
 
 async function probe(port) {
@@ -51,10 +44,6 @@ async function probe(port) {
   ]);
   await response.body?.cancel();
   if (!response.ok) throw new Error("Health check returned " + response.status);
-}
-
-function errorText(error) {
-  return error && error.message ? error.message : String(error);
 }
 
 async function waitHealthy(container) {
@@ -74,13 +63,15 @@ async function waitHealthy(container) {
 }
 
 export class PmsContainer extends DurableObject {
+  async fetch() {
+    return new Response("PMS container moved", { status: 410 });
+  }
+}
+
+export class PmsService extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
     this.starting = undefined;
-    const container = ctx.container;
-    if (container && container.running) {
-      void ctx.blockConcurrencyWhile(() => container.setInactivityTimeout(IDLE_MS));
-    }
   }
 
   async fetch(request) {
@@ -96,40 +87,14 @@ export class PmsContainer extends DurableObject {
     return this.ctx.container.getTcpPort(PORT).fetch(forwarded);
   }
 
-  async startContainer(container) {
-    await container.start({
-      image: container.images.base,
-      instance: "standard-1",
-      enableInternet: true,
-      env: passedEnv(this.env),
-    });
-  }
-
   async startAndWait() {
     const container = this.ctx.container;
-    if (container.running) {
-      try {
-        await probe(container.getTcpPort(PORT));
-        await container.setInactivityTimeout(IDLE_MS);
-        return;
-      } catch (error) {
-        console.log("replacing container", errorText(error));
-        try {
-          await container.destroy();
-        } catch (destroyError) {
-          console.log("destroy failed", errorText(destroyError));
-        }
-      }
-    }
     if (!container.running) {
-      try {
-        await this.startContainer(container);
-      } catch (error) {
-        console.log("container start failed", errorText(error));
-        throw error;
-      }
+      container.start({
+        enableInternet: true,
+        env: passedEnv(this.env),
+      });
     }
-    await this.ctx.storage.put("image", imageKey(container.images.base));
     await container.setInactivityTimeout(IDLE_MS);
     await waitHealthy(container);
   }
@@ -137,9 +102,9 @@ export class PmsContainer extends DurableObject {
 
 export default {
   fetch(request, env) {
-    return env.PMS.getByName("leon-pms-v2").fetch(request);
+    return env.PMS.getByName("leon-pms").fetch(request);
   },
   scheduled(_event, env, ctx) {
-    ctx.waitUntil(env.PMS.getByName("leon-pms-v2").fetch("https://api.inap.ai/health"));
+    ctx.waitUntil(env.PMS.getByName("leon-pms").fetch("https://api.inap.ai/health"));
   },
 };
