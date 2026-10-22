@@ -1,5 +1,5 @@
 from langchain_core.tools import tool
-from langchain_community.tools.tavily_search import TavilySearchResults
+from langchain_tavily import TavilySearch
 import os
 from dotenv import load_dotenv
 
@@ -9,7 +9,7 @@ TAVILY_API_KEY=os.getenv('TAVILY_API_KEY')
 @tool
 def web_search_tool(query: str) -> str:
     """Perform a web search using Tavily via LangChain and return the top results (read operation)"""
-    tavily = TavilySearchResults()
+    tavily = TavilySearch(max_results=3)
     results = tavily.invoke({"query": query})
     if not results or not results.get('results'):
         return "No results found."
