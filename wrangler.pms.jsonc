@@ -41,8 +41,8 @@
   },
   "routes": [
     {
-      "pattern": "api.inap.ai",
-      "custom_domain": true
+      "pattern": "api.inap.ai/*",
+      "zone_name": "inap.ai"
     }
   ]
 }
