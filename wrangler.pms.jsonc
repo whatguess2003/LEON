@@ -1,0 +1,48 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "leon-pms",
+  "main": "workers/pms.js",
+  "compatibility_date": "2026-10-22",
+  "observability": {
+    "enabled": true
+  },
+  "containers": [
+    {
+      "class_name": "PmsContainer",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "base": {
+          "dockerfile": "./Dockerfile.pms"
+        }
+      }
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "PMS",
+        "class_name": "PmsContainer"
+      }
+    ]
+  },
+  "exports": {
+    "PmsContainer": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  },
+  "vars": {
+    "CHANNEL_MANAGER_URL": "https://cm.inap.ai",
+    "FRONTEND_ORIGINS": "https://inap.ai,https://leon.whatguess2003.workers.dev",
+    "AIOSSELL_PARTNER_ID": "sample-pms"
+  },
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
+  "routes": [
+    {
+      "pattern": "api.inap.ai",
+      "custom_domain": true
+    }
+  ]
+}

@@ -6,3 +6,6 @@ __pycache__/
 .vs/
 *.log
 .cursor/
+.wrangler/
+node_modules/
+.dev.vars

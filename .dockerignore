@@ -1,0 +1,14 @@
+.git
+.venv
+venv
+.env
+.env.*
+.dev.vars
+node_modules
+.wrangler
+__pycache__
+*.pyc
+.vs
+.cursor
+leon-pms-ui
+*.md

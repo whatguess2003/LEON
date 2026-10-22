@@ -14,9 +14,11 @@ from starlette.concurrency import run_in_threadpool
 load_dotenv(override=True)
 
 app = FastAPI()
+_origins_env = os.getenv("FRONTEND_ORIGINS", "http://localhost:8080,http://127.0.0.1:8080")
+_origins_list = [o.strip() for o in _origins_env.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8080", "http://127.0.0.1:8080"],
+    allow_origins=_origins_list,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -114,7 +116,12 @@ def sync_now():
     return _sync_once()
 
 
+@app.get("/health")
+def health():
+    return {"status": "healthy"}
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("CHANNEL_MANAGER_PORT", "8006"))
-    print("Channel manager on http://127.0.0.1:%s" % port)
-    uvicorn.run("channel_manager_server:app", host="127.0.0.1", port=port, log_level="info")
+    print("Channel manager on http://0.0.0.0:%s" % port)
+    uvicorn.run("channel_manager_server:app", host="0.0.0.0", port=port, log_level="info")

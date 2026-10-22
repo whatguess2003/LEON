@@ -1,6 +1,6 @@
 (function(){
   var API = (location.hostname==='localhost'||location.hostname==='127.0.0.1') ? 'http://localhost:8002' : 'https://api.inap.ai';
-  var CM = (location.hostname==='localhost'||location.hostname==='127.0.0.1') ? 'http://127.0.0.1:8006' : 'http://127.0.0.1:8006';
+  var CM = (location.hostname==='localhost'||location.hostname==='127.0.0.1') ? 'http://127.0.0.1:8006' : 'https://cm.inap.ai';
   var TABS = [
     {id:'rate_out', operation:'rates', label:'Rate Out', line:'Aiosell will send Rates to'},
     {id:'inventory_out', operation:'inventory', label:'Inventory Out', line:'Aiosell will send Inventory to'},
