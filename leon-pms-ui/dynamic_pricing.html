@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dynamic Pricing - LEON PMS</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="css/modern-pms.css" rel="stylesheet">
+</head>
+<body class="bg-gray-50 font-sans">
+    <div class="min-h-screen bg-gray-50">
+        <nav class="bg-white shadow-sm border-b border-gray-200">
+            <div class="w-full px-4 sm:px-6 lg:px-8">
+                <div class="flex justify-between items-center h-16">
+                    <div class="flex items-center">
+                        <div class="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
+                            <i class="fas fa-robot text-white"></i>
+                        </div>
+                        <h1 class="ml-3 text-xl font-bold text-gray-900">LEON PMS</h1>
+                        <div class="ml-10 flex items-baseline space-x-4">
+                            <a href="inventory.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium">Inventory</a>
+                            <a href="dynamic_pricing.html" class="bg-blue-100 text-blue-700 px-3 py-2 rounded-md text-sm font-medium">Dynamic Pricing</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </nav>
+        <main class="w-full py-6 px-4 sm:px-6 lg:px-8">
+            <h1 class="text-3xl font-bold text-gray-900 mb-2">Dynamic Pricing</h1>
+            <p class="text-gray-600 mb-6">Three models at a time. Create a pricing, pick one, and fill its parameters.</p>
+            <div id="pricing-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+                <button id="create-pricing" type="button" class="border-2 border-dashed border-gray-300 rounded-lg p-6 bg-white text-gray-600 hover:border-blue-500 hover:text-blue-700 min-h-full">
+                    <div class="text-4xl font-bold leading-none mb-2">+</div>
+                    <div class="font-semibold">Create</div>
+                </button>
+            </div>
+            <form id="pricing-form" class="hidden bg-white border rounded-lg p-6 space-y-6">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1" for="pricing-name">Pricing name</label>
+                    <input id="pricing-name" type="text" class="w-full md:w-1/2 border rounded px-3 py-2" placeholder="Dynamic ABC">
+                </div>
+                <div>
+                    <div class="text-sm font-medium text-gray-700 mb-3">Model</div>
+                    <div id="model-choices" class="grid grid-cols-1 md:grid-cols-3 gap-4"></div>
+                </div>
+                <input id="pricing-model" type="hidden" value="">
+                <div id="model-detail" class="hidden space-y-6">
+                    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                        <div class="border rounded-lg p-4 bg-gray-50">
+                            <div class="text-sm font-semibold text-gray-900 mb-1">Booking plan</div>
+                            <p class="text-xs text-gray-600 mb-4">Share of rooms expected to be booked as the stay gets closer.</p>
+                            <div class="flex items-end justify-between h-24">
+                                <div class="text-center w-full"><div class="mx-auto w-8 bg-blue-200 h-2"></div><div class="text-xs text-gray-500 mt-2">30d</div><div class="text-xs text-gray-700">5%</div></div>
+                                <div class="text-center w-full"><div class="mx-auto w-8 bg-blue-300 h-4"></div><div class="text-xs text-gray-500 mt-2">14d</div><div class="text-xs text-gray-700">10%</div></div>
+                                <div class="text-center w-full"><div class="mx-auto w-8 bg-blue-400 h-8"></div><div class="text-xs text-gray-500 mt-2">7d</div><div class="text-xs text-gray-700">20%</div></div>
+                                <div class="text-center w-full"><div class="mx-auto w-8 bg-blue-500 h-16"></div><div class="text-xs text-gray-500 mt-2">1d</div><div class="text-xs text-gray-700">50%</div></div>
+                                <div class="text-center w-full"><div class="mx-auto w-8 bg-blue-600 h-20"></div><div class="text-xs text-gray-500 mt-2">Stay</div><div class="text-xs text-gray-700">80%</div></div>
+                            </div>
+                        </div>
+                        <div class="border rounded-lg p-4">
+                            <div class="text-sm font-semibold text-gray-900 mb-3">How the rate moves</div>
+                            <div class="space-y-2 text-sm">
+                                <div class="flex items-center justify-between bg-blue-50 rounded px-3 py-2"><span>Upper limit</span><span class="text-blue-700">ceiling</span></div>
+                                <div class="flex items-center text-green-700 px-3"><i class="fas fa-arrow-up mr-2"></i>Ahead of the plan, the rate rises</div>
+                                <div class="flex items-center justify-between bg-gray-100 rounded px-3 py-2"><span>Base price</span><span class="text-gray-600">start</span></div>
+                                <div class="flex items-center text-red-700 px-3"><i class="fas fa-arrow-down mr-2"></i>Behind the plan, the rate falls</div>
+                                <div class="flex items-center justify-between bg-yellow-50 rounded px-3 py-2"><span>Lower limit</span><span class="text-yellow-700">floor</span></div>
+                            </div>
+                            <p class="text-xs text-gray-500 mt-3">Sensitivity sets how far the rate travels between the floor and the ceiling.</p>
+                        </div>
+                        <div class="grid grid-cols-1 gap-4">
+                            <div class="border border-green-200 rounded-lg p-4">
+                                <div class="text-sm font-semibold text-green-800 mb-2">Pros</div>
+                                <ul class="text-sm text-gray-700 space-y-1">
+                                    <li>Follows whether bookings are ahead of or behind the plan.</li>
+                                    <li>The rate stays inside the lower and upper limits.</li>
+                                    <li>Bookings still charge the base price.</li>
+                                </ul>
+                            </div>
+                            <div class="border border-red-200 rounded-lg p-4">
+                                <div class="text-sm font-semibold text-red-800 mb-2">Cons</div>
+                                <ul class="text-sm text-gray-700 space-y-1">
+                                    <li>Does not look at competitor rates.</li>
+                                    <li>Does not price by length of stay.</li>
+                                    <li>A high sensitivity reaches a limit quickly.</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+                        <label class="text-sm font-medium text-gray-700 md:col-span-4 flex items-center space-x-2">
+                            <input id="kite-enabled" type="checkbox" class="h-4 w-4">
+                            <span>On</span>
+                        </label>
+                        <label class="text-sm text-gray-700">Sensitivity
+                            <input id="kite-sensitivity" type="number" min="0" step="0.01" class="mt-1 w-full border rounded px-3 py-2">
+                        </label>
+                        <label class="text-sm text-gray-700">Lower limit
+                            <input id="kite-lower" type="number" min="0" step="0.01" class="mt-1 w-full border rounded px-3 py-2">
+                        </label>
+                        <label class="text-sm text-gray-700">Upper limit
+                            <input id="kite-upper" type="number" min="0" step="0.01" class="mt-1 w-full border rounded px-3 py-2">
+                        </label>
+                        <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded-lg">Save</button>
+                    </div>
+                </div>
+                <p id="pricing-status" class="text-sm text-gray-600"></p>
+            </form>
+        </main>
+    </div>
+    <script>
+        const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+        const apiBase = isLocal ? 'http://localhost:8002/api' : 'https://api.inap.ai/api';
+        const INAP_MODEL = 'INAP dynamic pricing';
+        const MODELS = [
+            { value: INAP_MODEL, title: 'INAP Dynamic 1.0', note: 'Moves the rate with demand, between a floor and a ceiling.', ready: true },
+            { value: 'Occupancy', title: 'Occupancy', note: 'Raises the rate as more rooms fill.', ready: false },
+            { value: 'Competitor rates', title: 'Competitor rates', note: 'Follows rates at nearby hotels.', ready: false }
+        ];
+
+        function modelTitle(value) {
+            const found = MODELS.find(model => model.value === value);
+            return found ? found.title : (value || '');
+        }
+
+        function paintModelChoices() {
+            const wrap = document.getElementById('model-choices');
+            const selected = document.getElementById('pricing-model').value;
+            wrap.innerHTML = '';
+            MODELS.forEach(model => {
+                const card = document.createElement('button');
+                card.type = 'button';
+                const chosen = model.ready && selected === model.value;
+                card.className = 'text-left border rounded-lg p-4 ' + (chosen ? 'border-blue-600 bg-blue-50' : 'border-gray-200 bg-white') + (model.ready ? '' : ' opacity-60');
+                const title = document.createElement('div');
+                title.className = 'font-semibold text-gray-900';
+                title.textContent = model.title;
+                const note = document.createElement('div');
+                note.className = 'text-sm text-gray-600 mt-1';
+                note.textContent = model.note;
+                const state = document.createElement('div');
+                state.className = model.ready ? 'text-sm text-green-700 mt-3' : 'text-sm text-gray-500 mt-3';
+                state.textContent = model.ready ? 'Ready' : 'Later';
+                card.appendChild(title);
+                card.appendChild(note);
+                card.appendChild(state);
+                if (model.ready) card.addEventListener('click', () => selectModel(model.value));
+                wrap.appendChild(card);
+            });
+        }
+
+        function selectModel(value) {
+            document.getElementById('pricing-model').value = value;
+            const detail = document.getElementById('model-detail');
+            if (value === INAP_MODEL) detail.classList.remove('hidden');
+            else detail.classList.add('hidden');
+            paintModelChoices();
+        }
+
+        function openComposer() {
+            const form = document.getElementById('pricing-form');
+            form.classList.remove('hidden');
+            document.getElementById('create-pricing').classList.add('border-blue-600', 'text-blue-700');
+            paintModelChoices();
+        }
+
+        function startCreate() {
+            document.getElementById('pricing-name').value = '';
+            document.getElementById('kite-enabled').checked = false;
+            document.getElementById('kite-sensitivity').value = '';
+            document.getElementById('kite-lower').value = '';
+            document.getElementById('kite-upper').value = '';
+            document.getElementById('pricing-status').textContent = '';
+            selectModel('');
+            openComposer();
+        }
+
+        function fillForm(row) {
+            document.getElementById('pricing-name').value = row.pricing_label || row.pricing_name || '';
+            document.getElementById('kite-enabled').checked = !!row.enabled;
+            document.getElementById('kite-sensitivity').value = row.sensitivity != null ? row.sensitivity : '';
+            document.getElementById('kite-lower').value = row.lower_limit != null ? row.lower_limit : '';
+            document.getElementById('kite-upper').value = row.upper_limit != null ? row.upper_limit : '';
+            document.getElementById('pricing-status').textContent = '';
+            selectModel(row.model || '');
+            openComposer();
+        }
+
+        function renderList(rows) {
+            const grid = document.getElementById('pricing-grid');
+            Array.from(grid.querySelectorAll('[data-pricing]')).forEach(card => card.remove());
+            (rows || []).forEach(row => {
+                const card = document.createElement('div');
+                card.setAttribute('data-pricing', row.pricing_name || '');
+                card.className = 'bg-white border rounded-lg p-4 flex flex-col';
+                const title = document.createElement('div');
+                title.className = 'font-semibold text-gray-900';
+                title.textContent = row.pricing_label || row.pricing_name;
+                const detail = document.createElement('div');
+                detail.className = 'text-sm text-gray-600 mt-1 flex-1';
+                const on = row.enabled ? 'On' : 'Off';
+                detail.textContent = modelTitle(row.model) + ' · ' + on + ' · ' + (row.lower_limit != null ? row.lower_limit : '-') + ' to ' + (row.upper_limit != null ? row.upper_limit : '-');
+                const actions = document.createElement('div');
+                actions.className = 'flex space-x-2 mt-3';
+                const edit = document.createElement('button');
+                edit.type = 'button';
+                edit.className = 'text-blue-600';
+                edit.textContent = 'Edit';
+                edit.addEventListener('click', () => fillForm(row));
+                const remove = document.createElement('button');
+                remove.type = 'button';
+                remove.className = 'text-red-600';
+                remove.textContent = 'Delete';
+                remove.addEventListener('click', () => removePricing(row));
+                actions.appendChild(edit);
+                actions.appendChild(remove);
+                card.appendChild(title);
+                card.appendChild(detail);
+                card.appendChild(actions);
+                grid.appendChild(card);
+            });
+        }
+
+        async function loadPricings() {
+            const status = document.getElementById('pricing-status');
+            const resp = await fetch(`${apiBase}/dynamic_pricing`, { credentials: 'include' });
+            const data = await resp.json();
+            if (!resp.ok || data.error) {
+                status.textContent = data.error || 'Could not load dynamic pricing';
+                return;
+            }
+            renderList(data.pricings || []);
+        }
+
+        async function savePricing(event) {
+            event.preventDefault();
+            const status = document.getElementById('pricing-status');
+            const sensitivityRaw = document.getElementById('kite-sensitivity').value;
+            const lowerRaw = document.getElementById('kite-lower').value;
+            const upperRaw = document.getElementById('kite-upper').value;
+            const resp = await fetch(`${apiBase}/dynamic_pricing`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({
+                    pricing_name: document.getElementById('pricing-name').value,
+                    model: document.getElementById('pricing-model').value,
+                    enabled: document.getElementById('kite-enabled').checked,
+                    sensitivity: sensitivityRaw === '' ? null : Number(sensitivityRaw),
+                    lower_limit: lowerRaw === '' ? null : Number(lowerRaw),
+                    upper_limit: upperRaw === '' ? null : Number(upperRaw)
+                })
+            });
+            const data = await resp.json();
+            if (data.clarify) {
+                const names = (data.matches || []).map(row => row.pricing_label || row.pricing_name).join(', ');
+                status.textContent = 'Close to an existing pricing: ' + names;
+                return;
+            }
+            if (!resp.ok || data.error) {
+                status.textContent = data.error || 'Could not save';
+                return;
+            }
+            status.textContent = 'Saved ' + (data.pricing_label || data.pricing_name || '');
+            await loadPricings();
+            document.getElementById('pricing-form').classList.add('hidden');
+            document.getElementById('create-pricing').classList.remove('border-blue-600', 'text-blue-700');
+        }
+
+        async function removePricing(row) {
+            const status = document.getElementById('pricing-status');
+            const name = row.pricing_name || '';
+            const resp = await fetch(`${apiBase}/dynamic_pricing?pricing_name=${encodeURIComponent(name)}`, {
+                method: 'DELETE',
+                credentials: 'include'
+            });
+            const data = await resp.json();
+            if (!resp.ok || data.error) {
+                status.textContent = data.error || 'Could not delete';
+                return;
+            }
+            status.textContent = 'Deleted ' + (data.pricing_label || name);
+            await loadPricings();
+        }
+
+        document.getElementById('create-pricing').addEventListener('click', startCreate);
+        document.getElementById('pricing-form').addEventListener('submit', savePricing);
+        loadPricings();
+    </script>
+    <script src="js/subpage-embed.js"></script>
+</body>
+</html>

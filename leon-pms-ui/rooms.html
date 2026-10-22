@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Room Management - LEON PMS</title>
+    
+    <!-- Modern CSS Framework -->
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Custom CSS -->
+    <link href="css/modern-pms.css" rel="stylesheet">
+    
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f9fafb;
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <!-- Main Application Container -->
+    <div id="app" class="min-h-screen">
+        <!-- Top Navigation Bar -->
+        <nav class="bg-white shadow-lg border-b border-gray-200">
+            <div class="w-full px-4 sm:px-6 lg:px-8">
+                <div class="flex justify-between items-center h-16">
+                    <!-- Logo and Title -->
+                    <div class="flex items-center">
+                        <div class="flex-shrink-0 flex items-center">
+                            <i class="fas fa-hotel text-2xl text-blue-600 mr-3"></i>
+                            <h1 class="text-xl font-bold text-gray-900">LEON PMS</h1>
+                        </div>
+                    </div>
+                    
+                    <!-- Navigation Links -->
+                    <div class="hidden md:block">
+                        <div class="ml-10 flex items-baseline space-x-4">
+                            <a href="index.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-home mr-2"></i>Home
+                            </a>
+                            <a href="dashboard.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-tachometer-alt mr-2"></i>Dashboard
+                            </a>
+                            <a href="rooms.html" class="bg-blue-100 text-blue-700 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-bed mr-2"></i>Rooms
+                            </a>
+                            <a href="inventory.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-boxes mr-2"></i>Inventory
+                            </a>
+                            <a href="bookings.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-calendar-check mr-2"></i>Bookings
+                            </a>
+                            <a href="guests.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-users mr-2"></i>Guests
+                            </a>
+                            <a href="operations.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-tasks mr-2"></i>Operations
+                            </a>
+                            <a href="analytics.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-chart-line mr-2"></i>Analytics
+                            </a>
+                        </div>
+                    </div>
+                    
+                    <!-- User Profile -->
+                    <div class="flex items-center space-x-4">
+                        <div class="flex items-center space-x-2">
+                            <div class="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
+                            <span class="text-sm text-gray-600">LEON Online</span>
+                        </div>
+                        <div class="flex items-center space-x-3">
+                            <div class="w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center">
+                                <i class="fas fa-user text-white text-sm"></i>
+                            </div>
+                            <span class="text-sm font-medium text-gray-900">Hotel Manager</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </nav>
+        
+        <!-- Main Content Area -->
+        <main class="w-full px-4 sm:px-6 lg:px-8 py-4">
+            <!-- Rooms Header -->
+            <div class="flex justify-between items-center mb-6">
+                <div>
+                    <h1 class="text-3xl font-bold text-gray-900">ROOM MANAGEMENT</h1>
+                    <p class="text-gray-600 mt-1">Manage room status, assignments, and properties</p>
+                </div>
+                <div class="flex space-x-3">
+                    <button onclick="openManageRoomTypes()" 
+                            class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition-colors flex items-center">
+                        <i class="fas fa-layer-group mr-2"></i>
+                        CREATE ROOM TYPE
+                    </button>
+                </div>
+            </div>
+            
+            
+            
+            <!-- Rooms Grid/List View -->
+            <div class="card p-6">
+                <div id="rooms-container" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                    <!-- Rooms will be populated here -->
+                    <div class="text-center py-8">
+                        <i class="fas fa-spinner fa-spin text-3xl text-gray-400 mb-4"></i>
+                        <p class="text-gray-600">Loading rooms...</p>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Bulk Actions Panel -->
+            <div id="bulk-actions-panel" class="fixed bottom-4 left-1/2 transform -translate-x-1/2 bg-white border rounded-lg shadow-lg p-4 hidden">
+                <div class="flex items-center space-x-4">
+                    <span class="text-sm text-gray-600" id="selected-count">0 rooms selected</span>
+                    <button onclick="bulkStatusUpdate()" class="bg-blue-600 text-white px-3 py-1 rounded text-sm">
+                        Update Status
+                    </button>
+                    <button onclick="bulkAssignHousekeeping()" class="bg-green-600 text-white px-3 py-1 rounded text-sm">
+                        Assign Housekeeping
+                    </button>
+                    <button onclick="clearSelection()" class="bg-gray-600 text-white px-3 py-1 rounded text-sm">
+                        Clear Selection
+                    </button>
+                </div>
+            </div>
+        </main>
+        
+        <!-- LEON Chat will be loaded by leon-chat.js -->
+    </div>
+    
+    <!-- Add Room Modal -->
+    <div id="add-room-modal" class="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50 hidden">
+        <div class="bg-white rounded-lg p-6 w-full max-w-md relative">
+            <button onclick="document.getElementById('add-room-modal').classList.add('hidden')" class="absolute top-2 right-2 text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
+            <h2 id="add-room-title" class="text-xl font-bold mb-4">EDIT ROOM</h2>
+            <div id="add-room-status" class="hidden mb-3 text-sm uppercase font-bold flex items-center gap-2">
+                <span id="add-room-spinner" class="inline-block w-5 h-5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></span>
+                <span id="add-room-status-text" class="text-blue-700">PROCESSING...</span>
+            </div>
+            <form id="add-room-form" class="space-y-4">
+                <div>
+                    <label id="add-room-number-label" class="block text-sm font-medium text-gray-700">ROOM</label>
+                    <div id="add-room-numbers" class="space-y-2"></div>
+                    <button type="button" id="add-room-more" class="text-blue-600 text-sm font-semibold mt-2">+ ADD ROOM</button>
+                    <p class="text-xs text-gray-500 mt-1">Type the room number. The same number cannot be used twice. Remove takes away one room.</p>
+                </div>
+                <div class="flex justify-end">
+                    <button type="submit" id="add-room-submit" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">SAVE</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    <!-- Manage Room Types Modal -->
+    <div id="manage-room-types-modal" class="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50 hidden">
+        <div class="bg-white rounded-lg p-4 w-full max-w-md max-h-[80vh] overflow-y-auto relative">
+            <button onclick="document.getElementById('manage-room-types-modal').classList.add('hidden')" class="absolute top-2 right-2 text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
+            <div id="manage-room-types-content"></div>
+        </div>
+    </div>
+    
+    <!-- JavaScript -->
+    
+    <script src="js/components/rooms.js?v=editroomno"></script>
+    <script>
+        // Initialize rooms management
+        let roomsManager;
+        
+        document.addEventListener('DOMContentLoaded', () => {
+            roomsManager = new RoomsComponent();
+            // Expose global alias expected by onclick handlers in rooms.js-rendered markup
+            window.rooms = roomsManager;
+            // Reopen modal after hard refresh if flagged
+            try {
+                const flag = sessionStorage.getItem('rooms_reopen_modal');
+                if (flag === 'add_room_success') {
+                    sessionStorage.removeItem('rooms_reopen_modal');
+                    const modal = document.getElementById('add-room-modal');
+                    modal.classList.remove('hidden');
+                    const s = document.getElementById('add-room-status');
+                    const sp = document.getElementById('add-room-spinner');
+                    const t = document.getElementById('add-room-status-text');
+                    if (s && sp && t) { s.classList.remove('hidden'); sp.classList.add('hidden'); t.textContent = 'UPDATE SUCCESSFUL'; t.classList.remove('text-blue-700'); t.classList.add('text-green-700'); }
+                } else if (flag === 'create_room_type_success') {
+                    sessionStorage.removeItem('rooms_reopen_modal');
+                    const modal = document.getElementById('manage-room-types-modal');
+                    modal.classList.remove('hidden');
+                    // Rebuild full UI, then show success banner
+                    if (typeof openManageRoomTypes === 'function') {
+                        openManageRoomTypes();
+                        setTimeout(() => {
+                            const s = document.getElementById('crt-status');
+                            const sp = document.getElementById('crt-spinner');
+                            const t = document.getElementById('crt-status-text');
+                            if (s && sp && t) { s.classList.remove('hidden'); sp.classList.add('hidden'); t.textContent = 'UPDATE SUCCESSFUL'; t.classList.remove('text-blue-700'); t.classList.add('text-green-700'); }
+                        }, 0);
+                    }
+                }
+            } catch(_) {}
+        });
+        
+        // Global functions for UI interactions
+        function filterRooms(filter) {
+            if (roomsManager) {
+                roomsManager.filterRooms(filter);
+            }
+        }
+        
+        function sortRooms(sortBy) {
+            if (roomsManager) {
+                roomsManager.sortRooms(sortBy);
+            }
+        }
+        
+        function searchRooms(query) {
+            if (roomsManager) {
+                roomsManager.searchRooms(query);
+            }
+        }
+        
+        function setViewMode(mode) {
+            document.getElementById('grid-view-btn').className = 'px-3 py-2 text-sm hover:bg-gray-100';
+            document.getElementById('list-view-btn').className = 'px-3 py-2 text-sm hover:bg-gray-100';
+            
+            if (mode === 'grid') {
+                document.getElementById('grid-view-btn').className += ' bg-blue-100 text-blue-700';
+            } else {
+                document.getElementById('list-view-btn').className += ' bg-blue-100 text-blue-700';
+            }
+            
+            if (roomsManager) {
+                roomsManager.setViewMode(mode);
+            }
+        }
+        
+        function askLeonAboutRooms() {
+            if (leonChat) {
+                leonChat.toggleChat();
+                setTimeout(() => {
+                    const chatInput = document.getElementById('chat-input');
+                    if (chatInput) {
+                        chatInput.value = 'Show me room status summary and any recommendations for room management';
+                        leonChat.sendMessage();
+                    }
+                }, 500);
+            }
+        }
+        
+        function addNewRoom() {
+            try {
+                if (typeof roomsManager !== 'undefined' && roomsManager && typeof roomsManager.addNewRoom === 'function') {
+                    roomsManager.addNewRoom();
+                    return;
+                }
+                if (window.rooms && typeof window.rooms.addNewRoom === 'function') {
+                    window.rooms.addNewRoom();
+                    return;
+                }
+            } catch (_) {}
+            alert('Add Room is initializing. Please try again in a moment.');
+        }
+        
+        function roomApp() {
+            return (typeof roomsManager !== 'undefined' && roomsManager) || window.rooms;
+        }
+        function bulkActions() {
+            const app = roomApp();
+            if (app) app.bulkActions();
+        }
+        
+        function bulkStatusUpdate() {
+            const app = roomApp();
+            if (app) app.bulkStatusUpdate();
+        }
+        
+        function bulkAssignHousekeeping() {
+            const app = roomApp();
+            if (app) app.bulkAssignHousekeeping();
+        }
+        
+        function clearSelection() {
+            if (roomsManager) {
+                roomsManager.clearSelection();
+            }
+        }
+
+        function openManageRoomTypes() {
+            try {
+                const modal = document.getElementById('manage-room-types-modal');
+                modal.classList.remove('hidden');
+                const content = document.getElementById('manage-room-types-content');
+                content.innerHTML = `
+                    <h2 class="text-xl font-bold mb-4">CREATE ROOM TYPE</h2>
+                    <div id="crt-status" class="hidden mb-3 text-sm uppercase font-bold flex items-center gap-2">
+                        <span id="crt-spinner" class="inline-block w-5 h-5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></span>
+                        <span id="crt-status-text" class="text-blue-700">PROCESSING...</span>
+                    </div>
+                    <form id="crt-rt-form" class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">ROOM TYPE</label>
+                            <input type="text" id="crt-room-type" class="border rounded-lg px-3 py-2 w-full" required />
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">ROOM NUMBER</label>
+                            <div id="crt-room-numbers" class="space-y-2">
+                                <input type="text" class="crt-room-number border rounded-lg px-3 py-2 w-full" />
+                            </div>
+                            <button type="button" id="crt-add-room" class="text-blue-600 text-sm font-semibold mt-2">+ ADD ROOM</button>
+                            <p class="text-xs text-gray-500 mt-1">Type each room number. The same number cannot be used twice.</p>
+                        </div>
+                        <div class="flex justify-end gap-2">
+                            <button type="button" onclick="document.getElementById('manage-room-types-modal').classList.add('hidden')" class="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg">CLOSE</button>
+                            <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">CREATE</button>
+                        </div>
+                    </form>
+                `;
+                const form = document.getElementById('crt-rt-form');
+                const addRoom = document.getElementById('crt-add-room');
+                if (addRoom) {
+                    addRoom.onclick = (ev) => {
+                        ev.preventDefault();
+                        const wrap = document.getElementById('crt-room-numbers');
+                        const input = document.createElement('input');
+                        input.type = 'text';
+                        input.className = 'crt-room-number border rounded-lg px-3 py-2 w-full';
+                        wrap.appendChild(input);
+                    };
+                }
+                form.onsubmit = async (e)=>{
+                    e.preventDefault();
+                    const room_type = document.getElementById('crt-room-type').value.trim();
+                    const room_numbers = Array.from(document.querySelectorAll('#crt-room-numbers .crt-room-number')).map(input => input.value.trim().toUpperCase());
+                    const hotelCookie = document.cookie.split(';').map(part => part.trim()).find(part => part.startsWith('leon_hotel='));
+                    const hotelName = hotelCookie ? decodeURIComponent(hotelCookie.split('=').slice(1).join('=')) : '';
+                    const apiBase = (location.hostname==='localhost'||location.hostname==='127.0.0.1')?'http://localhost:8002/api':'https://api.inap.ai/api';
+                    try {
+                        if (!room_type || room_numbers.some(number => !number)) { throw new Error('Room number is required'); }
+                        const seen = {};
+                        room_numbers.forEach(number => { if (seen[number]) { throw new Error('Room number ' + number + ' is already used'); } seen[number] = true; });
+                        // show loading banner
+                        try { const s=document.getElementById('crt-status'); const sp=document.getElementById('crt-spinner'); const t=document.getElementById('crt-status-text'); if(s&&sp&&t){ s.classList.remove('hidden'); sp.classList.remove('hidden'); t.textContent='PROCESSING...'; t.classList.remove('text-green-700'); t.classList.add('text-blue-700'); } } catch(_){ }
+                        const res = await fetch(`${apiBase}/rooms/types/create`, {
+                            method: 'POST', headers: {'Content-Type':'application/json'}, credentials: 'include',
+                            body: JSON.stringify({ hotel_name: hotelName, manager_name: 'SYSTEM', room_type, specifications: {}, room_numbers })
+                        });
+                        const out = await res.json();
+                        if (!res.ok || (out && out.error)) { throw new Error(out?.error || 'Create failed'); }
+                        // trigger full refresh and reopen modal with success banner
+                        try { sessionStorage.setItem('rooms_reopen_modal', 'create_room_type_success'); } catch(_) {}
+                        window.location.reload();
+                    } catch(err) {
+                        try { const s=document.getElementById('crt-status'); const sp=document.getElementById('crt-spinner'); const t=document.getElementById('crt-status-text'); if(s&&sp&&t){ s.classList.remove('hidden'); sp.classList.add('hidden'); t.textContent=('ERROR: '+err.message).toUpperCase(); t.classList.remove('text-blue-700'); t.classList.add('text-red-700'); } } catch(_){ }
+                    }
+                };
+            } catch (err) {
+                alert('Unable to open Manage Room Types now.');
+            }
+        }
+    </script>
+</body>
+<script src="js/subpage-embed.js"></script>
+</html> 

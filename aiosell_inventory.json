@@ -1,0 +1,28 @@
+{
+
+    "hotelCode": "MARINA HEIGHTS RESIDENCES HOTEL",
+
+    "updates": [
+
+        {
+
+            "startDate": "2025-07-26",
+
+            "endDate": "2025-07-29",
+
+            "rooms": [
+
+                {
+
+                    "available": 10,
+
+                    "roomCode": "KING SUITE"
+
+                }
+            ]
+
+        }
+
+    ]
+
+}

@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Guest Management - LEON PMS</title>
+    
+    <!-- Modern CSS Framework -->
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Custom CSS -->
+    <link href="css/modern-pms.css" rel="stylesheet">
+    
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f9fafb;
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <!-- Main Application Container -->
+    <div id="app" class="min-h-screen">
+        <!-- Navigation Bar -->
+        <nav class="bg-white shadow-lg border-b border-gray-200">
+            <div class="w-full px-4 sm:px-6 lg:px-8">
+                <div class="flex justify-between items-center h-16">
+                    <div class="flex items-center">
+                        <div class="flex-shrink-0 flex items-center">
+                            <i class="fas fa-hotel text-2xl text-blue-600 mr-3"></i>
+                            <h1 class="text-xl font-bold text-gray-900">LEON PMS</h1>
+                        </div>
+                    </div>
+                    
+                    <div class="hidden md:block">
+                        <div class="ml-10 flex items-baseline space-x-4">
+                            <a href="index.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-home mr-2"></i>Home
+                            </a>
+                            <a href="dashboard.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-tachometer-alt mr-2"></i>Dashboard
+                            </a>
+                            <a href="rooms.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-bed mr-2"></i>Rooms
+                            </a>
+                            <a href="inventory.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-boxes mr-2"></i>Inventory
+                            </a>
+                            <a href="bookings.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-calendar-check mr-2"></i>Bookings
+                            </a>
+                            <a href="guests.html" class="bg-blue-100 text-blue-700 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-users mr-2"></i>Guests
+                            </a>
+                            <a href="operations.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-tasks mr-2"></i>Operations
+                            </a>
+                            <a href="analytics.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-chart-line mr-2"></i>Analytics
+                            </a>
+                        </div>
+                    </div>
+                    
+                    <div class="flex items-center space-x-4">
+                        <div class="flex items-center space-x-2">
+                            <div class="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
+                            <span class="text-sm text-gray-600">LEON Online</span>
+                        </div>
+                        <div class="flex items-center space-x-3">
+                            <div class="w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center">
+                                <i class="fas fa-user text-white text-sm"></i>
+                            </div>
+                            <span class="text-sm font-medium text-gray-900">Hotel Manager</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </nav>
+        
+        <!-- Main Content Area -->
+        <main class="w-full px-4 sm:px-6 lg:px-8 py-4">
+            <!-- Guest Header -->
+            <div class="flex justify-between items-center mb-6">
+                <div>
+                    <h1 class="text-3xl font-bold text-gray-900">Guest Management</h1>
+                    <p class="text-gray-600 mt-1">Search a guest, update their record, and see every booking and room.</p>
+                    <div id="hotel-context-info" class="mt-2 text-sm text-blue-600 bg-blue-50 px-3 py-1 rounded-full inline-block">
+                        <i class="fas fa-hotel mr-1"></i>
+                        Loading hotel context...
+                    </div>
+                </div>
+            </div>
+            
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div class="card p-4">
+                    <label class="block text-sm text-gray-600 mb-1">Search guest</label>
+                    <div class="flex space-x-2">
+                        <input type="text" id="guest-search" placeholder="Name, phone, or email" class="border rounded px-3 py-2 w-full">
+                        <button id="guest-search-btn" class="bg-blue-600 text-white px-3 py-2 rounded">Search</button>
+                    </div>
+                    <div id="guest-results" class="mt-4 space-y-2"></div>
+                    <button id="guest-add" class="mt-4 text-sm text-blue-600">Add guest</button>
+                    <div id="guest-add-form" class="hidden mt-3 space-y-2">
+                        <input id="add-phone" placeholder="Phone" class="border rounded px-2 py-1 w-full">
+                        <input id="add-name" placeholder="Name" class="border rounded px-2 py-1 w-full">
+                        <input id="add-email" placeholder="Email" class="border rounded px-2 py-1 w-full">
+                        <button id="add-save" class="bg-blue-600 text-white px-3 py-1 rounded text-sm">Create</button>
+                    </div>
+                </div>
+                <div class="md:col-span-2 card p-4" id="guest-detail">
+                    <p class="text-gray-500">Search for a guest to view and update their record.</p>
+                </div>
+            </div>
+        </main>
+        
+        <!-- LEON Chat will be loaded by leon-chat.js -->
+    </div>
+    
+    <!-- JavaScript -->
+    
+    <script src="js/data/countries_iso3166.js"></script>
+    <script src="js/components/guests.js?v=summaryai"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            window.guestManager = new GuestComponent();
+        });
+    </script>
+</body>
+<script src="js/subpage-embed.js"></script>
+</html> 

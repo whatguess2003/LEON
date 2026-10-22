@@ -1,0 +1,399 @@
+/* Modern PMS Design System */
+:root {
+    --primary-color: #2563eb;
+    --secondary-color: #f59e0b;
+    --success-color: #10b981;
+    --warning-color: #f59e0b;
+    --error-color: #ef4444;
+    --text-primary: #1f2937;
+    --text-secondary: #6b7280;
+    --bg-primary: #ffffff;
+    --bg-secondary: #f9fafb;
+    --border-color: #e5e7eb;
+}
+
+/* Ensure native color emoji rendering for flag glyphs in select options */
+.emoji-select option {
+    font-family: 'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji','EmojiOne Color','Twemoji Mozilla', sans-serif;
+}
+
+/* Force emoji-capable fonts for inline emoji text (e.g., custom pickers) */
+.emoji-text {
+    font-family: 'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji','EmojiOne Color','Twemoji Mozilla', 'Inter', 'system-ui', sans-serif;
+}
+
+/* Size down parsed Twemoji SVGs and align nicely */
+img.twemoji,
+img.emoji {
+    height: 24px; /* doubled from current */
+    width: 24px;  /* doubled from current */
+    vertical-align: -2px;
+    margin-right: 6px;
+}
+
+/* For native emoji (fallback if Twemoji not applied) */
+.emoji-flag {
+    font-size: 21px; /* doubled from current */
+    line-height: 1;
+    margin-right: 6px;
+}
+
+.cc-entry {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.cc-code {
+    color: #6b7280;
+    font-size: 12px;
+}
+
+/* Glass Effect */
+.glass-effect {
+    backdrop-filter: blur(20px);
+    background: rgba(255, 255, 255, 0.85);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+/* Floating Chat */
+.floating-chat {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    z-index: 1000;
+    transition: all 0.3s ease;
+}
+
+.chat-widget {
+    width: 350px;
+    height: 500px;
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
+    overflow: hidden;
+    transform: translateY(100%);
+    transition: all 0.3s ease;
+}
+
+.chat-widget.open {
+    transform: translateY(0);
+}
+
+/* Cards */
+.card {
+    background: var(--bg-primary);
+    border-radius: 12px;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    border: 1px solid var(--border-color);
+}
+
+/* Buttons */
+.btn-primary {
+    background: var(--primary-color);
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.btn-primary:hover {
+    background: #1d4ed8;
+    transform: translateY(-1px);
+}
+
+/* Status Badges */
+.status-badge {
+    padding: 4px 8px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+/* Tiny text size utility */
+.text-xxs {
+    font-size: 0.65rem;
+    line-height: 0.9rem;
+}
+
+.status-occupied { background: #fef3c7; color: #92400e; }
+.status-available { background: #d1fae5; color: #065f46; }
+.status-maintenance { background: #fee2e2; color: #991b1b; }
+.status-dirty { background: #fef3c7; color: #92400e; }
+
+/* Room Cards */
+.room-card {
+    transition: all 0.3s ease;
+    cursor: pointer;
+}
+
+.room-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 25px -5px rgba(0, 0, 0, 0.15);
+}
+
+/* Animated Counter */
+.animated-counter {
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--primary-color);
+}
+
+/* Notification Toast */
+.notification-toast {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: white;
+    border-radius: 8px;
+    padding: 16px;
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1);
+    z-index: 1000;
+    transform: translateX(100%);
+    transition: all 0.3s ease;
+}
+
+.notification-toast.show {
+    transform: translateX(0);
+}
+
+/* Navigation */
+.nav-link {
+    transition: all 0.3s ease;
+}
+
+/* Smaller nav text while preserving icon size */
+.nav-link,
+nav a.text-gray-600,
+nav a.text-blue-700,
+nav a.bg-blue-100 {
+    font-size: 12px !important;
+    line-height: 1.2;
+}
+nav a i.fas,
+nav a i.fa-solid,
+nav a i.fa {
+    font-size: 0.875rem; /* keep icons ~14px (Tailwind text-sm equiv) */
+}
+
+.nav-link:hover {
+    background-color: rgba(59, 130, 246, 0.1);
+}
+
+.nav-link.active {
+    background-color: rgba(59, 130, 246, 0.2);
+    color: var(--primary-color);
+}
+
+/* Calendar Styles */
+.calendar-grid {
+    min-height: 300px;
+}
+
+.calendar-grid .grid {
+    gap: 2px;
+}
+
+.calendar-grid .border {
+    border: 1px solid #e5e7eb;
+    transition: all 0.2s ease;
+}
+
+/* Keep per-date availability inline on a single row in booking modals */
+#nb-staydates .nb-av,
+#eb-staydates .nb-av {
+	white-space: nowrap;
+	display: inline-block;
+	flex: 0 0 auto;
+}
+
+/* Ensure date inputs flex reasonably without forcing the availability to wrap */
+#nb-staydates .nb-date,
+#eb-staydates .nb-date {
+	flex: 1 1 auto;
+	min-width: 8rem;
+}
+
+.calendar-grid .border:hover {
+    background-color: #eff6ff;
+    border-color: #3b82f6;
+}
+
+/* Status Badges Enhanced */
+.status-badge {
+    padding: 4px 8px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 500;
+    display: inline-block;
+}
+
+/* Table Styles */
+.table-hover tbody tr:hover {
+    background-color: #f9fafb;
+}
+
+/* Form Controls */
+.form-input {
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    padding: 8px 12px;
+    transition: all 0.2s ease;
+}
+
+.form-input:focus {
+    outline: none;
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+/* Guest Profile Card */
+.guest-card {
+    background: white;
+    border-radius: 12px;
+    padding: 24px;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    border: 1px solid #e5e7eb;
+    transition: all 0.3s ease;
+}
+
+.guest-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 25px -5px rgba(0, 0, 0, 0.15);
+}
+
+/* Operations Dashboard */
+.task-item {
+    padding: 16px;
+    border-radius: 8px;
+    border: 1px solid #e5e7eb;
+    background: white;
+    transition: all 0.2s ease;
+}
+
+.task-item:hover {
+    border-color: #3b82f6;
+    box-shadow: 0 2px 4px -1px rgba(0, 0, 0, 0.1);
+}
+
+.task-priority-high {
+    border-left: 4px solid #ef4444;
+}
+
+.task-priority-medium {
+    border-left: 4px solid #f59e0b;
+}
+
+.task-priority-low {
+    border-left: 4px solid #10b981;
+}
+
+/* Analytics Charts */
+.chart-container {
+    position: relative;
+    height: 300px;
+}
+
+/* Operations Tab System */
+.operations-tab {
+    padding: 12px 24px;
+    border-radius: 8px;
+    border: 1px solid transparent;
+    background: white;
+    color: #6b7280;
+    font-weight: 500;
+    transition: all 0.2s ease;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+}
+
+.operations-tab:hover {
+    background: #f3f4f6;
+    color: #374151;
+}
+
+.operations-tab.tab-active {
+    background: #3b82f6;
+    color: white;
+    border-color: #3b82f6;
+}
+
+.tab-content {
+    animation: fadeIn 0.3s ease-in-out;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* Room Status Grid */
+.room-status-item {
+    aspect-ratio: 1;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.room-status-item:hover {
+    transform: scale(1.05);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.room-status-clean {
+    background: #10b981;
+    color: white;
+}
+
+.room-status-dirty {
+    background: #f59e0b;
+    color: white;
+}
+
+.room-status-maintenance {
+    background: #ef4444;
+    color: white;
+}
+
+.room-status-occupied {
+    background: #3b82f6;
+    color: white;
+}
+
+.room-status-ooo {
+    background: #6b7280;
+    color: white;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .chat-widget {
+        width: 320px;
+        height: 450px;
+    }
+    
+    .floating-chat {
+        bottom: 10px;
+        right: 10px;
+    }
+    
+    .calendar-grid {
+        font-size: 12px;
+    }
+    
+    .guest-card {
+        padding: 16px;
+    }
+} 
+
+/* Collapse min-h-screen when SPA is active (sidebar + iframe handle height) */
+body.spa-active #app.min-h-screen {
+    min-height: 0 !important;
+}

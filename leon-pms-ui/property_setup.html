@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Property Setup - LEON PMS</title>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+</head>
+<body class="bg-gray-50">
+  <main class="w-full px-4 sm:px-6 lg:px-8 py-4">
+    <h1 class="text-3xl font-bold text-gray-900 mb-1">Property Setup</h1>
+    <div id="prop-hotel-name" class="text-sm text-gray-600 mb-4">Hotel: -</div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
+      <!-- Hotel Keywords -->
+      <div class="bg-white border rounded p-3">
+        <div class="flex items-center justify-between mb-2">
+          <div class="text-sm font-semibold">Hotel Keywords</div>
+          <div class="space-x-2">
+            <button id="kw-refresh" class="px-3 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded border"><i class="fas fa-rotate"></i></button>
+            <button id="kw-save" class="px-3 py-1 text-xs bg-indigo-600 text-white rounded"><i class="fas fa-save mr-1"></i>Save</button>
+          </div>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs">
+          <div>
+            <label class="block text-gray-600 mb-1">contact_phone</label>
+            <input id="kw-contact" class="border rounded px-2 py-1 w-full" placeholder="+60123456789" />
+          </div>
+          <div>
+            <label class="block text-gray-600 mb-1">contact_email</label>
+            <input id="kw-email" class="border rounded px-2 py-1 w-full" placeholder="INFO@HOTEL.COM" />
+          </div>
+          <div>
+            <label class="block text-gray-600 mb-1">timezone</label>
+            <input id="kw-tz" class="border rounded px-2 py-1 w-full" placeholder="ASIA/KUALA_LUMPUR" />
+          </div>
+          <div class="md:col-span-3">
+            <label class="block text-gray-600 mb-1">address</label>
+            <input id="kw-address" class="border rounded px-2 py-1 w-full" placeholder="ADDRESS LINE" />
+          </div>
+          <div>
+            <label class="block text-gray-600 mb-1">city</label>
+            <input id="kw-city" class="border rounded px-2 py-1 w-full" placeholder="KUALA LUMPUR" />
+          </div>
+          <div>
+            <label class="block text-gray-600 mb-1">country</label>
+            <input id="kw-country" class="border rounded px-2 py-1 w-full" placeholder="MALAYSIA" />
+          </div>
+          
+          <div class="md:col-span-3">
+            <label class="block text-gray-600 mb-1">facilities</label>
+            <div class="grid grid-cols-2 md:grid-cols-3 gap-2 text-xs">
+              <label class="inline-flex items-center space-x-2"><input type="checkbox" class="kw-fac" value="restaurant" /><span>restaurant</span></label>
+              <label class="inline-flex items-center space-x-2"><input type="checkbox" class="kw-fac" value="cafe" /><span>cafe</span></label>
+              <label class="inline-flex items-center space-x-2"><input type="checkbox" class="kw-fac" value="bar" /><span>bar</span></label>
+              <label class="inline-flex items-center space-x-2"><input type="checkbox" class="kw-fac" value="room_service" /><span>room_service</span></label>
+              <label class="inline-flex items-center space-x-2"><input type="checkbox" class="kw-fac" value="spa" /><span>spa</span></label>
+              <label class="inline-flex items-center space-x-2"><input type="checkbox" class="kw-fac" value="gym" /><span>gym</span></label>
+              <label class="inline-flex items-center space-x-2"><input type="checkbox" class="kw-fac" value="pool" /><span>pool</span></label>
+              <label class="inline-flex items-center space-x-2"><input type="checkbox" class="kw-fac" value="kids_pool" /><span>kids_pool</span></label>
+              <label class="inline-flex items-center space-x-2"><input type="checkbox" class="kw-fac" value="sauna" /><span>sauna</span></label>
+              <label class="inline-flex items-center space-x-2"><input type="checkbox" class="kw-fac" value="steam_room" /><span>steam_room</span></label>
+              <label class="inline-flex items-center space-x-2"><input type="checkbox" class="kw-fac" value="parking" /><span>parking</span></label>
+              <label class="inline-flex items-center space-x-2"><input type="checkbox" class="kw-fac" value="valet_parking" /><span>valet_parking</span></label>
+              <label class="inline-flex items-center space-x-2"><input type="checkbox" class="kw-fac" value="airport_shuttle" /><span>airport_shuttle</span></label>
+              <label class="inline-flex items-center space-x-2"><input type="checkbox" class="kw-fac" value="wheelchair_access" /><span>wheelchair_access</span></label>
+              <label class="inline-flex items-center space-x-2"><input type="checkbox" class="kw-fac" value="elevator" /><span>elevator</span></label>
+              <label class="inline-flex items-center space-x-2"><input type="checkbox" class="kw-fac" value="smoking_area" /><span>smoking_area</span></label>
+              <label class="inline-flex items-center space-x-2"><input type="checkbox" class="kw-fac" value="non_smoking_floors" /><span>non_smoking_floors</span></label>
+              <label class="inline-flex items-center space-x-2"><input type="checkbox" class="kw-fac" value="business_center" /><span>business_center</span></label>
+              <label class="inline-flex items-center space-x-2"><input type="checkbox" class="kw-fac" value="meeting_rooms" /><span>meeting_rooms</span></label>
+              <label class="inline-flex items-center space-x-2"><input type="checkbox" class="kw-fac" value="banquet_hall" /><span>banquet_hall</span></label>
+              <label class="inline-flex items-center space-x-2"><input type="checkbox" class="kw-fac" value="24h_front_desk" /><span>24h_front_desk</span></label>
+              <label class="inline-flex items-center space-x-2"><input type="checkbox" class="kw-fac" value="concierge" /><span>concierge</span></label>
+              <label class="inline-flex items-center space-x-2"><input type="checkbox" class="kw-fac" value="laundry" /><span>laundry</span></label>
+              <label class="inline-flex items-center space-x-2"><input type="checkbox" class="kw-fac" value="dry_cleaning" /><span>dry_cleaning</span></label>
+              <label class="inline-flex items-center space-x-2"><input type="checkbox" class="kw-fac" value="luggage_storage" /><span>luggage_storage</span></label>
+              <label class="inline-flex items-center space-x-2"><input type="checkbox" class="kw-fac" value="security_24h" /><span>security_24h</span></label>
+              <label class="inline-flex items-center space-x-2"><input type="checkbox" class="kw-fac" value="cctv" /><span>cctv</span></label>
+              <label class="inline-flex items-center space-x-2"><input type="checkbox" class="kw-fac" value="keycard_access" /><span>keycard_access</span></label>
+              <label class="inline-flex items-center space-x-2"><input type="checkbox" class="kw-fac" value="generator_backup" /><span>generator_backup</span></label>
+            </div>
+          </div>
+
+          <!-- Amenities (one value per category) -->
+          <div class="md:col-span-3">
+            <label class="block text-gray-600 mb-1">amenities (one value per category)</label>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs">
+              <div><label class="block mb-1">internet</label><input id="am-internet" class="kw-am border rounded px-2 py-1 w-full" data-cat="internet" placeholder="e.g., 5G_WIFI" /></div>
+              <div><label class="block mb-1">food</label><input id="am-food" class="kw-am border rounded px-2 py-1 w-full" data-cat="food" placeholder="HALAL" /></div>
+              <div><label class="block mb-1">beverage</label><input id="am-beverage" class="kw-am border rounded px-2 py-1 w-full" data-cat="beverage" placeholder="BARISTA_COFFEE" /></div>
+              <div><label class="block mb-1">business</label><input id="am-business" class="kw-am border rounded px-2 py-1 w-full" data-cat="business" placeholder="PRINTING" /></div>
+              <div><label class="block mb-1">parking_type</label><input id="am-parking_type" class="kw-am border rounded px-2 py-1 w-full" data-cat="parking_type" placeholder="EV_CHARGER" /></div>
+              <div><label class="block mb-1">kids_programs</label><input id="am-kids_programs" class="kw-am border rounded px-2 py-1 w-full" data-cat="kids_programs" placeholder="KIDS_CLUB" /></div>
+              <div><label class="block mb-1">wellness_programs</label><input id="am-wellness_programs" class="kw-am border rounded px-2 py-1 w-full" data-cat="wellness_programs" placeholder="YOGA_CLASSES" /></div>
+              <div><label class="block mb-1">sustainability</label><input id="am-sustainability" class="kw-am border rounded px-2 py-1 w-full" data-cat="sustainability" placeholder="GREEN_CERTIFIED" /></div>
+              <div><label class="block mb-1">religious_services</label><input id="am-religious_services" class="kw-am border rounded px-2 py-1 w-full" data-cat="religious_services" placeholder="PRAYER_ROOM" /></div>
+              <div><label class="block mb-1">pet_services</label><input id="am-pet_services" class="kw-am border rounded px-2 py-1 w-full" data-cat="pet_services" placeholder="PET_FRIENDLY" /></div>
+              <div><label class="block mb-1">concierge_services</label><input id="am-concierge_services" class="kw-am border rounded px-2 py-1 w-full" data-cat="concierge_services" placeholder="TOUR_DESK" /></div>
+              <div><label class="block mb-1">accessibility_services</label><input id="am-accessibility_services" class="kw-am border rounded px-2 py-1 w-full" data-cat="accessibility_services" placeholder="WHEELCHAIR_RENTAL" /></div>
+              <div><label class="block mb-1">event_services</label><input id="am-event_services" class="kw-am border rounded px-2 py-1 w-full" data-cat="event_services" placeholder="WEDDING_PLANNING" /></div>
+              <div><label class="block mb-1">laundry_type</label><input id="am-laundry_type" class="kw-am border rounded px-2 py-1 w-full" data-cat="laundry_type" placeholder="FULL_SERVICE" /></div>
+              <div><label class="block mb-1">transport_detail</label><input id="am-transport_detail" class="kw-am border rounded px-2 py-1 w-full" data-cat="transport_detail" placeholder="CITY_LOOP" /></div>
+            </div>
+          </div>
+        </div>
+        <div id="kw-output" class="mt-2 text-xs whitespace-pre-wrap font-mono bg-gray-50 p-2 rounded border">-</div>
+      </div>
+
+      <div class="space-y-4">
+      <!-- Policies -->
+      <div class="bg-white border rounded p-3">
+        <div class="flex items-center justify-between mb-2">
+          <div class="text-sm font-semibold">Policies</div>
+          <div class="space-x-2">
+            <select id="pol-type" class="border rounded px-2 py-1 text-xs">
+              <option value="">ALL</option>
+              <option value="payment">payment</option>
+              <option value="booking">booking</option>
+              <option value="tax">tax</option>
+            </select>
+            <button id="pol-refresh" class="px-3 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded border"><i class="fas fa-rotate"></i></button>
+          </div>
+        </div>
+        <div class="grid grid-cols-1 gap-2">
+          <div class="border rounded p-2">
+            <div class="text-xs font-semibold mb-2">Create/Update Policies</div>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-2">
+              <button id="open-pm" class="px-3 py-2 text-xs rounded border bg-white hover:bg-gray-50 flex items-center justify-center"><i class="fas fa-money-check-alt mr-2"></i>Payment Policy</button>
+              <button id="open-bk" class="px-3 py-2 text-xs rounded border bg-white hover:bg-gray-50 flex items-center justify-center"><i class="fas fa-calendar-check mr-2"></i>Booking Policy</button>
+              <button id="open-tx" class="px-3 py-2 text-xs rounded border bg-white hover:bg-gray-50 flex items-center justify-center"><i class="fas fa-receipt mr-2"></i>Tax Policy</button>
+            </div>
+          </div>
+          <div id="pol-output" class="text-xs whitespace-pre-wrap font-mono bg-gray-50 p-2 rounded border max-h-64 overflow-y-auto">-</div>
+        </div>
+      </div>
+
+      <div class="bg-white border rounded p-3">
+        <div class="flex items-center justify-between mb-2">
+          <div class="text-sm font-semibold">Rate Plans</div>
+          <button id="rp-refresh" class="px-3 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded border"><i class="fas fa-rotate"></i></button>
+        </div>
+        <div class="grid grid-cols-1 gap-2 mb-2">
+          <input id="rp-name" class="border rounded px-2 py-1 text-sm" placeholder="Package name" />
+          <input id="rp-desc" class="border rounded px-2 py-1 text-sm" placeholder="What this package includes" />
+          <button id="rp-add" class="px-3 py-1 text-sm bg-indigo-600 text-white rounded">Add package</button>
+        </div>
+        <div id="rp-list" class="text-xs border rounded p-2 bg-gray-50">-</div>
+      </div>
+
+      <div class="bg-white border rounded p-3">
+        <div class="flex items-center justify-between mb-2">
+          <div class="text-sm font-semibold">Registration Card</div>
+          <button id="rc-save" class="px-3 py-1 text-xs bg-indigo-600 text-white rounded">Save</button>
+        </div>
+        <label class="block text-xs text-gray-600 mb-1">House rules</label>
+        <textarea id="rc-rules" rows="6" class="border rounded px-2 py-1 text-sm w-full mb-2" placeholder="Quiet hours, smoking, visitors, pool, damage"></textarea>
+        <label class="block text-xs text-gray-600 mb-1">Terms and conditions</label>
+        <textarea id="rc-terms" rows="6" class="border rounded px-2 py-1 text-sm w-full" placeholder="Payment, cancellation, liability, privacy"></textarea>
+      </div>
+      </div>
+    </div>
+  </main>
+  <script src="js/components/property_setup.js?v=propertysave"></script>
+  
+  <div id="rp-modal" class="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50 hidden">
+    <div class="bg-white rounded-lg p-4 w-full max-w-md">
+      <div class="flex items-center justify-between mb-2">
+        <div class="text-sm font-semibold">Rate Plan</div>
+        <button id="rp-close" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
+      </div>
+      <input id="rp-edit-original" type="hidden" />
+      <label class="block text-xs text-gray-600 mb-1">Package name</label>
+      <input id="rp-edit-name" class="border rounded px-2 py-1 text-sm w-full mb-2" />
+      <label class="block text-xs text-gray-600 mb-1">What this package includes</label>
+      <input id="rp-edit-desc" class="border rounded px-2 py-1 text-sm w-full" />
+      <div class="flex justify-between mt-4">
+        <button id="rp-remove" class="bg-red-600 text-white px-4 py-2 rounded">Remove</button>
+        <button id="rp-save" class="bg-green-600 text-white px-4 py-2 rounded">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Policy Modals (Payment, Booking, Tax) -->
+  <div id="pm-modal" class="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50 hidden">
+    <div class="bg-white rounded-lg p-4 w-full">
+      <div class="flex items-center justify-between mb-2">
+        <div class="text-sm font-semibold">Payment Policy</div>
+        <button id="pm-close" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div>
+          <label class="block text-xs text-gray-600 mb-1">minimum payment(%)</label>
+          <input id="pm-threshold" type="number" class="border rounded px-2 py-1 text-sm w-full" value="30" />
+        </div>
+        <div>
+          <label class="block text-xs text-gray-600 mb-1">payment_window_days</label>
+          <input id="pm-window-days" type="number" class="border rounded px-2 py-1 text-sm w-full" value="7" />
+        </div>
+        <div>
+          <label class="block text-xs text-gray-600 mb-1">methods_allowed</label>
+          <div class="grid grid-cols-2 gap-1 text-xs">
+            <label class="inline-flex items-center space-x-2"><input type="checkbox" class="pm-method" value="CASH" checked /><span>CASH</span></label>
+            <label class="inline-flex items-center space-x-2"><input type="checkbox" class="pm-method" value="CARD" checked /><span>CARD</span></label>
+            <label class="inline-flex items-center space-x-2"><input type="checkbox" class="pm-method" value="BANK TRANSFER" checked /><span>BANK TRANSFER</span></label>
+            <label class="inline-flex items-center space-x-2"><input type="checkbox" class="pm-method" value="OTA" checked /><span>OTA</span></label>
+          </div>
+        </div>
+        <div>
+          <label class="block text-xs text-gray-600 mb-1">deadline_policy</label>
+          <select id="pm-deadline" class="border rounded px-2 py-1 text-sm w-full">
+            <option value="before_check_in">before_check_in</option>
+            <option value="upon_booking">upon_booking</option>
+            <option value="before_check_out">before_check_out</option>
+          </select>
+        </div>
+        <div class="md:col-span-2">
+          <label class="block text-xs text-gray-600 mb-1">notes</label>
+          <input id="pm-notes" class="border rounded px-2 py-1 text-sm w-full" placeholder="optional" />
+        </div>
+      </div>
+      <div class="flex justify-end space-x-2 mt-4">
+        <button id="pm-update" class="bg-green-600 text-white px-4 py-2 rounded"><i class="fas fa-save mr-1"></i>Update</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="bk-modal" class="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50 hidden">
+    <div class="bg-white rounded-lg p-4 w-full">
+      <div class="flex items-center justify-between mb-2">
+        <div class="text-sm font-semibold">Booking Policy</div>
+        <button id="bk-close" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div>
+          <label class="block text-xs text-gray-600 mb-1">checkin_time</label>
+          <input id="bk-checkin" class="border rounded px-2 py-1 text-sm w-full" value="15:00" />
+        </div>
+        <div>
+          <label class="block text-xs text-gray-600 mb-1">checkout_time</label>
+          <input id="bk-checkout" class="border rounded px-2 py-1 text-sm w-full" value="12:00" />
+        </div>
+        <div>
+          <label class="block text-xs text-gray-600 mb-1">max_stay_nights</label>
+          <input id="bk-max-nights" type="number" class="border rounded px-2 py-1 text-sm w-full" value="14" />
+        </div>
+        <div>
+          <label class="block text-xs text-gray-600 mb-1">cancellation_policy.window_hours</label>
+          <input id="bk-cancel-window" type="number" class="border rounded px-2 py-1 text-sm w-full" value="48" />
+        </div>
+        <div>
+          <label class="block text-xs text-gray-600 mb-1">cancellation_policy.penalty_nights</label>
+          <input id="bk-cancel-penalty" type="number" class="border rounded px-2 py-1 text-sm w-full" value="1" />
+        </div>
+        <div>
+          <label class="block text-xs text-gray-600 mb-1">cancellation_policy.refund_percent</label>
+          <input id="bk-cancel-refund" type="number" class="border rounded px-2 py-1 text-sm w-full" value="50" />
+        </div>
+        <div>
+          <label class="block text-xs text-gray-600 mb-1">no_show_policy.penalty_nights</label>
+          <input id="bk-noshow-penalty" type="number" class="border rounded px-2 py-1 text-sm w-full" value="1" />
+        </div>
+        <div>
+          <label class="block text-xs text-gray-600 mb-1">overbooking_policy</label>
+          <input id="bk-overbook" class="border rounded px-2 py-1 text-sm w-full" value="do_not_overbook" />
+        </div>
+        <div class="md:col-span-3">
+          <label class="block text-xs text-gray-600 mb-1">notes</label>
+          <input id="bk-notes" class="border rounded px-2 py-1 text-sm w-full" placeholder="optional" />
+        </div>
+      </div>
+      <div class="flex justify-end space-x-2 mt-4">
+        <button id="bk-update" class="bg-green-600 text-white px-4 py-2 rounded"><i class="fas fa-save mr-1"></i>Update</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="tx-modal" class="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50 hidden">
+    <div class="bg-white rounded-lg p-4 w-full">
+      <div class="flex items-center justify-between mb-2">
+        <div class="text-sm font-semibold">Tax Policy</div>
+        <button id="tx-close" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div>
+          <label class="block text-xs text-gray-600 mb-1">vat_percent</label>
+          <input id="tx-vat" type="number" step="any" class="border rounded px-2 py-1 text-sm w-full" value="6.0" />
+        </div>
+        <div>
+          <label class="block text-xs text-gray-600 mb-1">service_charge_percent</label>
+          <input id="tx-service" type="number" step="any" class="border rounded px-2 py-1 text-sm w-full" value="10.0" />
+        </div>
+        <div>
+          <label class="block text-xs text-gray-600 mb-1">tourism_tax_per_night</label>
+          <input id="tx-tourism" type="number" step="any" class="border rounded px-2 py-1 text-sm w-full" value="10.0" />
+        </div>
+        <div class="md:col-span-2">
+          <label class="block text-xs text-gray-600 mb-1">notes</label>
+          <input id="tx-notes" class="border rounded px-2 py-1 text-sm w-full" placeholder="optional" />
+        </div>
+      </div>
+      <div class="flex justify-end space-x-2 mt-4">
+        <button id="tx-update" class="bg-green-600 text-white px-4 py-2 rounded"><i class="fas fa-save mr-1"></i>Update</button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+
+

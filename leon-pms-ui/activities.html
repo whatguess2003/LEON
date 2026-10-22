@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Activity Logs - LEON PMS</title>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+  <link href="css/modern-pms.css" rel="stylesheet">
+  <style>
+    .mono { font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace; }
+  </style>
+  <script>
+    const apiBase = (location.hostname === 'localhost' || location.hostname === '127.0.0.1') ? 'http://localhost:8002/api' : 'https://api.inap.ai/api';
+    let HOTEL_TZ = 'UTC';
+    // Timezone comes from by_hotel API response (JWT → _get_tz_from_jwt)
+    function fmtLocal(iso){
+      try{
+        if (!iso) return '-';
+        let s = String(iso);
+        // Normalize fractional seconds to exactly 3 digits for JS Date parsing
+        // e.g., 2025-08-17T15:15:47.000353Z -> 2025-08-17T15:15:47.000Z
+        s = s.replace(/(\.\d{3})\d+(Z)$/,'$1$2');
+        const d = new Date(s);
+        const nf = new Intl.DateTimeFormat([], { timeZone: HOTEL_TZ, timeZoneName: 'short', year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit' });
+        return isNaN(d.getTime()) ? String(iso) : nf.format(d);
+      }catch(_){ return String(iso||'-'); }
+    }
+    async function loadLogs(){
+      const limitSel = document.getElementById('limit');
+      const limit = limitSel ? parseInt(limitSel.value||'100',10) : 100;
+      const box = document.getElementById('logs');
+      box.innerHTML = '<div class="p-4 text-gray-500">Loading...</div>';
+      try{
+        const res2 = await fetch(`${apiBase}/activity/logs/by_hotel?limit=${encodeURIComponent(limit)}`, { credentials:'include' });
+        if (!res2.ok) throw new Error('Failed');
+        const j2 = await res2.json();
+        if (j2 && j2.timezone) HOTEL_TZ = j2.timezone;
+        const items2 = Array.isArray(j2.items) ? j2.items : [];
+        const rows2 = items2.map(it=>{
+          const ts = fmtLocal(it.ts_utc || it.ts || '');
+          const text = (it.text||'');
+          const who = (it.actor || it.manager_name || '').toString();
+          const whoCell = who ? `<span class="ml-2 text-xs text-gray-400">${who}</span>` : '';
+          return `<tr><td class="px-2 py-1 whitespace-nowrap text-gray-500">${ts}</td><td class="px-2 py-1">${text}${whoCell}</td></tr>`;
+        }).join('');
+        box.innerHTML = `<div class="overflow-auto border rounded bg-white">
+          <table class="min-w-full table-auto text-sm">
+            <thead class="bg-gray-50"><tr class="text-left"><th class="px-2 py-2">Time</th><th class="px-2 py-2">Summary</th></tr></thead>
+            <tbody>${rows2}</tbody>
+          </table>
+        </div>`;
+      }catch(_){ box.innerHTML = '<div class="p-4 text-red-600">Failed to load logs</div>'; }
+    }
+    document.addEventListener('DOMContentLoaded',()=>{
+      document.getElementById('refresh').addEventListener('click', loadLogs);
+      document.getElementById('limit').addEventListener('change', loadLogs);
+      loadLogs();
+      setInterval(loadLogs, 60000);
+    });
+  </script>
+  <script src="js/subpage-embed.js"></script>
+  <script src="js/pms-app.js"></script>
+</head>
+<body class="bg-gray-50">
+  <div class="min-h-screen">
+    <nav class="bg-white shadow-lg border-b border-gray-200" style="display:none">
+      <div class="w-full px-4 sm:px-6 lg:px-8">
+        <div class="flex justify-between items-center h-16">
+          <div class="flex items-center">
+            <div class="flex-shrink-0 flex items-center">
+              <i class="fas fa-list text-2xl text-blue-600 mr-3"></i>
+              <h1 class="text-xl font-bold text-gray-900">LEON PMS</h1>
+            </div>
+          </div>
+          <div class="hidden md:block">
+            <div class="ml-10 flex items-baseline space-x-4">
+              <a href="index.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors"><i class="fas fa-home mr-2"></i>Home</a>
+              <a href="dashboard.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors"><i class="fas fa-tachometer-alt mr-2"></i>Dashboard</a>
+              <a href="rooms.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors"><i class="fas fa-bed mr-2"></i>Rooms</a>
+              <a href="housekeeping.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors"><i class="fas fa-broom mr-2"></i>Housekeeping</a>
+              <a href="bookings.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors"><i class="fas fa-calendar-check mr-2"></i>Bookings</a>
+              <a href="assignments.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors"><i class="fas fa-calendar-days mr-2"></i>Stay View</a>
+              <a href="analytics.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors"><i class="fas fa-chart-line mr-2"></i>Analytics</a>
+              <a href="activities.html" class="bg-blue-100 text-blue-700 px-3 py-2 rounded-md text-sm font-medium transition-colors"><i class="fas fa-list mr-2"></i>Activity</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </nav>
+    <main class="w-full px-4 sm:px-6 lg:px-8 py-4">
+      <div class="flex items-end justify-between mb-6">
+        <div>
+          <h1 class="text-2xl font-bold text-gray-900">Activity Logs</h1>
+          <p class="text-gray-600 mt-1">Human-readable activity (POST API + Agent Tools) per hotel</p>
+        </div>
+        <div class="flex gap-2 items-center">
+          <label class="text-sm text-gray-600">Limit</label>
+          <select id="limit" class="border rounded px-2 py-1">
+            <option value="50">50</option>
+            <option value="100" selected>100</option>
+            <option value="200">200</option>
+            <option value="500">500</option>
+          </select>
+          <button id="refresh" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">Refresh</button>
+        </div>
+      </div>
+      <div id="logs"></div>
+    </main>
+  </div>
+</body>
+</html>
+

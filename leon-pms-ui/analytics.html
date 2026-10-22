@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Analytics & Reporting - LEON PMS</title>
+    
+    <!-- Modern CSS Framework -->
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Custom CSS -->
+    <link href="css/modern-pms.css" rel="stylesheet">
+    
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f9fafb;
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <!-- Main Application Container -->
+    <div id="app" class="min-h-screen">
+        <!-- Navigation Bar -->
+        <nav class="bg-white shadow-lg border-b border-gray-200">
+            <div class="w-full px-4 sm:px-6 lg:px-8">
+                <div class="flex justify-between items-center h-16">
+                    <div class="flex items-center">
+                        <div class="flex-shrink-0 flex items-center">
+                            <i class="fas fa-hotel text-2xl text-blue-600 mr-3"></i>
+                            <h1 class="text-xl font-bold text-gray-900">LEON PMS</h1>
+                        </div>
+                    </div>
+                    
+                    <div class="hidden md:block">
+                        <div class="ml-10 flex items-baseline space-x-4">
+                            <a href="index.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-home mr-2"></i>Home
+                            </a>
+                            <a href="dashboard.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-tachometer-alt mr-2"></i>Dashboard
+                            </a>
+                            <a href="rooms.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-bed mr-2"></i>Rooms
+                            </a>
+                            <a href="inventory.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-boxes mr-2"></i>Inventory
+                            </a>
+                            <a href="bookings.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-calendar-check mr-2"></i>Bookings
+                            </a>
+                            <a href="guests.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-users mr-2"></i>Guests
+                            </a>
+                            <a href="operations.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-tasks mr-2"></i>Operations
+                            </a>
+                            <a href="analytics.html" class="bg-blue-100 text-blue-700 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-chart-line mr-2"></i>Analytics
+                            </a>
+                        </div>
+                    </div>
+                    
+                    <div class="flex items-center space-x-4">
+                        <div class="flex items-center space-x-2">
+                            <div class="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
+                            <span class="text-sm text-gray-600">LEON Online</span>
+                        </div>
+                        <div class="flex items-center space-x-3">
+                            <div class="w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center">
+                                <i class="fas fa-user text-white text-sm"></i>
+                            </div>
+                            <span class="text-sm font-medium text-gray-900">Hotel Manager</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </nav>
+        
+        <!-- Main Content Area -->
+        <main class="w-full px-4 sm:px-6 lg:px-8 py-4">
+            <!-- Analytics Header -->
+            <div class="flex justify-between items-center mb-6">
+                <div>
+                    <h1 class="text-3xl font-bold text-gray-900">Analytics & Reporting</h1>
+                    <p class="text-gray-600 mt-1">Insights, performance metrics, and business intelligence</p>
+                </div>
+                <div class="flex space-x-3">
+                    <select id="date-range" class="border rounded-lg px-3 py-2" onchange="updateDateRange()">
+                        <option value="7">Last 7 days</option>
+                        <option value="30" selected>Last 30 days</option>
+                        <option value="90">Last 3 months</option>
+                        <option value="365">Last year</option>
+                    </select>
+                    <button onclick="exportReport()" 
+                            class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors flex items-center">
+                        <i class="fas fa-download mr-2"></i>
+                        Export
+                    </button>
+                    <button onclick="askLeonAboutAnalytics()" 
+                            class="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 transition-colors flex items-center">
+                        <i class="fas fa-robot mr-2"></i>
+                        Ask LEON
+                    </button>
+                </div>
+            </div>
+            
+            <!-- KPI Cards -->
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+                <div class="card p-6">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm font-medium text-gray-500 uppercase tracking-wide">Total Revenue</p>
+                            <p class="text-2xl font-bold text-gray-900 mt-2" id="total-revenue">-</p>
+                            <p class="text-sm text-green-600 mt-1" id="revenue-change">-</p>
+                        </div>
+                        <div class="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
+                            <i class="fas fa-dollar-sign text-green-600"></i>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card p-6">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm font-medium text-gray-500 uppercase tracking-wide">Occupancy Rate</p>
+                            <p class="text-2xl font-bold text-gray-900 mt-2" id="occupancy-rate">-</p>
+                            <p class="text-sm text-blue-600 mt-1" id="occupancy-change">-</p>
+                        </div>
+                        <div class="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center">
+                            <i class="fas fa-percentage text-blue-600"></i>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card p-6">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm font-medium text-gray-500 uppercase tracking-wide">Average Daily Rate</p>
+                            <p class="text-2xl font-bold text-gray-900 mt-2" id="adr">-</p>
+                            <p class="text-sm text-purple-600 mt-1" id="adr-change">-</p>
+                        </div>
+                        <div class="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center">
+                            <i class="fas fa-coins text-purple-600"></i>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card p-6">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm font-medium text-gray-500 uppercase tracking-wide">Guest Satisfaction</p>
+                            <p class="text-2xl font-bold text-gray-900 mt-2" id="satisfaction-score">-</p>
+                            <p class="text-sm text-yellow-600 mt-1" id="satisfaction-change">-</p>
+                        </div>
+                        <div class="w-12 h-12 bg-yellow-100 rounded-lg flex items-center justify-center">
+                            <i class="fas fa-smile text-yellow-600"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Charts Section -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+                <!-- Revenue Chart -->
+                <div class="card p-6">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="text-lg font-semibold text-gray-900">Revenue Trend</h3>
+                        <select id="revenue-period" class="text-sm border rounded px-2 py-1">
+                            <option value="daily">Daily</option>
+                            <option value="weekly">Weekly</option>
+                            <option value="monthly">Monthly</option>
+                        </select>
+                    </div>
+                    <div class="chart-container">
+                        <canvas id="revenue-chart"></canvas>
+                    </div>
+                </div>
+                
+                <!-- Occupancy Chart -->
+                <div class="card p-6">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="text-lg font-semibold text-gray-900">Occupancy Rate</h3>
+                        <select id="occupancy-period" class="text-sm border rounded px-2 py-1">
+                            <option value="daily">Daily</option>
+                            <option value="weekly">Weekly</option>
+                            <option value="monthly">Monthly</option>
+                        </select>
+                    </div>
+                    <div class="chart-container">
+                        <canvas id="occupancy-chart"></canvas>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Additional Analytics -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+                <!-- Room Type Performance -->
+                <div class="card p-6">
+                    <h3 class="text-lg font-semibold text-gray-900 mb-4">Room Type Performance</h3>
+                    <div class="chart-container">
+                        <canvas id="room-type-chart"></canvas>
+                    </div>
+                </div>
+                
+                <!-- Booking Source Analysis -->
+                <div class="card p-6">
+                    <h3 class="text-lg font-semibold text-gray-900 mb-4">Booking Sources</h3>
+                    <div class="chart-container">
+                        <canvas id="booking-source-chart"></canvas>
+                    </div>
+                </div>
+                
+                <!-- Guest Demographics -->
+                <div class="card p-6">
+                    <h3 class="text-lg font-semibold text-gray-900 mb-4">Guest Demographics</h3>
+                    <div class="space-y-3" id="demographics-list">
+                        <!-- Demographics will be populated here -->
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Detailed Reports -->
+            <div class="card p-6">
+                <div class="flex items-center justify-between mb-6">
+                    <h3 class="text-lg font-semibold text-gray-900">Detailed Reports</h3>
+                    <div class="flex space-x-3">
+                        <button onclick="generateReport('revenue')" 
+                                class="bg-blue-600 text-white px-3 py-1 rounded text-sm hover:bg-blue-700">
+                            Revenue Report
+                        </button>
+                        <button onclick="generateReport('occupancy')" 
+                                class="bg-green-600 text-white px-3 py-1 rounded text-sm hover:bg-green-700">
+                            Occupancy Report
+                        </button>
+                        <button onclick="generateReport('guest')" 
+                                class="bg-purple-600 text-white px-3 py-1 rounded text-sm hover:bg-purple-700">
+                            Guest Report
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="overflow-x-auto">
+                    <table class="w-full">
+                        <thead>
+                            <tr class="border-b">
+                                <th class="text-left py-3 px-4 font-semibold text-gray-900">Date</th>
+                                <th class="text-left py-3 px-4 font-semibold text-gray-900">Revenue</th>
+                                <th class="text-left py-3 px-4 font-semibold text-gray-900">Occupancy</th>
+                                <th class="text-left py-3 px-4 font-semibold text-gray-900">ADR</th>
+                                <th class="text-left py-3 px-4 font-semibold text-gray-900">Bookings</th>
+                                <th class="text-left py-3 px-4 font-semibold text-gray-900">Avg. Rating</th>
+                            </tr>
+                        </thead>
+                        <tbody id="reports-table">
+                            <tr>
+                                <td colspan="6" class="text-center py-8 text-gray-500">
+                                    <i class="fas fa-chart-bar text-2xl mb-2"></i>
+                                    <p>Loading analytics data...</p>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </main>
+        
+        <!-- LEON Chat will be loaded by leon-chat.js -->
+    </div>
+    
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- JavaScript -->
+    
+    <script src="js/components/analytics.js?v=live"></script>
+    <script>
+        // Initialize analytics
+        let analyticsManager;
+        
+        document.addEventListener('DOMContentLoaded', () => {
+            analyticsManager = new AnalyticsComponent();
+            window.analyticsManager = analyticsManager;
+        });
+        
+        // Global functions for UI interactions
+        function updateDateRange() {
+            const dateRange = document.getElementById('date-range').value;
+            if (analyticsManager) {
+                analyticsManager.updateDateRange(parseInt(dateRange));
+            }
+        }
+        
+        function exportReport() {
+            if (analyticsManager) analyticsManager.exportReport();
+        }
+        
+        function generateReport(reportType) {
+            if (analyticsManager) analyticsManager.generateReport(reportType);
+        }
+        
+        function askLeonAboutAnalytics() {
+            if (leonChat) {
+                leonChat.toggleChat();
+                setTimeout(() => {
+                    const chatInput = document.getElementById('chat-input');
+                    if (chatInput) {
+                        chatInput.value = 'Analyze my hotel performance data and provide insights on revenue, occupancy, and guest satisfaction trends';
+                        leonChat.sendMessage();
+                    }
+                }, 500);
+            }
+        }
+    </script>
+</body>
+<script src="js/subpage-embed.js"></script>
+</html> 

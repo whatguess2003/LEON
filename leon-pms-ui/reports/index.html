@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LEON Report</title>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" />
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    :root { --bg:#0b1220; --panel:#0f172a; --text:#e5e7eb; --accent:#2563eb; --muted:#94a3b8; }
+    html, body { margin:0; height:100%; background:var(--bg); color:var(--text); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"; }
+    .container { max-width: min(1100px, 95vw); margin: 0 auto; padding: 16px; }
+    .header { display:flex; align-items:center; justify-content: space-between; gap: 12px; }
+    .title { font-size: 20px; font-weight: 700; }
+    .subtitle { font-size: 13px; color: var(--muted); }
+    .actions { display:flex; gap:8px; }
+    .btn { background: var(--accent); color: white; border: 0; border-radius: 8px; padding: 8px 12px; font-size: 12px; cursor: pointer; }
+    .btn.secondary { background: #1f2937; color: var(--text); }
+    .panel { background: var(--panel); border-radius: 12px; padding: 14px; margin-top: 14px; }
+    .section { margin-top: 16px; }
+    h2 { font-size: 16px; margin: 0 0 8px 0; }
+    .md { font-size: 14px; line-height: 1.5; color: var(--text); }
+    .md p, .md li { margin: 6px 0; }
+    pre { background:#0b1020; color:#e5e7eb; padding:10px; border-radius:8px; overflow:auto; font-size: 12px; }
+    code { background:#111827; padding:2px 4px; border-radius:4px; font-size: 12px; }
+    .mermaid { background: #0b1020; border-radius: 8px; padding: 8px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div>
+        <div class="title" id="report-title">LEON Report</div>
+        <div class="subtitle" id="report-subtitle"></div>
+      </div>
+      <div class="actions">
+        <button class="btn secondary" onclick="history.back()">Back</button>
+        <button class="btn" onclick="window.print()">Print</button>
+      </div>
+    </div>
+
+    <div id="report-content" class="panel"></div>
+  </div>
+
+  <script>
+    mermaid.initialize({ startOnLoad: false, securityLevel: 'loose' });
+
+    function parsePayload() {
+      const urlParams = new URLSearchParams(location.search);
+      const q = urlParams.get('data');
+      if (q) {
+        try { return JSON.parse(decodeURIComponent(q)); } catch (_) {}
+      }
+      const sess = sessionStorage.getItem('LEON_REPORT_DATA');
+      if (sess) {
+        try { return JSON.parse(sess); } catch (_) {}
+      }
+      return null;
+    }
+
+    function renderMarkdown(container, text) {
+      try { container.innerHTML = marked.parse(text || ''); }
+      catch { container.textContent = text || ''; }
+    }
+
+    function makePie(def) {
+      // def: { title: string, data: {label:number}, showData?: boolean }
+      const show = def.showData ? 'showData ' : '';
+      let lines = [`pie ${show}title ${def.title || ''}`];
+      const data = def.data || {};
+      Object.keys(data).forEach(k => {
+        const v = Number(data[k]) || 0;
+        lines.push(`  "${k}" : ${v}`);
+      });
+      return lines.join('\n');
+    }
+
+    function renderReport(report) {
+      const titleEl = document.getElementById('report-title');
+      const subtitleEl = document.getElementById('report-subtitle');
+      const content = document.getElementById('report-content');
+      if (!report) {
+        titleEl.textContent = 'LEON Report';
+        subtitleEl.textContent = 'No report payload found';
+        content.textContent = 'Use the chat “Open Full Report” to open a detailed view.';
+        return;
+      }
+      titleEl.textContent = report.title || 'LEON Report';
+      subtitleEl.textContent = report.subtitle || '';
+
+      // Optional intro markdown
+      if (report.intro_markdown) {
+        const intro = document.createElement('div');
+        intro.className = 'md';
+        renderMarkdown(intro, report.intro_markdown);
+        content.appendChild(intro);
+      }
+
+      // Sections
+      const sections = Array.isArray(report.sections) ? report.sections : [];
+      sections.forEach((sec, idx) => {
+        const section = document.createElement('div');
+        section.className = 'section';
+        if (sec.id) {
+          section.id = sec.id;
+        } else {
+          section.id = `section-${idx+1}`;
+        }
+
+        if (sec.heading) {
+          const h = document.createElement('h2');
+          h.textContent = sec.heading;
+          section.appendChild(h);
+        }
+
+        if (sec.text_markdown) {
+          const md = document.createElement('div');
+          md.className = 'md';
+          renderMarkdown(md, sec.text_markdown);
+          section.appendChild(md);
+        }
+
+        // Mermaid blocks (raw)
+        if (Array.isArray(sec.mermaid_blocks)) {
+          sec.mermaid_blocks.forEach(code => {
+            const m = document.createElement('div');
+            m.className = 'mermaid';
+            m.textContent = code;
+            section.appendChild(m);
+          });
+        }
+
+        // Pie definition
+        if (sec.pie) {
+          const m = document.createElement('div');
+          m.className = 'mermaid';
+          m.textContent = makePie(sec.pie);
+          section.appendChild(m);
+        }
+
+        content.appendChild(section);
+      });
+
+      // Kick Mermaid rendering
+      if (content.querySelector('.mermaid')) {
+        mermaid.run({ querySelector: '#report-content' });
+      }
+
+      // Persist active section for context-aware follow-ups
+      const observer = new IntersectionObserver((entries) => {
+        const visible = entries.filter(e => e.isIntersecting).sort((a,b)=> b.intersectionRatio - a.intersectionRatio);
+        if (visible.length) {
+          const id = visible[0].target.id;
+          try { sessionStorage.setItem('LEON_REPORT_ACTIVE_SECTION', id); } catch (_) {}
+        }
+      }, { root: null, threshold: [0.5] });
+      content.querySelectorAll('.section').forEach(sec => observer.observe(sec));
+    }
+
+    renderReport(parsePayload());
+  </script>
+</body>
+</html>
+
+

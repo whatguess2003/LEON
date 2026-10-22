@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - LEON PMS</title>
+    
+    <!-- Modern CSS Framework -->
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Custom CSS -->
+    <link href="css/modern-pms.css" rel="stylesheet">
+    
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f9fafb;
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <!-- Main Application Container -->
+    <div id="app" class="min-h-screen">
+        <!-- Top Navigation Bar -->
+        <nav class="bg-white shadow-lg border-b border-gray-200">
+            <div class="w-full px-4 sm:px-6 lg:px-8">
+                <div class="flex justify-between items-center h-16">
+                    <!-- Logo and Title -->
+                    <div class="flex items-center">
+                        <div class="flex-shrink-0 flex items-center">
+                            <i class="fas fa-hotel text-2xl text-blue-600 mr-3"></i>
+                            <h1 class="text-xl font-bold text-gray-900">LEON PMS</h1>
+                        </div>
+                    </div>
+                    
+                    <!-- Navigation Links -->
+                    <div class="hidden md:block">
+                        <div class="ml-10 flex items-baseline space-x-4">
+                            <a href="index.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-home mr-2"></i>Home
+                            </a>
+                            <a href="dashboard.html" class="bg-blue-100 text-blue-700 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-tachometer-alt mr-2"></i>Dashboard
+                            </a>
+                            <a href="rooms.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-bed mr-2"></i>Rooms
+                            </a>
+                            <a href="inventory.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-boxes mr-2"></i>Inventory
+                            </a>
+                            <a href="bookings.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-calendar-check mr-2"></i>Bookings
+                            </a>
+                            <a href="guests.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-users mr-2"></i>Guests
+                            </a>
+                            <a href="operations.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-tasks mr-2"></i>Operations
+                            </a>
+                            <a href="analytics.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-chart-line mr-2"></i>Analytics
+                            </a>
+                        </div>
+                    </div>
+                    
+                    <!-- User Profile -->
+                    <div class="flex items-center space-x-4">
+                        <div class="flex items-center space-x-2">
+                            <div class="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
+                            <span class="text-sm text-gray-600">LEON Online</span>
+                        </div>
+                        <div class="flex items-center space-x-3">
+                            <div class="w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center">
+                                <i class="fas fa-user text-white text-sm"></i>
+                            </div>
+                            <span class="text-sm font-medium text-gray-900">Hotel Manager</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </nav>
+        
+        <!-- Main Content Area -->
+        <main class="w-full px-4 sm:px-6 lg:px-8 py-4">
+            <!-- Dashboard Header -->
+            <div class="flex justify-between items-center mb-8">
+                <div>
+                    <h1 class="text-3xl font-bold text-gray-900">Hotel Dashboard</h1>
+                    <p class="text-gray-600 mt-1">Welcome back, Hotel Manager. Here's what's happening today.</p>
+                </div>
+                <div class="flex space-x-4">
+                    <button onclick="refreshData()" 
+                            class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors flex items-center">
+                        <i class="fas fa-sync-alt mr-2"></i>
+                        Refresh
+                    </button>
+                    <button onclick="askLeonForInsights()" 
+                            class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors flex items-center">
+                        <i class="fas fa-robot mr-2"></i>
+                        Ask LEON
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Key Performance Indicators -->
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                <!-- Total Rooms -->
+                <div class="card p-6">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm font-medium text-gray-500 uppercase tracking-wide">Total Rooms</p>
+                            <p class="text-2xl font-bold text-gray-900 mt-2" id="total-rooms">-</p>
+                        </div>
+                        <div class="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center">
+                            <i class="fas fa-bed text-blue-600"></i>
+                        </div>
+                    </div>
+                    <div class="mt-4">
+                        <span class="text-sm text-gray-500">Across all properties</span>
+                    </div>
+                </div>
+                
+                <!-- Occupancy Rate -->
+                <div class="card p-6">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm font-medium text-gray-500 uppercase tracking-wide">Occupancy Rate</p>
+                            <p class="text-2xl font-bold text-gray-900 mt-2" id="occupancy-rate">-</p>
+                        </div>
+                        <div class="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
+                            <i class="fas fa-chart-line text-green-600"></i>
+                        </div>
+                    </div>
+                    <div class="mt-4">
+                        <span class="text-sm text-green-600" id="occupancy-trend">+2.5% from yesterday</span>
+                    </div>
+                </div>
+                
+                <!-- Today's Check-ins -->
+                <div class="card p-6">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm font-medium text-gray-500 uppercase tracking-wide">Today's Check-ins</p>
+                            <p class="text-2xl font-bold text-gray-900 mt-2" id="todays-checkins">-</p>
+                        </div>
+                        <div class="w-12 h-12 bg-yellow-100 rounded-lg flex items-center justify-center">
+                            <i class="fas fa-sign-in-alt text-yellow-600"></i>
+                        </div>
+                    </div>
+                    <div class="mt-4">
+                        <span class="text-sm text-gray-500" id="checkin-status">0 completed, 0 pending</span>
+                    </div>
+                </div>
+                
+                <!-- Revenue Today -->
+                <div class="card p-6">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm font-medium text-gray-500 uppercase tracking-wide">Revenue Today</p>
+                            <p class="text-2xl font-bold text-gray-900 mt-2" id="revenue-today">-</p>
+                        </div>
+                        <div class="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center">
+                            <i class="fas fa-dollar-sign text-purple-600"></i>
+                        </div>
+                    </div>
+                    <div class="mt-4">
+                        <span class="text-sm text-purple-600" id="revenue-trend">+15% from yesterday</span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Charts and Quick Actions Row -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+                <!-- Occupancy Chart -->
+                <div class="lg:col-span-2 card p-6">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="text-lg font-semibold text-gray-900">Occupancy Trend</h3>
+                        <select id="chart-period" class="border rounded-lg px-3 py-1 text-sm">
+                            <option value="7">Last 7 days</option>
+                            <option value="30">Last 30 days</option>
+                            <option value="90">Last 90 days</option>
+                        </select>
+                    </div>
+                    <div class="relative">
+                        <canvas id="occupancy-chart" height="200"></canvas>
+                    </div>
+                </div>
+                
+                <!-- Quick Actions -->
+                <div class="card p-6">
+                    <h3 class="text-lg font-semibold text-gray-900 mb-4">Quick Actions</h3>
+                    <div class="space-y-3">
+                        <a href="bookings.html" class="w-full bg-blue-50 hover:bg-blue-100 text-blue-700 font-medium py-3 px-4 rounded-lg transition-colors flex items-center">
+                            <i class="fas fa-plus mr-3"></i>
+                            New Booking
+                        </a>
+                        <a href="operations.html" class="w-full bg-green-50 hover:bg-green-100 text-green-700 font-medium py-3 px-4 rounded-lg transition-colors flex items-center">
+                            <i class="fas fa-sign-in-alt mr-3"></i>
+                            Check-in Guest
+                        </a>
+                        <a href="rooms.html" class="w-full bg-yellow-50 hover:bg-yellow-100 text-yellow-700 font-medium py-3 px-4 rounded-lg transition-colors flex items-center">
+                            <i class="fas fa-bed mr-3"></i>
+                            Update Room Status
+                        </a>
+                        <button onclick="reportMaintenance()" class="w-full bg-red-50 hover:bg-red-100 text-red-700 font-medium py-3 px-4 rounded-lg transition-colors flex items-center">
+                            <i class="fas fa-tools mr-3"></i>
+                            Report Maintenance
+                        </button>
+                        <button onclick="askLeonForInsights()" class="w-full bg-purple-50 hover:bg-purple-100 text-purple-700 font-medium py-3 px-4 rounded-lg transition-colors flex items-center">
+                            <i class="fas fa-robot mr-3"></i>
+                            Ask LEON
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Recent Activity and Room Status -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <!-- Recent Activity -->
+                <div class="card p-6">
+                    <h3 class="text-lg font-semibold text-gray-900 mb-4">Recent Activity</h3>
+                    <div class="space-y-4" id="recent-activity">
+                        <div class="flex items-center space-x-3">
+                            <div class="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
+                                <i class="fas fa-calendar-check text-blue-600 text-sm"></i>
+                            </div>
+                            <div class="flex-1">
+                                <p class="text-sm font-medium text-gray-900">New booking received</p>
+                                <p class="text-xs text-gray-500">5 minutes ago</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Room Status Summary -->
+                <div class="card p-6">
+                    <h3 class="text-lg font-semibold text-gray-900 mb-4">Room Status</h3>
+                    <div class="space-y-3" id="room-status-summary">
+                        <div class="flex justify-between items-center">
+                            <span class="text-sm text-gray-600">Available</span>
+                            <span class="text-sm font-medium text-green-600" id="available-count">-</span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span class="text-sm text-gray-600">Occupied</span>
+                            <span class="text-sm font-medium text-yellow-600" id="occupied-count">-</span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span class="text-sm text-gray-600">Maintenance</span>
+                            <span class="text-sm font-medium text-red-600" id="maintenance-count">-</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+        
+        <!-- LEON Chat will be loaded by leon-chat.js -->
+    </div>
+    
+    <!-- JavaScript -->
+    
+    <script src="js/components/dashboard.js?v=live2"></script>
+    <script>
+        // Remove all hotel selection and context logic
+        // Only use backend context-locked endpoints
+        document.addEventListener('DOMContentLoaded', () => {
+            dashboard = new DashboardComponent();
+        });
+        function refreshData() { if (window.dashboard) dashboard.refreshData(); }
+        function reportMaintenance() { if (window.dashboard) dashboard.reportMaintenance(); }
+        function askLeonForInsights() { if (window.dashboard) dashboard.askLeonForInsights(); }
+        // Remove checkAuthentication, updateUserProfile, loadOverviewStats, and related logic
+        // Remove any localStorage hotel context usage
+        // All user/hotel info should be displayed using backend context (e.g., dashboard.js fetches /api/hotels)
+    </script>
+</body>
+<script src="js/subpage-embed.js"></script>
+</html> 

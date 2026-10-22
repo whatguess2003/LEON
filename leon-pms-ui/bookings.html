@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Booking Management - LEON PMS</title>
+    
+    <!-- Modern CSS Framework -->
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Custom CSS -->
+    <link href="css/modern-pms.css" rel="stylesheet">
+    
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f9fafb;
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <!-- Main Application Container -->
+    <div id="app" class="min-h-screen">
+        <!-- Navigation Bar -->
+        <nav class="bg-white shadow-lg border-b border-gray-200">
+      <div class="w-full px-4 sm:px-6 lg:px-8">
+                <div class="flex justify-between items-center h-16">
+                    <div class="flex items-center">
+                        <div class="flex-shrink-0 flex items-center">
+                            <i class="fas fa-hotel text-2xl text-blue-600 mr-3"></i>
+                            <h1 class="text-xl font-bold text-gray-900">LEON PMS</h1>
+                        </div>
+                        <div class="ml-10 flex items-baseline space-x-4">
+                            <a href="index.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-home mr-2"></i>Home
+                            </a>
+                            <a href="dashboard.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-tachometer-alt mr-2"></i>Dashboard
+                            </a>
+                            <a href="rooms.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-bed mr-2"></i>Rooms
+                            </a>
+                            <a href="inventory.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-boxes mr-2"></i>Inventory
+                            </a>
+                            <a href="bookings.html" class="bg-blue-100 text-blue-700 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-calendar-check mr-2"></i>Bookings
+                            </a>
+                            <a href="guests.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-users mr-2"></i>Guests
+                            </a>
+                            <a href="operations.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-tasks mr-2"></i>Operations
+                            </a>
+                            <a href="analytics.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                <i class="fas fa-chart-line mr-2"></i>Analytics
+                            </a>
+                        </div>
+                    </div>
+                    
+                    <div class="flex items-center space-x-4">
+                        <div class="flex items-center space-x-2">
+                            <div class="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
+                            <span class="text-sm text-gray-600">LEON Online</span>
+                        </div>
+                        <div class="flex items-center space-x-3">
+                            <div class="w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center">
+                                <i class="fas fa-user text-white text-sm"></i>
+                            </div>
+                            <span class="text-sm font-medium text-gray-900">Hotel Manager</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </nav>
+        
+        <!-- Main Content Area -->
+    <main class="w-full px-4 sm:px-6 lg:px-8 py-4">
+            <!-- Booking Header -->
+            <div class="flex justify-between items-center mb-6">
+                <div>
+                    <h1 class="text-3xl font-bold text-gray-900">Booking Management</h1>
+                    <p class="text-gray-600 mt-1">Manage reservations, check-ins, and guest assignments</p>
+                    <div id="hotel-context-info" class="mt-2 text-sm text-blue-600 bg-blue-50 px-3 py-1 rounded-full inline-block">
+                        <i class="fas fa-hotel mr-1"></i>
+                        Loading hotel context...
+                    </div>
+                </div>
+                <div class="flex space-x-3">
+                    <button onclick="showGroupBookingModal()" 
+                            class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors flex items-center">
+                        <i class="fas fa-plus mr-2"></i>
+                        Create Booking
+                    </button>
+                    <button onclick="showCheckInModal()" 
+                            class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors flex items-center">
+                        <i class="fas fa-sign-in-alt mr-2"></i>
+                        Check-in
+                    </button>
+                    <button onclick="askLeonAboutBookings()" 
+                            class="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 transition-colors flex items-center">
+                        <i class="fas fa-robot mr-2"></i>
+                        Ask LEON
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Booking Summary Cards -->
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+                <div class="card p-6">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm font-medium text-gray-500 uppercase tracking-wide">Today's Arrivals</p>
+                            <p class="text-2xl font-bold text-gray-900 mt-2" id="todays-arrivals">-</p>
+                        </div>
+                        <div class="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
+                            <i class="fas fa-sign-in-alt text-green-600"></i>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card p-6">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm font-medium text-gray-500 uppercase tracking-wide">Today's Departures</p>
+                            <p class="text-2xl font-bold text-gray-900 mt-2" id="todays-departures">-</p>
+                        </div>
+                        <div class="w-12 h-12 bg-red-100 rounded-lg flex items-center justify-center">
+                            <i class="fas fa-sign-out-alt text-red-600"></i>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card p-6">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm font-medium text-gray-500 uppercase tracking-wide">Total Bookings</p>
+                            <p class="text-2xl font-bold text-gray-900 mt-2" id="total-bookings">-</p>
+                        </div>
+                        <div class="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center">
+                            <i class="fas fa-calendar-check text-blue-600"></i>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card p-6">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm font-medium text-gray-500 uppercase tracking-wide">Pending Payments</p>
+                            <p class="text-2xl font-bold text-gray-900 mt-2" id="pending-payments">-</p>
+                        </div>
+                        <div class="w-12 h-12 bg-yellow-100 rounded-lg flex items-center justify-center">
+                            <i class="fas fa-credit-card text-yellow-600"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Booking Calendar and Filters -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+                <!-- Calendar -->
+                <div class="lg:col-span-2 card p-6">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="text-lg font-semibold text-gray-900">Booking Calendar</h3>
+                        <div class="flex items-center space-x-2">
+                            <button onclick="previousMonth()" class="p-2 hover:bg-gray-100 rounded">
+                                <i class="fas fa-chevron-left"></i>
+                            </button>
+                            <span id="calendar-month" class="text-sm font-medium px-4">January 2024</span>
+                            <button onclick="nextMonth()" class="p-2 hover:bg-gray-100 rounded">
+                                <i class="fas fa-chevron-right"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div id="booking-calendar" class="calendar-grid">
+                        <!-- Calendar will be populated here -->
+                    </div>
+                </div>
+                
+                <!-- Filters -->
+                <div class="card p-6">
+                    <h3 class="text-lg font-semibold text-gray-900 mb-4">Filters</h3>
+                    <div class="space-y-4">
+                        <div class="flex items-center space-x-2">
+                            <input type="checkbox" id="show-cancelled" class="h-4 w-4">
+                            <label for="show-cancelled" class="text-sm font-medium text-gray-700">Show cancelled bookings</label>
+                        </div>
+                        
+                        <div>
+                            <label class="text-sm font-medium text-gray-700">Date Range</label>
+                            <input type="date" id="date-from" class="mt-1 w-full border rounded-lg px-3 py-2">
+                            <input type="date" id="date-to" class="mt-1 w-full border rounded-lg px-3 py-2">
+                        </div>
+                        
+                        <div>
+                            <label class="text-sm font-medium text-gray-700">Guest Name</label>
+                            <input type="text" id="guest-search" placeholder="Search by guest name..." 
+                                   class="mt-1 w-full border rounded-lg px-3 py-2">
+                        </div>
+                        <div>
+                            <select id="room-type-filter" class="mt-1 w-full border rounded-lg px-3 py-2"></select>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Booking List -->
+            <div class="card p-6">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="text-lg font-semibold text-gray-900">All Bookings</h3>
+                    <div class="flex items-center space-x-2">
+                        <button onclick="refreshBookings()" 
+                                class="bg-gray-100 text-gray-600 px-3 py-1 rounded-lg hover:bg-gray-200 transition-colors">
+                            <i class="fas fa-refresh mr-1"></i>
+                            Refresh
+                        </button>
+                        <button onclick="exportBookings()" 
+                                class="bg-gray-100 text-gray-600 px-3 py-1 rounded-lg hover:bg-gray-200 transition-colors">
+                            <i class="fas fa-download mr-1"></i>
+                            Export
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="overflow-x-auto">
+                    <table class="w-full">
+                        <thead>
+                            <tr class="border-b">
+                                <th class="text-left py-3 px-4 font-semibold text-gray-900">Guest Name</th>
+                                <th class="text-left py-3 px-4 font-semibold text-gray-900">Channel</th>
+                                <th class="text-left py-3 px-4 font-semibold text-gray-900">Room Type</th>
+                                <th class="text-left py-3 px-4 font-semibold text-gray-900">Rooms</th>
+                                <th class="text-left py-3 px-4 font-semibold text-gray-900">Check-in</th>
+                                <th class="text-left py-3 px-4 font-semibold text-gray-900">Check-out</th>
+                                <th class="text-left py-3 px-4 font-semibold text-gray-900">Status</th>
+                                <th class="text-left py-3 px-4 font-semibold text-gray-900">Amount</th>
+                                <th class="text-left py-3 px-4 font-semibold text-gray-900"></th>
+                            </tr>
+                        </thead>
+                        <tbody id="bookings-table">
+                            <tr>
+                                <td colspan="9" class="text-center py-8 text-gray-500">
+                                    <i class="fas fa-spinner fa-spin text-2xl mb-2"></i>
+                                    <p>Loading bookings...</p>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </main>
+        
+        <!-- Edit Booking Modal -->
+        <div id="edit-booking-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+            <div class="bg-white rounded-lg p-6 w-full max-w-2xl">
+                <div class="flex justify-between items-center mb-4">
+                    <div class="flex items-center gap-3">
+                        <h3 class="text-lg font-semibold">Edit Booking</h3>
+                        <span id="eb-status" class="status-badge"></span>
+                    </div>
+                    <button onclick="bookingManager.hideEditBookingModal()" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
+                </div>
+                <div id="eb-cancel-alert" class="hidden bg-red-50 text-red-700 border border-red-200 rounded px-3 py-2 text-sm mb-3">
+                    This process is irreversible. Are you sure you want to cancel this booking?
+                    <div class="mt-2 flex gap-2">
+                        <button onclick="bookingManager.confirmCancelBooking()" class="bg-red-600 text-white px-3 py-1 rounded hover:bg-red-700">PROCEED TO CANCEL BOOKING</button>
+                        <button onclick="bookingManager.dismissCancelAlert()" class="bg-gray-100 text-gray-700 px-3 py-1 rounded hover:bg-gray-200">DO NOT CANCEL BOOKING</button>
+                    </div>
+                </div>
+                <div class="grid grid-cols-1 gap-3 text-sm">
+                    <div>
+                        <label class="block text-gray-700 mb-1">Booking ID</label>
+                        <input type="text" id="eb-booking-id" class="border rounded px-3 py-2 w-full bg-gray-100" disabled />
+                    </div>
+                    <div class="grid grid-cols-2 gap-2">
+                        <div>
+                            <label class="block text-gray-700 mb-1">Check-in</label>
+                            <input type="date" id="eb-checkin" class="border rounded px-3 py-2 w-full" />
+                        </div>
+                        <div>
+                            <label class="block text-gray-700 mb-1">Check-out</label>
+                            <input type="date" id="eb-checkout" class="border rounded px-3 py-2 w-full" />
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-gray-700 mb-1">Stay Dates (auto-derived)</label>
+                        <div id="eb-staydates" class="border rounded px-3 py-2 w-full max-h-40 overflow-y-auto space-y-1"></div>
+                    </div>
+                    <div>
+                        <label class="block text-gray-700 mb-1">Room Type</label>
+                        <select id="eb-room-type" class="border rounded px-3 py-2 w-full"></select>
+                    </div>
+                    <div>
+                        <label class="block text-gray-700 mb-1">Channel</label>
+                        <select id="eb-channel" class="border rounded px-3 py-2 w-full bg-gray-100" disabled>
+                            <option value="PMS">PMS</option>
+                            <option value="AGODA">Agoda</option>
+                            <option value="BOOKING.COM">Booking.com</option>
+                            <option value="CTRIP">Ctrip</option>
+                            <option value="TRAVELOKA">Traveloka</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-gray-700 mb-1">Rooms</label>
+                        <select id="eb-rooms" class="border rounded px-3 py-2 w-full"></select>
+                        <div id="eb-availability-hint" class="text-xs text-gray-500 mt-1"></div>
+                    </div>
+                    <div>
+                        <label class="block text-gray-700 mb-1">Notes</label>
+                        <textarea id="eb-notes" class="border rounded px-3 py-2 w-full" rows="3" placeholder="Optional"></textarea>
+                    </div>
+                    <div class="flex justify-end gap-2 mt-2">
+                        <button id="eb-cancel-btn" onclick="bookingManager.showCancelAlert()" class="hidden bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700">Cancel Booking</button>
+                        <button onclick="bookingManager.hideEditBookingModal()" class="bg-gray-200 text-gray-800 px-4 py-2 rounded hover:bg-gray-300">Close</button>
+                        <button id="eb-save-btn" onclick="bookingManager.submitEditBooking()" class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700">Save</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- New Booking Modal -->
+        <div id="new-booking-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+            <div class="bg-white rounded-lg p-6 w-full max-w-xl">
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="text-lg font-semibold">Create Booking</h3>
+                    <button onclick="bookingManager.hideNewBookingModal()" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                    <div class="md:col-span-2">
+                        <label class="block text-gray-700 mb-1">Guest Phone</label>
+                        <div class="flex gap-2">
+                            <input id="nb-guest-phone" class="border rounded px-3 py-2 w-full" placeholder="+60123456789" />
+                            <button onclick="bookingManager.loadGuestProfile()" class="bg-blue-600 text-white px-3 py-2 rounded hover:bg-blue-700 transition-colors">Load Profile</button>
+                        </div>
+                        <div class="flex items-start gap-2 mt-1">
+                            <div id="nb-guest-status" class="flex-1 text-xs text-gray-700 border border-gray-200 rounded p-1.5 whitespace-pre-line max-h-28 overflow-y-auto">please load profile first</div>
+                            <button id="nb-new-guest-btn" type="button" onclick="bookingManager.showCreateGuestModal()" class="hidden shrink-0 bg-green-600 text-white px-3 py-2 rounded hover:bg-green-700">Create Guest</button>
+                        </div>
+                    </div>
+                    <div class="md:col-span-2">
+                        <label class="block text-gray-700 mb-1">Room Type</label>
+                        <select id="nb-room-type" class="border rounded px-3 py-2 w-full"></select>
+                    </div>
+                    <div>
+                        <label class="block text-gray-700 mb-1">Check-in (first stay date)</label>
+                        <input id="nb-checkin" type="date" class="border rounded px-3 py-2 w-full" />
+                    </div>
+                    <div>
+                        <label class="block text-gray-700 mb-1">Check-out (last night exclusive)</label>
+                        <input id="nb-checkout" type="date" class="border rounded px-3 py-2 w-full" />
+                    </div>
+                    <div class="md:col-span-2">
+                        <label class="block text-gray-700 mb-1">Stay Dates (auto-derived)</label>
+                        <div id="nb-staydates" class="space-y-2 border border-gray-200 rounded p-2 max-h-40 overflow-y-auto">
+                            <!-- derived stay_date rows will be injected here -->
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-gray-700 mb-1">Rooms</label>
+                        <select id="nb-rooms" class="border rounded px-3 py-2 w-full"></select>
+                        <div id="nb-availability-hint" class="text-xs text-gray-500 mt-1"></div>
+                    </div>
+                    <div class="md:col-span-2">
+                        <label class="block text-gray-700 mb-1">Notes (optional)</label>
+                        <input id="nb-notes" class="border rounded px-3 py-2 w-full" placeholder="Late check-in, high floor..." />
+                    </div>
+                </div>
+                <div class="flex justify-end space-x-2 mt-4">
+                    <button onclick="bookingManager.hideNewBookingModal()" class="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700">Cancel</button>
+                    <button id="nb-create-btn" onclick="bookingManager.submitNewBooking()" class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700" disabled>Create</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="group-booking-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+            <div class="bg-white rounded-lg p-6 w-full max-w-2xl max-h-screen overflow-y-auto">
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="text-lg font-semibold">Create Booking</h3>
+                    <button onclick="bookingManager.hideGroupBookingModal()" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                    <div class="md:col-span-2">
+                        <label class="block text-gray-700 mb-1">Guest Phone</label>
+                        <div class="flex gap-2">
+                            <input id="gb-guest-phone" class="border rounded px-3 py-2 w-full" placeholder="+60123456789" />
+                            <button onclick="bookingManager.loadGroupGuest()" class="bg-blue-600 text-white px-3 py-2 rounded hover:bg-blue-700">Load Profile</button>
+                        </div>
+                        <div class="flex items-start gap-2 mt-1">
+                            <div id="gb-guest-status" class="flex-1 text-xs text-gray-700 border border-gray-200 rounded p-1.5 whitespace-pre-line max-h-28 overflow-y-auto">please load profile first</div>
+                            <button id="gb-new-guest-btn" type="button" onclick="bookingManager.showCreateGuestModal()" class="hidden shrink-0 bg-green-600 text-white px-3 py-2 rounded hover:bg-green-700">Create Guest</button>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-gray-700 mb-1">Check-in (first stay date)</label>
+                        <input id="gb-checkin" type="date" class="border rounded px-3 py-2 w-full" />
+                    </div>
+                    <div>
+                        <label class="block text-gray-700 mb-1">Check-out (last night exclusive)</label>
+                        <input id="gb-checkout" type="date" class="border rounded px-3 py-2 w-full" />
+                    </div>
+                    <div class="md:col-span-2">
+                        <label class="block text-gray-700 mb-1">Stay Dates (auto-derived)</label>
+                        <div id="gb-staydates" class="space-y-2 border border-gray-200 rounded p-2 max-h-40 overflow-y-auto"></div>
+                    </div>
+                    <div class="md:col-span-2">
+                        <div class="flex justify-between items-center mb-1">
+                            <label class="block text-gray-700">Room Types</label>
+                            <button type="button" onclick="bookingManager.addGroupLine()" class="text-xs bg-blue-600 text-white px-2 py-1 rounded hover:bg-blue-700">Add room type</button>
+                        </div>
+                        <div id="gb-lines" class="space-y-2"></div>
+                        <div id="gb-total" class="text-sm text-green-600 mt-2"></div>
+                    </div>
+                    <div class="md:col-span-2">
+                        <label class="block text-gray-700 mb-1">Notes (optional)</label>
+                        <input id="gb-notes" class="border rounded px-3 py-2 w-full" />
+                    </div>
+                </div>
+                <div class="flex justify-end space-x-2 mt-4">
+                    <button onclick="bookingManager.hideGroupBookingModal()" class="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700">Cancel</button>
+                    <button id="gb-create-btn" onclick="bookingManager.submitGroupBooking()" class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700" disabled>Create</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="create-guest-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden" style="z-index: 80;">
+            <div class="bg-white rounded-lg p-6 w-full max-w-md">
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="text-lg font-semibold">Create Guest Profile</h3>
+                    <button onclick="bookingManager.hideCreateGuestModal()" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
+                </div>
+                <div class="grid grid-cols-1 gap-3 text-sm">
+                    <div>
+                        <label class="block text-gray-700 mb-1">Guest Phone</label>
+                        <input id="cg-phone" class="border rounded px-3 py-2 w-full" placeholder="+60123456789" />
+                    </div>
+                    <div>
+                        <label class="block text-gray-700 mb-1">Guest Name</label>
+                        <input id="cg-name" class="border rounded px-3 py-2 w-full" placeholder="FULL NAME" />
+                    </div>
+                    <div>
+                        <label class="block text-gray-700 mb-1">Email (optional)</label>
+                        <input id="cg-email" class="border rounded px-3 py-2 w-full" placeholder="name@example.com" />
+                    </div>
+                    <div>
+                        <label class="block text-gray-700 mb-1">Nationality (optional)</label>
+                        <input id="cg-nation" class="border rounded px-3 py-2 w-full" placeholder="MALAYSIA" />
+                    </div>
+                    <div id="cg-status" class="text-xs text-gray-500"></div>
+                </div>
+                <div class="flex justify-end space-x-2 mt-4">
+                    <button onclick="bookingManager.hideCreateGuestModal()" class="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700">Cancel</button>
+                    <button onclick="bookingManager.submitCreateGuest()" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">Create Guest</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- LEON Chat will be loaded by leon-chat.js -->
+    </div>
+    
+    <!-- JavaScript -->
+    
+    <script src="js/components/bookings.js?v=createpms"></script>
+    <script>
+        // Initialize booking management
+        let bookingManager;
+        
+        document.addEventListener('DOMContentLoaded', () => {
+            bookingManager = new BookingComponent();
+            window.bookingManager = bookingManager;
+        });
+        
+        // Global functions for UI interactions
+        function previousMonth() {
+            if (bookingManager) {
+                bookingManager.previousMonth();
+            }
+        }
+        
+        function nextMonth() {
+            if (bookingManager) {
+                bookingManager.nextMonth();
+            }
+        }
+        
+        function applyFilters() {
+            if (bookingManager) {
+                bookingManager.applyFilters();
+            }
+        }
+        
+        function refreshBookings() {
+            if (bookingManager) {
+                bookingManager.loadBookings().then(() => {
+                    bookingManager.updateSummaryCards();
+                    bookingManager.renderCalendar();
+                    bookingManager.renderBookingsTable();
+                });
+            }
+        }
+        
+        function selectDate(dateStr) {
+            document.getElementById('date-from').value = dateStr;
+            document.getElementById('date-to').value = dateStr;
+            applyFilters();
+        }
+        
+        function viewBooking(bookingId) {
+            editBooking(bookingId);
+        }
+        
+        function editBooking(bookingId) {
+            if (window.bookingManager && typeof window.bookingManager.showEditBookingModal === 'function') {
+                window.bookingManager.showEditBookingModal(bookingId);
+            }
+        }
+        
+        async function checkInGuest(bookingId, assignmentId) {
+            const api = (location.hostname === 'localhost' || location.hostname === '127.0.0.1') ? 'http://localhost:8002/api' : 'https://api.inap.ai/api';
+            const me = await fetch(api + '/auth/me', { credentials: 'include' });
+            const who = me.ok ? await me.json() : {};
+            const body = { hotel_name: String(who.hotel_name || '').toUpperCase(), booking_id: bookingId, notes: '' };
+            if (assignmentId) body.assignment_id = assignmentId;
+            const resp = await fetch(api + '/assignments/check_in', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify(body)
+            });
+            const data = await resp.json();
+            if (data.assignments && data.assignments.length) {
+                const lines = data.assignments.map(a => a.room_number + '  ' + a.assignment_id).join('\n');
+                const pick = window.prompt('Check in one room:\n' + lines);
+                if (!pick) return;
+                const chosen = data.assignments.find(a => String(a.room_number).toUpperCase() === String(pick).trim().toUpperCase() || String(a.assignment_id).toUpperCase() === String(pick).trim().toUpperCase());
+                if (!chosen) { alert('Choose one listed room'); return; }
+                return checkInGuest(bookingId, chosen.assignment_id);
+            }
+            if (!resp.ok || data.error) { alert(data.error || 'Check-in failed'); return; }
+            alert(data.result || 'Checked in');
+            refreshBookings();
+        }
+        
+        function showNewBookingModal() {
+            if (window.bookingManager && typeof window.bookingManager.showNewBookingModal === 'function') {
+                window.bookingManager.showNewBookingModal();
+            }
+        }
+
+        function showGroupBookingModal() {
+            if (window.bookingManager && typeof window.bookingManager.showGroupBookingModal === 'function') {
+                window.bookingManager.showGroupBookingModal();
+            }
+        }
+        
+        function showCheckInModal() {
+            const today = new Date();
+            const iso = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0');
+            const due = (bookingManager && bookingManager.bookings || []).filter(b => String(b.check_in || '').slice(0, 10) === iso && String(b.status || '').toLowerCase() !== 'cancelled');
+            if (!due.length) { alert('No arrivals today'); return; }
+            const lines = due.map(b => b.id + '  ' + (b.guest_name || b.guest_phone));
+            const picked = window.prompt('Arrival to check in:\n' + lines.join('\n'), due[0].id);
+            if (picked) checkInGuest(picked);
+        }
+        
+        function askLeonAboutBookings() {
+            if (leonChat) {
+                leonChat.toggleChat();
+                setTimeout(() => {
+                    const chatInput = document.getElementById('chat-input');
+                    if (chatInput) {
+                        chatInput.value = 'Show me booking insights and help me manage reservations';
+                        leonChat.sendMessage();
+                    }
+                }, 500);
+            }
+        }
+        
+        function exportBookings() {
+            const rows = (bookingManager && bookingManager.filteredBookings) || [];
+            const lines = ['booking_id,guest,phone,channel,room_type,check_in,check_out,status,amount'].concat(rows.map(b => [b.id, b.guest_name, b.guest_phone, b.channel, b.room_number, b.check_in, b.check_out, b.status, b.amount].join(',')));
+            const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'bookings.csv';
+            a.click();
+        }
+    </script>
+</body>
+<script src="js/subpage-embed.js"></script>

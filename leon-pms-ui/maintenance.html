@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Maintenance - LEON PMS</title>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+</head>
+<body class="bg-gray-50">
+  <main class="w-full px-4 sm:px-6 lg:px-8 py-4">
+    <h1 class="text-3xl font-bold text-gray-900 mb-1">Maintenance</h1>
+    <div id="mnt-hotel-name" class="text-sm text-gray-600 mb-3">Hotel: -</div>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4 items-start">
+      <div class="md:col-span-2">
+        <div class="bg-white border rounded p-3">
+          <div class="text-sm font-semibold mb-2">On-Going Requests</div>
+          <div id="mnt-list" class="text-sm whitespace-pre-wrap font-mono bg-gray-50 p-2 rounded border max-h-64 md:max-h-80 overflow-y-auto">Loading...</div>
+        </div>
+      </div>
+      <div>
+        <label class="block text-sm font-semibold mb-1">Room filter</label>
+        <input id="room-search" class="border rounded px-2 py-1 text-sm w-full mb-1" placeholder="Type to filter..." />
+        <select id="mnt-room" class="border rounded px-2 py-1 text-sm w-full mb-3" size="6"></select>
+        <label class="block text-xs text-gray-600 mb-1">Sort by</label>
+        <select id="mnt-sort" class="border rounded px-2 py-1 text-sm w-full mb-2">
+          <option value="recent">Most Recent</option>
+          <option value="oldest">Oldest</option>
+          <option value="urgency">Urgency</option>
+        </select>
+        <label class="block text-xs text-gray-600 mb-1">Filter by status</label>
+        <select id="mnt-status" class="border rounded px-2 py-1 text-sm w-full mb-2">
+          <option value="ALL">ALL</option>
+          <option value="REPORTED">REPORTED</option>
+          <option value="ASSIGNED">ASSIGNED</option>
+          <option value="IN_PROGRESS">IN_PROGRESS</option>
+          <option value="ON_HOLD">ON_HOLD</option>
+        </select>
+        <label class="block text-xs text-gray-600 mb-1">Filter by urgency</label>
+        <select id="mnt-urgency" class="border rounded px-2 py-1 text-sm w-full">
+          <option value="ALL">ALL</option>
+          <option value="URGENT">URGENT</option>
+          <option value="HIGH">HIGH</option>
+          <option value="NORMAL">NORMAL</option>
+          <option value="LOW">LOW</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="mt-6 bg-white border rounded p-3">
+      <div class="text-sm font-semibold mb-2">Update Progress</div>
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-3 items-start">
+        <div>
+          <label class="block text-xs text-gray-600 mb-1">Task ID</label>
+          <select id="upd-task" class="border rounded px-2 py-1 text-sm w-full" size="6"></select>
+        </div>
+        <div>
+          <div>
+            <label class="block text-xs text-gray-600 mb-1">Status</label>
+            <select id="upd-status" class="border rounded px-2 py-1 text-sm w-full">
+              <option value="ASSIGNED">ASSIGNED</option>
+              <option value="IN_PROGRESS">IN_PROGRESS</option>
+              <option value="COMPLETED">COMPLETED</option>
+              <option value="ON_HOLD">ON_HOLD</option>
+              <option value="CANCELLED">CANCELLED</option>
+            </select>
+            <label class="block text-xs text-gray-600 mb-1 mt-2">Assign to (staff phone)</label>
+            <input id="upd-assign-to" class="border rounded px-2 py-1 text-sm w-full" placeholder="+60123456789" />
+            <button id="upd-send" class="mt-2 bg-indigo-600 text-white px-4 py-2 rounded"><i class="fas fa-save mr-2"></i>Update</button>
+          </div>
+        </div>
+        <div>
+          <label class="block text-xs text-gray-600 mb-1">Progress notes (optional)</label>
+          <textarea id="upd-notes" class="border rounded px-2 py-1 text-sm w-full" rows="5" placeholder="Progress notes"></textarea>
+        </div>
+        <div>
+          <label class="block text-xs text-gray-600 mb-1">Resolution (if completed)</label>
+          <textarea id="upd-resolution" class="border rounded px-2 py-1 text-sm w-full" rows="5" placeholder="Resolution details"></textarea>
+        </div>
+      </div>
+    </div>
+
+    <div class="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="bg-white border rounded p-3">
+        <div class="text-sm font-semibold mb-2">Completed Requests</div>
+        <div id="mnt-completed" class="text-sm whitespace-pre-wrap font-mono bg-gray-50 p-2 rounded border max-h-32 md:max-h-40 overflow-y-auto">No completed requests.</div>
+      </div>
+      <div class="bg-white border rounded p-3">
+        <div class="text-sm font-semibold mb-2">Cancelled Requests</div>
+        <div id="mnt-cancelled" class="text-sm whitespace-pre-wrap font-mono bg-gray-50 p-2 rounded border max-h-32 md:max-h-40 overflow-y-auto">No cancelled requests.</div>
+      </div>
+    </div>
+
+    <!-- Scheduled Maintenance -->
+    <div class="mt-6 bg-white border rounded p-3">
+      <div class="mb-1 text-sm font-semibold">Scheduled Maintenance</div>
+      <div class="flex items-center gap-2 mb-2">
+        <button id="sched-refresh" class="px-3 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded border"><i class="fas fa-rotate"></i></button>
+        <button id="sched-add" class="px-3 py-1 text-xs bg-indigo-600 text-white rounded"><i class="fas fa-plus mr-1"></i>Add</button>
+        <label class="inline-flex items-center text-xs text-gray-600"><input id="sched-show-inactive" type="checkbox" class="mr-1" />Show Inactive</label>
+      </div>
+      <div id="mnt-schedules" class="text-sm whitespace-pre-wrap font-mono bg-gray-50 p-2 rounded border max-h-64 md:max-h-80 overflow-y-auto">
+        No schedules.
+      </div>
+    </div>
+
+    <!-- Scheduled Maintenance Modal -->
+    <div id="sched-modal" class="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50 hidden">
+      <div class="bg-white rounded-lg p-4 w-full">
+        <div class="flex items-center justify-between mb-2">
+          <div class="text-sm font-semibold">Scheduled Maintenance</div>
+          <button id="sched-close" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs text-gray-600 mb-1">Target (Room Number)</label>
+            <input id="sch-room" class="border rounded px-2 py-1 text-sm w-full" placeholder="101" />
+          </div>
+          <div>
+            <label class="block text-xs text-gray-600 mb-1">Target (Area)</label>
+            <input id="sch-area" class="border rounded px-2 py-1 text-sm w-full" placeholder="LOBBY / PUMPROOM" />
+          </div>
+          <div>
+            <label class="block text-xs text-gray-600 mb-1">Issue</label>
+            <input id="sch-issue" class="border rounded px-2 py-1 text-sm w-full" placeholder="SERVICE AC" />
+          </div>
+          <div>
+            <label class="block text-xs text-gray-600 mb-1">Urgency</label>
+            <select id="sch-urgency" class="border rounded px-2 py-1 text-sm w-full">
+              <option value="NORMAL">NORMAL</option>
+              <option value="LOW">LOW</option>
+              <option value="HIGH">HIGH</option>
+              <option value="URGENT">URGENT</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs text-gray-600 mb-1">Interval (days)</label>
+            <input id="sch-interval" type="number" min="1" class="border rounded px-2 py-1 text-sm w-full" value="90" />
+          </div>
+          <div>
+            <label class="block text-xs text-gray-600 mb-1">Start Date (YYYY-MM-DD)</label>
+            <input id="sch-start" class="border rounded px-2 py-1 text-sm w-full" placeholder="2025-01-01" />
+          </div>
+          <div>
+            <label class="block text-xs text-gray-600 mb-1">Preferred Window</label>
+            <input id="sch-window" class="border rounded px-2 py-1 text-sm w-full" placeholder="Mon-Fri, 2-5pm" />
+          </div>
+          <div class="flex items-center mt-5">
+            <input id="sch-ooo" type="checkbox" class="mr-2" />
+            <label for="sch-ooo" class="text-xs text-gray-600">Auto Out-of-Order</label>
+          </div>
+          <div class="flex items-center mt-5">
+            <input id="sch-active" type="checkbox" class="mr-2" checked />
+            <label for="sch-active" class="text-xs text-gray-600">Active</label>
+          </div>
+        </div>
+        <div class="flex justify-end space-x-2 mt-4">
+          <button id="sched-save" class="bg-indigo-600 text-white px-4 py-2 rounded"><i class="fas fa-save mr-1"></i>Save</button>
+        </div>
+        <input type="hidden" id="sch-id" />
+      </div>
+    </div>
+  </main>
+  <script src="js/components/maintenance.js"></script>
+  <script>
+    // Minimal modal builder for Scheduled Maintenance (placeholder UI hooks)
+  </script>
+</body>
+</html>

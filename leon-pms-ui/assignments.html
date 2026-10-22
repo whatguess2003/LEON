@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Stay View - LEON PMS</title>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+  <link href="css/modern-pms.css" rel="stylesheet">
+</head>
+<body class="bg-gray-50">
+  <div id="app" class="min-h-screen">
+    <nav class="bg-white shadow-lg border-b border-gray-200">
+      <div class="w-full px-4 sm:px-6 lg:px-8">
+        <div class="flex justify-between items-center h-16">
+          <div class="flex items-center">
+            <div class="flex-shrink-0 flex items-center">
+              <i class="fas fa-calendar-days text-2xl text-blue-600 mr-3"></i>
+              <h1 class="text-xl font-bold text-gray-900">LEON PMS</h1>
+            </div>
+          </div>
+          <div class="hidden md:block">
+            <div class="ml-10 flex items-baseline space-x-4">
+              <a href="index.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                <i class="fas fa-home mr-2"></i>Home
+              </a>
+              <a href="dashboard.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                <i class="fas fa-tachometer-alt mr-2"></i>Dashboard
+              </a>
+              <a href="rooms.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                <i class="fas fa-bed mr-2"></i>Rooms
+              </a>
+              <a href="housekeeping.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                <i class="fas fa-broom mr-2"></i>Housekeeping
+              </a>
+              <a href="bookings.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                <i class="fas fa-calendar-check mr-2"></i>Bookings
+              </a>
+              <a href="assignments.html" class="bg-blue-100 text-blue-700 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                <i class="fas fa-calendar-days mr-2"></i>Stay View
+              </a>
+              <a href="analytics.html" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                <i class="fas fa-chart-line mr-2"></i>Analytics
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </nav>
+
+    <main class="w-full px-4 sm:px-6 lg:px-8 py-4">
+      <div class="mb-4">
+        <h1 class="text-2xl font-bold text-gray-900">Stay View</h1>
+        <p class="text-gray-600 mt-1">Drag a stay onto a room. Click a night to edit that stay.</p>
+      </div>
+      <div id="date-tools" class="hidden">
+        <input id="start" type="date" class="border border-gray-300 rounded px-2 py-1 text-sm" />
+        <input id="end" type="date" class="border border-gray-300 rounded px-2 py-1 text-sm" />
+        <button id="today" class="bg-blue-600 text-white px-3 py-1 rounded text-sm hover:bg-blue-700">Today</button>
+        <button id="range7" class="bg-white text-gray-800 border border-gray-300 px-3 py-1 rounded text-sm hover:bg-gray-100">7 days</button>
+        <button id="range14" class="bg-white text-gray-800 border border-gray-300 px-3 py-1 rounded text-sm hover:bg-gray-100">14 days</button>
+        <button id="bulk-checkout-past" class="bg-red-600 text-white px-3 py-1 rounded text-sm hover:bg-red-700" title="Set all past stays to departed">Bulk Check-out Past</button>
+      </div>
+
+      <div id="calendar" class="overflow-auto bg-white border rounded w-full" style="min-height: calc(100vh - 180px);"></div>
+      <!-- Bulk Checkout Modal -->
+      <div id="bulk-checkout-modal" class="fixed inset-0 bg-black bg-opacity-40 hidden items-center justify-center z-50">
+        <div class="bg-white w-full max-w-3xl rounded-lg shadow-lg p-4">
+          <div class="flex items-center justify-between mb-3">
+            <h2 class="text-lg font-semibold">Bulk Check-out Past Stays</h2>
+            <button id="bulk-close" class="text-gray-500 hover:text-gray-800"><i class="fas fa-times"></i></button>
+          </div>
+          <div class="mb-3 text-sm text-gray-600">Select the stays to mark as departed (stay_date before yesterday).</div>
+          <div class="border rounded max-h-80 overflow-y-auto">
+            <table class="min-w-full text-sm">
+              <thead class="bg-gray-100">
+                <tr>
+                  <th class="p-2"><input type="checkbox" id="bulk-select-all" /></th>
+                  <th class="p-2 text-left">Check-in Date</th>
+                  <th class="p-2 text-left">Check-out Date</th>
+                  <th class="p-2 text-left">Booking</th>
+                  <th class="p-2 text-left">Guest</th>
+                  <th class="p-2 text-left">Status</th>
+                </tr>
+              </thead>
+              <tbody id="bulk-tbody"></tbody>
+            </table>
+          </div>
+          <div class="mt-4 flex justify-end gap-2">
+            <button id="bulk-cancel" class="px-3 py-2 rounded bg-gray-200 text-gray-800 hover:bg-gray-300">Cancel</button>
+            <button id="bulk-confirm" class="px-3 py-2 rounded bg-red-600 text-white hover:bg-red-700">Confirm Check-out</button>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+        <div id="new-booking-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden" style="z-index: 10000;">
+            <div class="bg-white rounded-lg p-6 w-full max-w-xl">
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="text-lg font-semibold">Create Booking</h3>
+                    <button onclick="bookingManager.hideNewBookingModal()" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
+                </div>
+                <div id="create-guest-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden" style="z-index: 10001;">
+                    <div class="bg-white rounded-lg p-6 w-full max-w-md">
+                        <div class="flex justify-between items-center mb-4">
+                            <h3 class="text-lg font-semibold">Create Guest Profile</h3>
+                            <button onclick="bookingManager.hideCreateGuestModal()" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
+                        </div>
+                        <div class="grid grid-cols-1 gap-3 text-sm">
+                            <div>
+                                <label class="block text-gray-700 mb-1">Guest Phone</label>
+                                <input id="cg-phone" class="border rounded px-3 py-2 w-full" placeholder="+60123456789" />
+                            </div>
+                            <div>
+                                <label class="block text-gray-700 mb-1">Guest Name</label>
+                                <input id="cg-name" class="border rounded px-3 py-2 w-full" placeholder="FULL NAME" />
+                            </div>
+                            <div>
+                                <label class="block text-gray-700 mb-1">Email (optional)</label>
+                                <input id="cg-email" class="border rounded px-3 py-2 w-full" placeholder="name@example.com" />
+                            </div>
+                            <div>
+                                <label class="block text-gray-700 mb-1">Nationality (optional)</label>
+                                <input id="cg-nation" class="border rounded px-3 py-2 w-full" placeholder="MALAYSIA" />
+                            </div>
+                            <div id="cg-status" class="text-xs text-gray-500"></div>
+                        </div>
+                        <div class="flex justify-end space-x-2 mt-4">
+                            <button onclick="bookingManager.hideCreateGuestModal()" class="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700">Cancel</button>
+                            <button onclick="bookingManager.submitCreateGuest()" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">Create Guest</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                    <div class="md:col-span-2">
+                        <label class="block text-gray-700 mb-1">Guest Phone</label>
+                        <div class="flex gap-2">
+                            <input id="nb-guest-phone" class="border rounded px-3 py-2 w-full" placeholder="+60123456789" />
+                            <button onclick="bookingManager.loadGuestProfile()" class="bg-blue-600 text-white px-3 py-2 rounded hover:bg-blue-700 transition-colors">Load Profile</button>
+                        </div>
+                        <div class="flex items-start gap-2 mt-1">
+                            <div id="nb-guest-status" class="flex-1 text-xs text-gray-700 border border-gray-200 rounded p-1.5 whitespace-pre-line max-h-28 overflow-y-auto">please load profile first</div>
+                            <button id="nb-new-guest-btn" type="button" onclick="bookingManager.showCreateGuestModal()" class="hidden shrink-0 bg-green-600 text-white px-3 py-2 rounded hover:bg-green-700">Create Guest</button>
+                        </div>
+                    </div>
+                    <div class="md:col-span-2">
+                        <label class="block text-gray-700 mb-1">Room Type</label>
+                        <select id="nb-room-type" class="border rounded px-3 py-2 w-full"></select>
+                    </div>
+                    <div>
+                        <label class="block text-gray-700 mb-1">Check-in (first stay date)</label>
+                        <input id="nb-checkin" type="date" class="border rounded px-3 py-2 w-full" />
+                    </div>
+                    <div>
+                        <label class="block text-gray-700 mb-1">Check-out (last night exclusive)</label>
+                        <input id="nb-checkout" type="date" class="border rounded px-3 py-2 w-full" />
+                    </div>
+                    <div class="md:col-span-2">
+                        <label class="block text-gray-700 mb-1">Stay Dates (auto-derived)</label>
+                        <div id="nb-staydates" class="space-y-2 border border-gray-200 rounded p-2 max-h-40 overflow-y-auto"></div>
+                    </div>
+                    <div>
+                        <label class="block text-gray-700 mb-1">Rooms</label>
+                        <select id="nb-rooms" class="border rounded px-3 py-2 w-full"></select>
+                        <div id="nb-availability-hint" class="text-xs text-gray-500 mt-1"></div>
+                    </div>
+                    <div class="md:col-span-2">
+                        <label class="block text-gray-700 mb-1">Notes (optional)</label>
+                        <input id="nb-notes" class="border rounded px-3 py-2 w-full" placeholder="Late check-in, high floor..." />
+                    </div>
+                </div>
+                <div class="flex justify-end space-x-2 mt-4">
+                    <button onclick="bookingManager.hideNewBookingModal()" class="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700">Cancel</button>
+                    <button id="nb-create-btn" onclick="bookingManager.submitNewBooking()" class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700" disabled>Create</button>
+                </div>
+            </div>
+        </div>
+
+  <script src="js/data/countries_iso3166.js"></script>
+  <script src="js/components/bookings.js?v=createpms"></script>
+  <script src="js/components/assignments_calendar.js?v=verifyphone"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      if (!window.bookingManager && document.getElementById('new-booking-modal')) {
+        window.bookingManager = new BookingComponent();
+      }
+    });
+  </script>
+  <script src="js/subpage-embed.js"></script>
+  <script src="js/pms-app.js"></script>
+</body>
+</html>
+
+
