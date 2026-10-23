@@ -432,6 +432,18 @@ async def get_languages():
         return JSONResponse(content={"items": [{"code": "en", "name": "English"}] , "error": str(e)}, status_code=200)
 
 
+def _auth_cookie_attrs(req: Request) -> dict:
+    host = req.headers.get("host", "") if req else ""
+    local = ("localhost" in host) or ("127.0.0.1" in host)
+    return {"secure": not local, "samesite": "lax" if local else "none"}
+
+
+def _partition_cross_site_cookies(response: JSONResponse) -> None:
+    for index, (key, value) in enumerate(response.raw_headers):
+        if key.lower() == b"set-cookie" and b"samesite=none" in value.lower() and b"partitioned" not in value.lower():
+            response.raw_headers[index] = (key, value + b"; Partitioned")
+
+
 # Authentication endpoints
 @app.post("/api/auth/signup", response_model=AuthResponse)
 async def signup_endpoint(request: SignupRequest):
@@ -493,15 +505,12 @@ async def signin_endpoint(request: SigninRequest, req: Request):
                 "role": result.get('role'),
                 "auth_method": result.get('auth_method')
             })
-            # Detect if running on localhost for secure cookie
-            host = req.headers.get('host', '') if req else ''
-            is_local = 'localhost' in host or '127.0.0.1' in host
+            cookie_attrs = _auth_cookie_attrs(req)
             response.set_cookie(
                 key="leon_jwt",
                 value=result['token'],
                 httponly=True,
-                secure=not is_local,  # False for localhost, True for production
-                samesite="Lax"
+                **cookie_attrs
             )
             # Also set a readable hotel cookie for frontend defaulting
             try:
@@ -512,11 +521,11 @@ async def signin_endpoint(request: SigninRequest, req: Request):
                         key="leon_hotel",
                         value=safe_hn,
                         httponly=False,
-                        secure=not is_local,
-                        samesite="Lax"
+                        **cookie_attrs
                     )
             except Exception:
                 pass
+            _partition_cross_site_cookies(response)
             # Register timezone immediately so subsequent writes have hotel tz ready
             try:
                 _get_tz_from_jwt(result['token'])
@@ -544,27 +553,24 @@ async def logout_endpoint(req: Request):
     """Clear auth cookies and end session."""
     try:
         response = JSONResponse(content={"success": True, "message": "Logged out"})
-        # Mirror cookie attributes used in signin
-        host = req.headers.get('host', '') if req else ''
-        is_local = 'localhost' in host or '127.0.0.1' in host
+        cookie_attrs = _auth_cookie_attrs(req)
         response.set_cookie(
             key="leon_jwt",
             value="",
             httponly=True,
-            secure=not is_local,
-            samesite="Lax",
             max_age=0,
-            expires=0
+            expires=0,
+            **cookie_attrs
         )
         response.set_cookie(
             key="leon_hotel",
             value="",
             httponly=False,
-            secure=not is_local,
-            samesite="Lax",
             max_age=0,
-            expires=0
+            expires=0,
+            **cookie_attrs
         )
+        _partition_cross_site_cookies(response)
         return response
     except Exception as e:
         return JSONResponse(content={"success": False, "message": str(e)}, status_code=500)
