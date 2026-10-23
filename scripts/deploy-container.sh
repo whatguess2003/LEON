@@ -33,6 +33,7 @@ if docker pull "$CACHE"; then
 fi
 DOCKER_BUILDKIT=1 docker build \
   --platform linux/amd64 \
+  --network host \
   --build-arg BUILDKIT_INLINE_CACHE=1 \
   $CACHE_FROM \
   -f "$DOCKERFILE" \
