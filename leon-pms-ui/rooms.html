@@ -334,18 +334,20 @@
                     e.preventDefault();
                     const room_type = document.getElementById('crt-room-type').value.trim();
                     const room_numbers = Array.from(document.querySelectorAll('#crt-room-numbers .crt-room-number')).map(input => input.value.trim().toUpperCase());
-                    const hotelCookie = document.cookie.split(';').map(part => part.trim()).find(part => part.startsWith('leon_hotel='));
-                    const hotelName = hotelCookie ? decodeURIComponent(hotelCookie.split('=').slice(1).join('=')) : '';
                     const apiBase = (location.hostname==='localhost'||location.hostname==='127.0.0.1')?'http://localhost:8002/api':'https://api.inap.ai/api';
                     try {
                         if (!room_type || room_numbers.some(number => !number)) { throw new Error('Room number is required'); }
                         const seen = {};
                         room_numbers.forEach(number => { if (seen[number]) { throw new Error('Room number ' + number + ' is already used'); } seen[number] = true; });
+                        const me = await fetch(`${apiBase}/auth/me`, { credentials: 'include' });
+                        const session = me.ok ? await me.json() : {};
+                        const hotelName = String(session.hotel_name || '').trim();
+                        if (!hotelName) { throw new Error('Sign in again'); }
                         // show loading banner
                         try { const s=document.getElementById('crt-status'); const sp=document.getElementById('crt-spinner'); const t=document.getElementById('crt-status-text'); if(s&&sp&&t){ s.classList.remove('hidden'); sp.classList.remove('hidden'); t.textContent='PROCESSING...'; t.classList.remove('text-green-700'); t.classList.add('text-blue-700'); } } catch(_){ }
                         const res = await fetch(`${apiBase}/rooms/types/create`, {
                             method: 'POST', headers: {'Content-Type':'application/json'}, credentials: 'include',
-                            body: JSON.stringify({ hotel_name: hotelName, manager_name: 'SYSTEM', room_type, specifications: {}, room_numbers })
+                            body: JSON.stringify({ hotel_name: hotelName, room_type, specifications: {}, room_numbers })
                         });
                         const out = await res.json();
                         if (!res.ok || (out && out.error)) { throw new Error(out?.error || 'Create failed'); }
