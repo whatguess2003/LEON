@@ -19,14 +19,23 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
-        path = self.path.split("?", 1)[0]
-        if path == "/health":
-            self._send(200, '{"status":"healthy","leon_initialized":false}')
-            return
         self._send(503, '{"error":"starting"}')
 
     def do_POST(self):
         self._send(503, '{"error":"starting"}')
+
+    def do_OPTIONS(self):
+        origin = self.headers.get("Origin") or ""
+        self.send_response(204)
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Credentials", "true")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+            requested = self.headers.get("Access-Control-Request-Headers") or "content-type"
+            self.send_header("Access-Control-Allow-Headers", requested)
+            self.send_header("Vary", "Origin")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def log_message(self, fmt, *args):
         print("entry " + (fmt % args), flush=True)
