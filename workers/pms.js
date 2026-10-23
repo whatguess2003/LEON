@@ -91,7 +91,11 @@ export class PmsService extends DurableObject {
     const responseHeaders = new Headers(upstream.headers);
     const setCookies = typeof upstream.headers.getSetCookie === "function" ? upstream.headers.getSetCookie() : [];
     for (const setCookie of setCookies) responseHeaders.append("set-cookie", setCookie);
-    return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers: responseHeaders });
+    responseHeaders.delete("content-length");
+    responseHeaders.delete("content-encoding");
+    responseHeaders.delete("transfer-encoding");
+    const body = await upstream.arrayBuffer();
+    return new Response(body, { status: upstream.status, statusText: upstream.statusText, headers: responseHeaders });
   }
 
   async startAndWait() {
