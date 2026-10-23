@@ -134,6 +134,7 @@ def signup_manager(data: Dict[str, Any]) -> Dict[str, Any]:
             data['manager_phone'] = phone
         except Exception:
             return {"success": False, "message": "Invalid phone number"}
+        data['hotel_name'] = str(data.get('hotel_name') or '').strip().upper()
         
         # Check if any of the 3 primary authenticators already exist
         existing_phone = manager_col.find_one({"manager_phone": data['manager_phone']})

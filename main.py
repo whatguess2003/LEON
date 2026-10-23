@@ -34,15 +34,26 @@ try:
     from openai import OpenAI as _OpenAI
 except Exception:
     _OpenAI = None
-def _get_tz_from_jwt(token: str) -> str:
+def _jwt_payload(token: str):
     try:
         if not token:
             return None
         JWT_SECRET = os.getenv('JWT_SECRET', 'dev-secret')
-        payload = _pyjwt.decode(token, JWT_SECRET, algorithms=['HS256'])
-        return payload.get('hotel_timezone')
+        return _pyjwt.decode(token, JWT_SECRET, algorithms=['HS256'])
     except Exception:
         return None
+
+def _get_tz_from_jwt(token: str) -> str:
+    payload = _jwt_payload(token)
+    if not payload:
+        return None
+    return payload.get('hotel_timezone')
+
+def _hotel_from_jwt(token: str) -> str:
+    payload = _jwt_payload(token)
+    if not payload:
+        return ""
+    return str(payload.get('hotel_name') or "").strip().upper()
 # ZoneInfo not used in server; hotel timezone is obtained from JWT and applied downstream
 
 load_dotenv(override=True)
@@ -940,7 +951,7 @@ async def get_hotels(leon_jwt: str = Cookie(None)):
 
 # Place this static endpoint BEFORE any /api/hotels/{hotel_id} or similar dynamic endpoints
 @app.get("/api/hotels/rooms")
-async def get_hotel_rooms(hotel_name: str = Query(""), room_type: str = Query("")):
+async def get_hotel_rooms(hotel_name: str = Query(""), room_type: str = Query(""), leon_jwt: str = Cookie(None)):
     """Get room portfolio for a hotel using room_manager (structured)."""
     try:
         # Normalize hotel_name: strip quotes and URL-decoding
@@ -949,6 +960,10 @@ async def get_hotel_rooms(hotel_name: str = Query(""), room_type: str = Query(""
             clean_hotel = urllib.parse.unquote(clean_hotel)
         except Exception:
             pass
+        if not clean_hotel:
+            clean_hotel = _hotel_from_jwt(leon_jwt)
+        if not clean_hotel:
+            return JSONResponse(content={"hotel_name": "", "room_types": []})
         result = room_manager.read_room_portfolio(
             hotel_name=(clean_hotel or "").upper(),
             room_type=room_type or None,
@@ -1527,6 +1542,8 @@ async def get_assignments_calendar(
             clean_hotel = urllib.parse.unquote(clean_hotel)
         except Exception:
             pass
+        if not clean_hotel:
+            clean_hotel = _hotel_from_jwt(leon_jwt)
         # Optionally set per-request timezone override from JWT if present
         prev_tz_env = None
         try:

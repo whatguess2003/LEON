@@ -60,7 +60,8 @@ def get_hotel_timezone_str(hotel_name: str) -> str:
     if name_upper in _tz_cache:
         return _tz_cache[name_upper]
     found = _lookup_hotel_timezone(hotel_name)
-    _tz_cache[name_upper] = found
+    if found:
+        _tz_cache[name_upper] = found
     return found
 
 
