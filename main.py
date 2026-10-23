@@ -142,6 +142,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def _bearer_session(request: Request, call_next):
+    authorization = request.headers.get("authorization", "")
+    marker = "bearer "
+    if authorization.lower().startswith(marker) and "leon_jwt" not in request.cookies:
+        token = authorization[len(marker):].strip()
+        if token:
+            headers = [(key, value) for key, value in request.scope["headers"] if key.lower() != b"cookie"]
+            existing = request.headers.get("cookie", "")
+            cookie = (existing + "; leon_jwt=" + token) if existing else ("leon_jwt=" + token)
+            headers.append((b"cookie", cookie.encode("latin-1")))
+            request.scope["headers"] = headers
+    return await call_next(request)
+
 # Request/Response models
 class ChatRequest(BaseModel):
     message: str
@@ -514,13 +528,15 @@ async def signin_endpoint(request: SigninRequest, req: Request):
                 "manager_name": result.get('manager_name'),
                 "hotel_name": result.get('hotel_name'),
                 "role": result.get('role'),
-                "auth_method": result.get('auth_method')
+                "auth_method": result.get('auth_method'),
+                "token": result['token']
             })
             cookie_attrs = _auth_cookie_attrs(req)
             response.set_cookie(
                 key="leon_jwt",
                 value=result['token'],
                 httponly=True,
+                max_age=7 * 24 * 3600,
                 **cookie_attrs
             )
             # Also set a readable hotel cookie for frontend defaulting
