@@ -46,11 +46,9 @@ async function probe(port) {
   if (!response.ok) throw new Error("Health check returned " + response.status);
 }
 
-const STARTUP_MS = 90 * 1000;
-
 async function waitHealthy(container) {
   let lastError;
-  for (let attempt = 0; attempt < 45; attempt++) {
+  for (let attempt = 0; attempt < 60; attempt++) {
     try {
       if (!container.running) throw new Error("container is not running");
       await probe(container.getTcpPort(PORT));
@@ -62,14 +60,6 @@ async function waitHealthy(container) {
     }
   }
   throw new Error("PMS container did not become ready: " + errorText(lastError), { cause: lastError });
-}
-
-async function stopContainer(container) {
-  try {
-    if (container.running) await container.destroy();
-  } catch (error) {
-    console.log("container destroy", errorText(error));
-  }
 }
 
 export class PmsContainer extends DurableObject {
@@ -105,38 +95,16 @@ export class PmsService extends DurableObject {
 
   async startAndWait() {
     const container = this.ctx.container;
-    if (container.running) {
-      try {
-        await probe(container.getTcpPort(PORT));
-        await container.setInactivityTimeout(IDLE_MS);
-        return;
-      } catch (error) {
-        const startedAt = await this.ctx.storage.get("containerStartedAt");
-        const age = typeof startedAt === "number" ? Date.now() - startedAt : STARTUP_MS;
-        if (age < STARTUP_MS) {
-          await container.setInactivityTimeout(IDLE_MS);
-          await waitHealthy(container);
-          return;
-        }
-        console.log("replacing container", errorText(error));
-        await stopContainer(container);
-      }
+    if (!container.running) {
+      const env = passedEnv(this.env);
+      console.log("starting container", Object.keys(env).join(","));
+      container.start({
+        enableInternet: true,
+        env,
+      });
     }
-    const env = passedEnv(this.env);
-    console.log("starting container", Object.keys(env).join(","));
-    container.start({
-      enableInternet: true,
-      env,
-    });
-    await this.ctx.storage.put("containerStartedAt", Date.now());
     await container.setInactivityTimeout(IDLE_MS);
-    try {
-      await waitHealthy(container);
-    } catch (error) {
-      await this.ctx.storage.delete("containerStartedAt");
-      await stopContainer(container);
-      throw error;
-    }
+    await waitHealthy(container);
   }
 }
 
