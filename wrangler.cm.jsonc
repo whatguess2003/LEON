@@ -42,7 +42,7 @@
     }
   },
   "vars": {
-    "FRONTEND_ORIGINS": "https://inap.ai,https://leon.whatguess2003.workers.dev,https://static.whatguess2003.workers.dev",
+    "FRONTEND_ORIGINS": "https://inap.ai,https://leon.whatguess2003.workers.dev,https://static.whatguess2003.workers.dev,https://beta.inap.ai",
     "AIOSSELL_PARTNER_ID": "sample-pms"
   },
   "triggers": {
