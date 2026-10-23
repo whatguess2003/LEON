@@ -301,10 +301,72 @@ def accept_pms_booking(body: dict) -> dict:
     return {"success": True, "reservation": stored}
 
 
+def record_aiosell_reservation(hotel_name: str, payload: dict, outcome: dict) -> None:
+    """Write one Aiosell reservation onto the reservation-out list."""
+    from booking_system.aiosell_reservation import _guest_name, _guest_phone, _stay_day
+
+    booking_id = str((payload or {}).get("bookingId") or "").strip()
+    hotel = str(hotel_name or "").strip().upper()
+    if not hotel or not booking_id:
+        return
+    action = str((payload or {}).get("action") or "").strip().lower()
+    status = "cancelled" if action == "cancel" else ("confirmed" if outcome.get("success") else "rejected")
+    phone = _guest_phone(payload)
+    guest_name = _guest_name(payload)
+    room_type = ""
+    if outcome.get("success"):
+        with booking_manager.postgres_lock:
+            booking_manager._clear_transaction()
+            cur = booking_manager.postgres_conn.cursor()
+            try:
+                cur.execute(
+                    "SELECT room_type FROM room_bookings WHERE hotel_name = %s AND booking_id = %s",
+                    (hotel, booking_id),
+                )
+                found = cur.fetchone()
+                room_type = str(found[0] or "") if found else ""
+            finally:
+                cur.close()
+                booking_manager._safe_rollback()
+    store_reservation(
+        hotel,
+        booking_id,
+        "AIOSSELL",
+        "reservation_out",
+        action or "book",
+        phone,
+        guest_name,
+        room_type,
+        _day(_stay_day((payload or {}).get("checkin"))),
+        _day(_stay_day((payload or {}).get("checkout"))),
+        status,
+        str(outcome.get("message") or ""),
+    )
+
+
+def accept_webhook(payload: dict) -> dict:
+    """Apply one reservation Aiosell posts, then store it. Inventory push stays with this call."""
+    from booking_system.aiosell_reservation import handle_reservation, _hotel_name, _push_stay_dates
+
+    body = payload if isinstance(payload, dict) else {}
+    outcome = handle_reservation(body, push=False)
+    public = {"success": bool(outcome.get("success")), "message": str(outcome.get("message") or "")}
+    booking_manager._ensure_postgres_connection()
+    db = booking_manager.mongo_db
+    hotel_name = ""
+    if db is not None:
+        hotel_name, _error = _hotel_name(db, str(body.get("hotelCode") or "").strip())
+    if hotel_name:
+        record_aiosell_reservation(hotel_name, body, outcome)
+        if outcome.get("success"):
+            _push_stay_dates(hotel_name, outcome.get("stay_dates") or [])
+    return public
+
+
 def sync_hotel(hotel_name: str) -> dict:
     """Pull Aiosell into the stored list. A failed pull keeps the rows already stored."""
     from aiosell_channel_manager import fetch_reservations, hotel_code_for
-    from booking_system.aiosell_reservation import handle_reservation, _guest_name, _guest_phone, _push_stay_dates, _stay_day
+    from booking_system.aiosell_reservation import handle_reservation, _push_stay_dates
 
     hotel_code = hotel_code_for(hotel_name)
     today = datetime.now().date()
@@ -325,44 +387,7 @@ def sync_hotel(hotel_name: str) -> dict:
     stay_dates = []
     for item in incoming:
         outcome = handle_reservation(item, push=False)
-        booking_id = str(item.get("bookingId") or "").strip()
-        if not booking_id:
-            continue
-        action = str(item.get("action") or "").strip().lower()
-        status = "cancelled" if action == "cancel" else ("confirmed" if outcome.get("success") else "rejected")
-        checkin = _day(_stay_day(item.get("checkin")))
-        checkout = _day(_stay_day(item.get("checkout")))
-        phone = _guest_phone(item)
-        guest_name = _guest_name(item)
-        room_type = ""
-        if outcome.get("success"):
-            with booking_manager.postgres_lock:
-                booking_manager._clear_transaction()
-                cur = booking_manager.postgres_conn.cursor()
-                try:
-                    cur.execute(
-                        "SELECT room_type FROM room_bookings WHERE hotel_name = %s AND booking_id = %s",
-                        (hotel_name, booking_id),
-                    )
-                    found = cur.fetchone()
-                    room_type = str(found[0] or "") if found else ""
-                finally:
-                    cur.close()
-                    booking_manager._safe_rollback()
-        store_reservation(
-            hotel_name,
-            booking_id,
-            "AIOSSELL",
-            "reservation_out",
-            action or "book",
-            phone,
-            guest_name,
-            room_type,
-            checkin,
-            checkout,
-            status,
-            str(outcome.get("message") or ""),
-        )
+        record_aiosell_reservation(hotel_name, item, outcome)
         for day in outcome.get("stay_dates") or []:
             text = str(day)[:10]
             if text and text not in stay_dates:

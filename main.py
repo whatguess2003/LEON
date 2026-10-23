@@ -1117,7 +1117,8 @@ def _stay_dates_for_booking(hotel: str, booking_id: str) -> list:
 @app.post("/update_reservation")
 async def update_reservation(request: Request):
     """Aiosell book, modify, and cancel. The body is the full reservation state."""
-    from booking_system.aiosell_reservation import authorize_basic, handle_reservation
+    from booking_system.aiosell_reservation import authorize_basic
+    from booking_system.channel_reservations import accept_webhook
     denied = authorize_basic(request.headers.get("authorization"))
     if denied:
         status = 401 if denied == "Unauthorized" or denied.startswith("Aiosell credentials") else 400
@@ -1127,7 +1128,7 @@ async def update_reservation(request: Request):
     except Exception:
         return JSONResponse(content={"success": False, "message": "Invalid reservation payload"}, status_code=400)
     logging.info("Aiosell reservation action=%s bookingId=%s hotelCode=%s", (payload or {}).get("action"), (payload or {}).get("bookingId"), (payload or {}).get("hotelCode"))
-    result = handle_reservation(payload if isinstance(payload, dict) else {})
+    result = await run_in_threadpool(accept_webhook, payload if isinstance(payload, dict) else {})
     public = {"success": bool(result.get("success")), "message": str(result.get("message") or "")}
     if not public["success"]:
         return JSONResponse(content=public, status_code=400)

@@ -174,7 +174,7 @@
     intro.className = 'px-4 py-3 text-sm text-gray-700';
     intro.textContent = inbound
       ? 'Bookings created in the PMS are reservation in to the channel manager.'
-      : 'The channel manager keeps this list and refreshes it from Aiosell every 300 seconds.';
+      : 'Aiosell posts book, modify, and cancel to https://api.inap.ai/update_reservation. This list is what was stored.';
     panel.appendChild(intro);
     var status = document.createElement('div');
     status.className = 'px-4 pb-3 text-sm text-gray-600';
