@@ -348,30 +348,28 @@ class RoomManager:
         Returns:
             bool: Success status
         """
+        conn = None
         try:
             conn = self._get_postgresql_connection()
             cursor = conn.cursor()
-            # Create per-night inventory records for the next 365 days
             start_date = datetime.now(timezone.utc).date()
-            for i in range(365):
-                stay_date = start_date + timedelta(days=i)
-                cursor.execute("""
-                    INSERT INTO room_inventory_nightly 
-                    (hotel_name, room_type, stay_date, total_inventory, blocked_quantity, updated_at, created_by, updated_by)
-                    VALUES (%s, %s, %s, 0, 0, CURRENT_TIMESTAMP, %s, %s)
-                    ON CONFLICT (hotel_name, room_type, stay_date) DO UPDATE SET
-                        updated_by = EXCLUDED.updated_by;
-                """, (canonical_key(hotel_name), canonical_key(room_type), canonical_key(stay_date), manager_name, manager_name))
-            # Optionally, still create daily_pricing records for the next 365 days
-            for i in range(365):
-                stay_date = start_date + timedelta(days=i)
-                cursor.execute("""
-                    INSERT INTO daily_pricing 
-                    (hotel_name, room_type, stay_date, base_price, updated_at, created_by, updated_by)
-                    VALUES (%s, %s, %s, 0.00, CURRENT_TIMESTAMP, %s, %s)
-                    ON CONFLICT (hotel_name, room_type, stay_date) DO UPDATE SET
-                        updated_by = EXCLUDED.updated_by;
-                """, (canonical_key(hotel_name), canonical_key(room_type), canonical_key(stay_date), manager_name, manager_name))
+            hotel = canonical_key(hotel_name)
+            rtype = canonical_key(room_type)
+            nights = [(hotel, rtype, start_date + timedelta(days=i), manager_name, manager_name) for i in range(365)]
+            execute_values(cursor, """
+                INSERT INTO room_inventory_nightly
+                (hotel_name, room_type, stay_date, total_inventory, blocked_quantity, updated_at, created_by, updated_by)
+                VALUES %s
+                ON CONFLICT (hotel_name, room_type, stay_date) DO UPDATE SET
+                    updated_by = EXCLUDED.updated_by
+            """, nights, template="(%s, %s, %s, 0, 0, CURRENT_TIMESTAMP, %s, %s)", page_size=365)
+            execute_values(cursor, """
+                INSERT INTO daily_pricing
+                (hotel_name, room_type, stay_date, base_price, updated_at, created_by, updated_by)
+                VALUES %s
+                ON CONFLICT (hotel_name, room_type, stay_date) DO UPDATE SET
+                    updated_by = EXCLUDED.updated_by
+            """, nights, template="(%s, %s, %s, 0.00, CURRENT_TIMESTAMP, %s, %s)", page_size=365)
             conn.commit()
             cursor.close()
             conn.close()
