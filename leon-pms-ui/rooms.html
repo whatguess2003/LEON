@@ -165,7 +165,7 @@
     
     <!-- JavaScript -->
     
-    <script src="js/components/rooms.js?v=editroomno"></script>
+    <script src="js/components/rooms.js?v=refresh"></script>
     <script>
         // Initialize rooms management
         let roomsManager;
@@ -349,9 +349,9 @@
                         });
                         const out = await res.json();
                         if (!res.ok || (out && out.error)) { throw new Error(out?.error || 'Create failed'); }
-                        // trigger full refresh and reopen modal with success banner
-                        try { sessionStorage.setItem('rooms_reopen_modal', 'create_room_type_success'); } catch(_) {}
-                        window.location.reload();
+                        try { const s=document.getElementById('crt-status'); const sp=document.getElementById('crt-spinner'); const t=document.getElementById('crt-status-text'); if(s&&sp&&t){ s.classList.remove('hidden'); sp.classList.add('hidden'); t.textContent='UPDATE SUCCESSFUL'; t.classList.remove('text-blue-700'); t.classList.add('text-green-700'); } } catch(_){ }
+                        if (window.rooms && window.rooms.loadRoomsData) await window.rooms.loadRoomsData();
+                        document.getElementById('manage-room-types-modal').classList.add('hidden');
                     } catch(err) {
                         try { const s=document.getElementById('crt-status'); const sp=document.getElementById('crt-spinner'); const t=document.getElementById('crt-status-text'); if(s&&sp&&t){ s.classList.remove('hidden'); sp.classList.add('hidden'); t.textContent=('ERROR: '+err.message).toUpperCase(); t.classList.remove('text-blue-700'); t.classList.add('text-red-700'); } } catch(_){ }
                     }

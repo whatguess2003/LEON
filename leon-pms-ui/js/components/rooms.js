@@ -1300,7 +1300,8 @@ class RoomsComponent {
             });
             const out = await res.json();
             if (!res.ok || (out && out.error)) throw new Error(out?.error || 'Remove failed');
-            window.location.reload();
+            await this.loadRoomsData();
+            this.showNotification('Room removed', 'success');
         } catch (err) {
             this.showNotification(err.message, 'error');
         }
@@ -1387,22 +1388,25 @@ class RoomsComponent {
                     const renamedOut = await renamedRes.json();
                     if (!renamedRes.ok || (renamedOut && renamedOut.error)) { throw new Error(renamedOut?.error || 'Save failed'); }
                 }
-                if (!room_numbers.length) {
-                    try { sessionStorage.setItem('rooms_reopen_modal', 'add_room_success'); } catch(_) {}
-                    window.location.reload();
-                    return;
+                if (room_numbers.length) {
+                    const addedRes = await fetch(`${this.apiBase}/rooms/add`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
+                        body: JSON.stringify({ hotel_name: hotelName, room_type, room_numbers })
+                    });
+                    const addedOut = await addedRes.json();
+                    if (!addedRes.ok || (addedOut && addedOut.error)) { throw new Error(addedOut?.error || 'Add room failed'); }
                 }
-                const addedRes = await fetch(`${this.apiBase}/rooms/add`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    credentials: 'include',
-                    body: JSON.stringify({ hotel_name: hotelName, room_type, room_numbers })
-                });
-                const addedOut = await addedRes.json();
-                if (!addedRes.ok || (addedOut && addedOut.error)) { throw new Error(addedOut?.error || 'Add room failed'); }
-                // Full refresh while keeping modal static after reload
-                try { sessionStorage.setItem('rooms_reopen_modal', 'add_room_success'); } catch(_) {}
-                window.location.reload();
+                try {
+                    const s = document.getElementById('add-room-status');
+                    const t = document.getElementById('add-room-status-text');
+                    const sp = document.getElementById('add-room-spinner');
+                    if (s && t && sp) { s.classList.remove('hidden'); sp.classList.add('hidden'); t.textContent = 'UPDATE SUCCESSFUL'; t.classList.remove('text-blue-700'); t.classList.add('text-green-700'); }
+                } catch(_) {}
+                await this.loadRoomsData();
+                document.getElementById('add-room-modal').classList.add('hidden');
+                this.showNotification('Room updated', 'success');
             } catch (err) {
                 try {
                     const s = document.getElementById('add-room-status');
