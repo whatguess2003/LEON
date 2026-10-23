@@ -8,7 +8,7 @@
   },
   "containers": [
     {
-      "class_name": "cm_CmService",
+      "class_name": "CmService",
       "scheduling_policy": "default",
       "image": "./Dockerfile.cm",
       "instance_type": "standard-1",
@@ -19,7 +19,7 @@
     "bindings": [
       {
         "name": "CM",
-        "class_name": "cm_CmService"
+        "class_name": "CmService"
       }
     ]
   },
