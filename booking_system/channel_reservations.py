@@ -345,8 +345,8 @@ def record_aiosell_reservation(hotel_name: str, payload: dict, outcome: dict) ->
 
 
 def accept_webhook(payload: dict) -> dict:
-    """Apply one reservation Aiosell posts, then store it. Inventory push stays with this call."""
-    from booking_system.aiosell_reservation import handle_reservation, _hotel_name, _push_stay_dates
+    """Apply one reservation Aiosell posts and store it. The caller answers Aiosell before any inventory push."""
+    from booking_system.aiosell_reservation import handle_reservation, _hotel_name
 
     body = payload if isinstance(payload, dict) else {}
     outcome = handle_reservation(body, push=False)
@@ -358,8 +358,8 @@ def accept_webhook(payload: dict) -> dict:
         hotel_name, _error = _hotel_name(db, str(body.get("hotelCode") or "").strip())
     if hotel_name:
         record_aiosell_reservation(hotel_name, body, outcome)
-        if outcome.get("success"):
-            _push_stay_dates(hotel_name, outcome.get("stay_dates") or [])
+        public["hotel_name"] = hotel_name
+        public["stay_dates"] = list(outcome.get("stay_dates") or [])
     return public
 
 

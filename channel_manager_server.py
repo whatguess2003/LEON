@@ -6,7 +6,7 @@ import os
 
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import Body, FastAPI, Query, Request
+from fastapi import BackgroundTasks, Body, FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
@@ -118,7 +118,7 @@ def push_reservation_in(payload: dict = Body(...)):
 
 
 @app.post("/update_reservation")
-async def update_reservation(request: Request):
+async def update_reservation(request: Request, background_tasks: BackgroundTasks):
     """Aiosell posts book, modify, and cancel here. Basic auth uses the Aiosell username and password."""
     from booking_system.aiosell_reservation import authorize_basic
     from booking_system.channel_reservations import accept_webhook
@@ -132,6 +132,9 @@ async def update_reservation(request: Request):
         return JSONResponse(content={"success": False, "message": "Invalid reservation payload"}, status_code=400)
     logging.info("Aiosell webhook action=%s bookingId=%s hotelCode=%s", (payload or {}).get("action"), (payload or {}).get("bookingId"), (payload or {}).get("hotelCode"))
     result = await run_in_threadpool(accept_webhook, payload if isinstance(payload, dict) else {})
+    if result.get("success") and result.get("hotel_name"):
+        from aiosell_channel_manager import push_dates
+        background_tasks.add_task(push_dates, result["hotel_name"], list(result.get("stay_dates") or []))
     public = {"success": bool(result.get("success")), "message": str(result.get("message") or "")}
     if not public["success"]:
         return JSONResponse(content=public, status_code=400)

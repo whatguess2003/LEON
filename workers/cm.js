@@ -62,7 +62,8 @@ export class CmService extends DurableObject {
   }
 
   async fetch(request) {
-    this.starting ??= this.startAndWait().finally(() => {
+    const webhook = new URL(request.url).pathname === "/update_reservation";
+    this.starting ??= this.startAndWait(webhook).finally(() => {
       this.starting = undefined;
     });
     await this.starting;
@@ -74,7 +75,7 @@ export class CmService extends DurableObject {
     return this.ctx.container.getTcpPort(PORT).fetch(forwarded);
   }
 
-  async startAndWait() {
+  async startAndWait(webhook) {
     const container = this.ctx.container;
     if (!container.running) {
       container.start({
@@ -83,7 +84,7 @@ export class CmService extends DurableObject {
       });
     }
     await container.setInactivityTimeout(IDLE_MS);
-    await waitHealthy(container);
+    if (!webhook) await waitHealthy(container);
   }
 }
 

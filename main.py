@@ -9,7 +9,7 @@ import os
 import sys
 import json
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, Body, Query, Cookie
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body, Query, Cookie
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -1115,7 +1115,7 @@ def _stay_dates_for_booking(hotel: str, booking_id: str) -> list:
     return days
 
 @app.post("/update_reservation")
-async def update_reservation(request: Request):
+async def update_reservation(request: Request, background_tasks: BackgroundTasks):
     """Aiosell book, modify, and cancel. The body is the full reservation state."""
     from booking_system.aiosell_reservation import authorize_basic
     from booking_system.channel_reservations import accept_webhook
@@ -1129,6 +1129,9 @@ async def update_reservation(request: Request):
         return JSONResponse(content={"success": False, "message": "Invalid reservation payload"}, status_code=400)
     logging.info("Aiosell reservation action=%s bookingId=%s hotelCode=%s", (payload or {}).get("action"), (payload or {}).get("bookingId"), (payload or {}).get("hotelCode"))
     result = await run_in_threadpool(accept_webhook, payload if isinstance(payload, dict) else {})
+    if result.get("success") and result.get("hotel_name"):
+        from aiosell_channel_manager import push_dates
+        background_tasks.add_task(push_dates, result["hotel_name"], list(result.get("stay_dates") or []))
     public = {"success": bool(result.get("success")), "message": str(result.get("message") or "")}
     if not public["success"]:
         return JSONResponse(content=public, status_code=400)
