@@ -23,16 +23,18 @@
       }
     ]
   },
-  "migrations": [
-    {
-      "tag": "single-pms-service",
-      "deleted_classes": ["PmsContainer", "pms_PmsService"]
-    }
-  ],
   "exports": {
     "PmsService": {
       "type": "durable-object",
       "storage": "sqlite"
+    },
+    "PmsContainer": {
+      "type": "durable-object",
+      "state": "deleted"
+    },
+    "pms_PmsService": {
+      "type": "durable-object",
+      "state": "deleted"
     }
   },
   "vars": {
