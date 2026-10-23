@@ -27,11 +27,14 @@ const login = spawnSync(
 process.exit(login.status === 0 ? 0 : login.status || 1);
 EOF
 
-docker pull "$CACHE" || true
+CACHE_FROM=""
+if docker pull "$CACHE"; then
+  CACHE_FROM="--cache-from ${CACHE}"
+fi
 DOCKER_BUILDKIT=1 docker build \
   --platform linux/amd64 \
   --build-arg BUILDKIT_INLINE_CACHE=1 \
-  --cache-from "$CACHE" \
+  $CACHE_FROM \
   -f "$DOCKERFILE" \
   -t "$CACHE" \
   .
