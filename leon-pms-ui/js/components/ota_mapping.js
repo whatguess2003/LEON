@@ -18,17 +18,17 @@
   var roomMaps = {};
   var logs = [];
   var unread = 0;
+  var sessionHotel = '';
 
-  function pageHotel(){
-    var hotel = '';
+  async function pageHotel(){
+    if (sessionHotel) return sessionHotel;
     try {
-      String(document.cookie || '').split(';').forEach(function(part){
-        var bits = part.split('=');
-        var key = String(bits.shift() || '').trim();
-        if (key === 'leon_hotel') hotel = decodeURIComponent(bits.join('='));
-      });
+      var res = await fetch(API + '/api/auth/me', { credentials: 'include' });
+      if (!res.ok) return '';
+      var data = await res.json();
+      sessionHotel = String((data && data.hotel_name) || '').toUpperCase();
     } catch(_) {}
-    return hotel.toUpperCase();
+    return sessionHotel;
   }
 
   function qs(id){ return document.getElementById(id); }
@@ -321,6 +321,11 @@
 
   async function saveRoomMap(code, roomType, button){
     var status = qs('ota-status');
+    var hotel = await pageHotel();
+    if (!hotel){
+      if (status) status.textContent = 'Sign in required';
+      return;
+    }
     if (!roomType){
       if (status) status.textContent = 'Select a room type';
       return;
@@ -330,7 +335,7 @@
       var res = await fetch(CM + '/room-mapping', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({hotel_name: pageHotel(), room_code: code, room_type: roomType})
+        body: JSON.stringify({hotel_name: hotel, room_code: code, room_type: roomType})
       });
       var data = await res.json();
       if (!res.ok || (data && data.error)){
@@ -348,9 +353,14 @@
 
   async function loadMapping(){
     var status = qs('ota-status');
+    var hotel = await pageHotel();
+    if (!hotel){
+      if (status) status.textContent = 'Sign in required';
+      return;
+    }
     if (status) status.textContent = 'Loading...';
     try {
-      var res = await fetch(CM + '/mapping?hotel_name=' + encodeURIComponent(pageHotel()));
+      var res = await fetch(CM + '/mapping?hotel_name=' + encodeURIComponent(hotel));
       var data = await res.json();
       applyPayload(data);
       if (!res.ok || (data && data.error)){
@@ -377,12 +387,17 @@
       if (status) status.textContent = 'Hotel code is required';
       return;
     }
+    var hotel = await pageHotel();
+    if (!hotel){
+      if (status) status.textContent = 'Sign in required';
+      return;
+    }
     if (status) status.textContent = 'Saving...';
     try {
       var res = await fetch(CM + '/mapping', {
         method:'POST',
         headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ hotel_name: pageHotel(), hotel_code: hotelCode })
+        body: JSON.stringify({ hotel_name: hotel, hotel_code: hotelCode })
       });
       var data = await res.json();
       applyPayload(data);
@@ -399,8 +414,8 @@
     }
   }
 
-  document.addEventListener('DOMContentLoaded', function(){
-    var hotel = pageHotel();
+  document.addEventListener('DOMContentLoaded', async function(){
+    var hotel = await pageHotel();
     var label = qs('ota-hotel');
     if (label) label.textContent = 'Hotel: ' + (hotel || '-');
     var logsNew = qs('ota-logs-new');
