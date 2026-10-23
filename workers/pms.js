@@ -88,9 +88,16 @@ export class PmsService extends DurableObject {
     const url = new URL(request.url);
     url.protocol = "http:";
     url.host = "container";
-    const forwarded = new Request(url, request);
-    forwarded.headers.delete("host");
-    return this.ctx.container.getTcpPort(PORT).fetch(forwarded);
+    const headers = new Headers(request.headers);
+    const cookie = request.headers.get("cookie");
+    if (cookie) headers.set("cookie", cookie);
+    const init = { method: request.method, headers, redirect: "manual" };
+    if (request.method !== "GET" && request.method !== "HEAD") init.body = request.body;
+    const upstream = await this.ctx.container.getTcpPort(PORT).fetch(new Request(url, init));
+    const responseHeaders = new Headers(upstream.headers);
+    const setCookies = typeof upstream.headers.getSetCookie === "function" ? upstream.headers.getSetCookie() : [];
+    for (const setCookie of setCookies) responseHeaders.append("set-cookie", setCookie);
+    return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers: responseHeaders });
   }
 
   async startAndWait() {
