@@ -256,6 +256,17 @@ async def startup_event():
     global leon_instance
     print("LEON server startup", flush=True)
     try:
+        from setup_schema import setup_schema
+        setup_schema()
+        from booking_system.channel_reservations import ensure_tables
+        ensure_tables()
+        from booking_system.booking_manager import booking_manager
+        booking_manager._ensure_postgres_connection()
+        booking_manager._ensure_booking_channel()
+    except Exception as e:
+        logger.error("PostgreSQL schema setup failed: %s", e)
+        traceback.print_exc()
+    try:
         print("Initializing LEON Chat Server...", flush=True)
         leon_instance = LEONMetaOrchestrator()
         # Ensure booking_system tools referencing module-level 'orchestrator'
