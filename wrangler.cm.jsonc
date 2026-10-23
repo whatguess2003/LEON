@@ -8,7 +8,7 @@
   },
   "containers": [
     {
-      "class_name": "CmService",
+      "class_name": "cm_CmService",
       "scheduling_policy": "default",
       "image": "./Dockerfile.cm",
       "instance_type": "standard-1",
@@ -19,11 +19,15 @@
     "bindings": [
       {
         "name": "CM",
-        "class_name": "CmService"
+        "class_name": "cm_CmService"
       }
     ]
   },
   "exports": {
+    "cm_CmService": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    },
     "CmService": {
       "type": "durable-object",
       "storage": "sqlite"
