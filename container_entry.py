@@ -52,7 +52,7 @@ try:
     import main
 except BaseException:
     traceback.print_exc()
-    os._exit(1)
+    threading.Event().wait()
 
 print("LEON application imported", flush=True)
 server.shutdown()
