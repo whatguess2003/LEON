@@ -42,9 +42,6 @@
     "FRONTEND_ORIGINS": "https://inap.ai,https://leon.whatguess2003.workers.dev,https://static.whatguess2003.workers.dev",
     "AIOSSELL_PARTNER_ID": "sample-pms"
   },
-  "triggers": {
-    "crons": ["*/5 * * * *"]
-  },
   "routes": [
     {
       "pattern": "api.inap.ai/*",
