@@ -23,16 +23,15 @@
       }
     ]
   },
+  "migrations": [
+    {
+      "tag": "single-cm-service",
+      "new_sqlite_classes": ["CmService"],
+      "deleted_classes": ["PmsContainer", "PmsService", "pms_PmsService"]
+    }
+  ],
   "exports": {
-    "cm_CmService": {
-      "type": "durable-object",
-      "storage": "sqlite"
-    },
     "CmService": {
-      "type": "durable-object",
-      "storage": "sqlite"
-    },
-    "CmContainer": {
       "type": "durable-object",
       "storage": "sqlite"
     }

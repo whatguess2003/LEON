@@ -55,18 +55,6 @@ async function waitHealthy(container) {
   throw new Error("Channel manager container did not become ready: " + errorText(lastError), { cause: lastError });
 }
 
-export class CmContainer extends DurableObject {
-  async fetch() {
-    return new Response("Channel manager container moved", { status: 410 });
-  }
-}
-
-export class cm_CmService extends DurableObject {
-  async fetch() {
-    return new Response("Channel manager container moved", { status: 410 });
-  }
-}
-
 export class CmService extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);

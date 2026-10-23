@@ -31,18 +31,6 @@ function passedEnv(env) {
   return out;
 }
 
-export class PmsContainer extends DurableObject {
-  async fetch() {
-    return new Response("PMS container moved", { status: 410 });
-  }
-}
-
-export class pms_PmsService extends DurableObject {
-  async fetch() {
-    return new Response("PMS container moved", { status: 410 });
-  }
-}
-
 export class PmsService extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
