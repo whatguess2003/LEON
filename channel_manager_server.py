@@ -45,9 +45,15 @@ async def _poll():
 
 @app.on_event("startup")
 async def startup():
-    from booking_system.channel_reservations import ensure_tables
-    await run_in_threadpool(ensure_tables)
-    asyncio.get_event_loop().create_task(_poll())
+    async def _boot():
+        try:
+            from booking_system.channel_reservations import ensure_tables
+            await run_in_threadpool(ensure_tables)
+        except Exception:
+            logging.exception("Channel manager tables")
+        asyncio.get_event_loop().create_task(_poll())
+
+    asyncio.get_event_loop().create_task(_boot())
 
 
 @app.get("/health")
