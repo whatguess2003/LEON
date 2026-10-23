@@ -1,6 +1,5 @@
-"""Channel manager. Polls Aiosell every 300 seconds and keeps the reservation list."""
+"""Channel manager. Aiosell posts reservations to /update_reservation."""
 
-import asyncio
 import logging
 import os
 
@@ -22,38 +21,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-POLL_SECONDS = 300
-
-
-def _sync_once():
-    from booking_system.channel_reservations import sync_linked_hotels
-    return sync_linked_hotels()
-
-
-async def _poll():
-    await asyncio.sleep(5)
-    while True:
-        try:
-            await run_in_threadpool(_sync_once)
-        except Exception:
-            logging.exception("Channel manager poll failed")
-        try:
-            await asyncio.sleep(POLL_SECONDS)
-        except Exception:
-            break
-
-
 @app.on_event("startup")
 async def startup():
-    async def _boot():
-        try:
-            from booking_system.channel_reservations import ensure_tables
-            await run_in_threadpool(ensure_tables)
-        except Exception:
-            logging.exception("Channel manager tables")
-        asyncio.get_event_loop().create_task(_poll())
-
-    asyncio.get_event_loop().create_task(_boot())
+    try:
+        from booking_system.channel_reservations import ensure_tables
+        await run_in_threadpool(ensure_tables)
+    except Exception:
+        logging.exception("Channel manager tables")
 
 
 @app.get("/health")
@@ -139,16 +113,6 @@ async def update_reservation(request: Request, background_tasks: BackgroundTasks
     if not public["success"]:
         return JSONResponse(content=public, status_code=400)
     return public
-
-
-@app.post("/sync")
-def sync_now():
-    return _sync_once()
-
-
-@app.get("/health")
-def health():
-    return {"status": "healthy"}
 
 
 if __name__ == "__main__":

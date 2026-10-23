@@ -1,4 +1,3 @@
-import logging
 import os
 from urllib.parse import quote
 
@@ -10,9 +9,6 @@ from typing import List, Dict, Any
 PROPERTY_DETAILS_URL = "https://live.aiosell.com/api/v2/cm/property_details/{hotel_code}"
 INVENTORY_URL = "https://live.aiosell.com/api/v2/cm/update/{partner}"
 RATE_URL = "https://live.aiosell.com/api/v2/cm/update-rates/{partner}"
-DATA_URL = "https://live.aiosell.com/api/v2/cm/data/{partner}"
-
-
 def read_property_details(hotel_code: str) -> dict:
     """GET Aiosell property details. Username and password are basic auth. Partner id is the URL partnerId."""
     username = str(os.environ.get("AIOSSELL_USERNAME") or "").strip()
@@ -347,143 +343,6 @@ def push_rate_range(hotel_name: str, start_date: str, end_date: str) -> dict:
     sent["missing_prices"] = gaps
     sent["unmatched_codes"] = mapped["missing"]
     return sent
-
-
-def fetch_reservations(hotel_code: str, start_date: str, end_date: str) -> dict:
-    """Read reservations Aiosell is ready to send to the PMS."""
-    creds, error = _credentials()
-    if error:
-        return error
-    username, password, partner = creds
-    start = _parse_day(start_date)
-    end = _parse_day(end_date)
-    if start is None or end is None:
-        return {"error": "Dates must be YYYY-MM-DD"}
-    if end < start:
-        return {"error": "End date is before the start date"}
-    body = {
-        "type": "reservation",
-        "hotelCode": str(hotel_code or "").strip(),
-        "startDate": start.isoformat(),
-        "endDate": end.isoformat(),
-    }
-    try:
-        response = requests.post(
-            DATA_URL.format(partner=quote(partner, safe="")),
-            json=body,
-            auth=HTTPBasicAuth(username, password),
-            headers={"Content-Type": "application/json"},
-            timeout=(5, 30),
-        )
-    except requests.RequestException as exc:
-        return {"error": str(exc)}
-    try:
-        payload = response.json()
-    except ValueError:
-        return {"error": "Aiosell response was not JSON"}
-    if response.status_code != 200:
-        message = payload.get("message") if isinstance(payload, dict) else response.text[:300]
-        return {"error": "Aiosell responded " + str(response.status_code) + ": " + str(message)}
-    if not isinstance(payload, list):
-        return {"error": "Aiosell response was not a reservation list"}
-    return {"reservations": payload}
-
-
-def _feed_collection():
-    from booking_system.front_desk_manager import intelligent_front_desk
-    return intelligent_front_desk.get_mongodb_connection().get_collection("ota_reservation_feed")
-
-
-def save_reservation_feed(hotel_name: str, result: dict) -> dict:
-    """Store the latest reservation-out sync for one hotel."""
-    doc = {
-        "hotel_name": hotel_name,
-        "hotel_code": str((result or {}).get("hotel_code") or ""),
-        "endpoint": "/update_reservation",
-        "start_date": str((result or {}).get("start_date") or ""),
-        "end_date": str((result or {}).get("end_date") or ""),
-        "synced_at": datetime.now().isoformat(timespec="seconds"),
-        "error": str((result or {}).get("error") or ""),
-        "reservations": (result or {}).get("reservations") or [],
-    }
-    col = _feed_collection()
-    current = col.find_one({"hotel_name": hotel_name}, {"_id": 1})
-    if current:
-        col.update_one({"hotel_name": hotel_name}, {"$set": doc})
-    else:
-        col.insert_one(dict(doc))
-    return doc
-
-
-def read_reservation_feed(hotel_name: str) -> dict:
-    """Read the stored reservation-out sync. Does not call Aiosell."""
-    doc = _feed_collection().find_one({"hotel_name": hotel_name}, {"_id": 0})
-    if not doc:
-        return {
-            "hotel_name": hotel_name,
-            "hotel_code": "",
-            "endpoint": "/update_reservation",
-            "start_date": "",
-            "end_date": "",
-            "synced_at": "",
-            "reservations": [],
-        }
-    return doc
-
-
-def pull_reservation_out(hotel_name: str, start_date: str = "", end_date: str = "") -> dict:
-    """Bring Aiosell reservation-out bookings into the PMS and store the sync."""
-    result = _pull_reservation_out(hotel_name, start_date, end_date)
-    if hotel_name:
-        try:
-            save_reservation_feed(hotel_name, result)
-        except Exception:
-            logging.exception("Reservation feed save failed")
-    return result
-
-
-def _pull_reservation_out(hotel_name: str, start_date: str = "", end_date: str = "") -> dict:
-    from booking_system.aiosell_reservation import handle_reservation, _push_stay_dates
-    hotel_code = hotel_code_for(hotel_name)
-    if not hotel_code:
-        return {"error": "Hotel code is not linked"}
-    today = datetime.now().date()
-    start = _parse_day(start_date) or (today - timedelta(days=30))
-    end = _parse_day(end_date) or (today + timedelta(days=30))
-    if start_date and _parse_day(start_date) is None:
-        return {"error": "Dates must be YYYY-MM-DD"}
-    if end_date and _parse_day(end_date) is None:
-        return {"error": "Dates must be YYYY-MM-DD"}
-    if end < start:
-        return {"error": "End date is before the start date"}
-    fetched = fetch_reservations(hotel_code, start.isoformat(), end.isoformat())
-    if fetched.get("error"):
-        return fetched
-    incoming = [item for item in fetched.get("reservations") or [] if isinstance(item, dict)]
-    incoming.sort(key=lambda item: str(item.get("bookedOn") or ""))
-    applied = []
-    stay_dates = []
-    for item in incoming:
-        outcome = handle_reservation(item, push=False)
-        applied.append({
-            "action": str(item.get("action") or ""),
-            "bookingId": str(item.get("bookingId") or ""),
-            "success": bool(outcome.get("success")),
-            "message": str(outcome.get("message") or ""),
-        })
-        for day in outcome.get("stay_dates") or []:
-            text = str(day)[:10]
-            if text and text not in stay_dates:
-                stay_dates.append(text)
-    if stay_dates:
-        _push_stay_dates(hotel_name, stay_dates)
-    return {
-        "hotel_code": hotel_code,
-        "endpoint": "/update_reservation",
-        "start_date": start.isoformat(),
-        "end_date": end.isoformat(),
-        "reservations": applied,
-    }
 
 
 def push_dates(hotel_name: str, stay_dates) -> dict:

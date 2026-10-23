@@ -195,13 +195,8 @@
       var rows = Array.isArray(data.reservations) ? data.reservations : [];
       if (inbound){
         status.textContent = rows.length ? (rows.length + ' reservation in') : 'No reservation in yet';
-      } else if (!data.synced_at){
-        status.textContent = 'No stored reservations yet';
-        return;
       } else {
-        var saved = rows.filter(function(row){ return row.success; }).length;
-        status.textContent = saved + ' of ' + rows.length + ' stored for ' + data.start_date + ' to ' + data.end_date + '. Synced ' + data.synced_at;
-        if (data.error) status.textContent = data.error + '. ' + status.textContent;
+        status.textContent = rows.length ? (rows.length + ' reservation out') : 'No reservation out yet';
       }
       rows.forEach(function(row){
         var line = document.createElement('div');

@@ -3,7 +3,7 @@
 The list lives in Postgres. A failed Aiosell poll records the error and leaves the rows in place.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from booking_system.booking_manager import booking_manager
 
@@ -163,42 +163,8 @@ def read_reservation(hotel_name: str, booking_id: str) -> dict:
     }
 
 
-def record_sync(hotel_name: str, hotel_code: str, start_date, end_date, error: str):
-    """Record the poll. Does not change reservation rows."""
-    ensure_tables()
-    with booking_manager.postgres_lock:
-        booking_manager._clear_transaction()
-        cur = booking_manager.postgres_conn.cursor()
-        try:
-            cur.execute(
-                "SELECT hotel_name FROM channel_reservation_sync WHERE hotel_name = %s",
-                (hotel_name,),
-            )
-            existing = cur.fetchone()
-            if existing:
-                cur.execute(
-                    """
-                    UPDATE channel_reservation_sync
-                    SET hotel_code = %s, start_date = %s, end_date = %s, synced_at = CURRENT_TIMESTAMP, last_error = %s
-                    WHERE hotel_name = %s
-                    """,
-                    (hotel_code, start_date, end_date, error, hotel_name),
-                )
-            else:
-                cur.execute(
-                    """
-                    INSERT INTO channel_reservation_sync (hotel_name, hotel_code, start_date, end_date, synced_at, last_error)
-                    VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP, %s)
-                    """,
-                    (hotel_name, hotel_code, start_date, end_date, error),
-                )
-            booking_manager.postgres_conn.commit()
-        finally:
-            cur.close()
-
-
 def read_list(hotel_name: str, direction: str) -> dict:
-    """Return the stored reservations for one direction and the last Aiosell poll status."""
+    """Return the reservations stored from the Aiosell webhook or from the PMS."""
     ensure_tables()
     with booking_manager.postgres_lock:
         booking_manager._clear_transaction()
@@ -362,49 +328,3 @@ def accept_webhook(payload: dict) -> dict:
         public["stay_dates"] = list(outcome.get("stay_dates") or [])
     return public
 
-
-def sync_hotel(hotel_name: str) -> dict:
-    """Pull Aiosell into the stored list. A failed pull keeps the rows already stored."""
-    from aiosell_channel_manager import fetch_reservations, hotel_code_for
-    from booking_system.aiosell_reservation import handle_reservation, _push_stay_dates
-
-    hotel_code = hotel_code_for(hotel_name)
-    today = datetime.now().date()
-    start = today - timedelta(days=30)
-    end = today + timedelta(days=30)
-    if not hotel_code:
-        record_sync(hotel_name, "", start, end, "Hotel code is not linked")
-        listed = read_list(hotel_name, "reservation_out")
-        listed["error"] = "Hotel code is not linked"
-        return listed
-    fetched = fetch_reservations(hotel_code, start.isoformat(), end.isoformat())
-    if fetched.get("error"):
-        record_sync(hotel_name, hotel_code, start, end, str(fetched.get("error") or ""))
-        listed = read_list(hotel_name, "reservation_out")
-        return listed
-    incoming = [item for item in fetched.get("reservations") or [] if isinstance(item, dict)]
-    incoming.sort(key=lambda item: str(item.get("bookedOn") or ""))
-    stay_dates = []
-    for item in incoming:
-        outcome = handle_reservation(item, push=False)
-        record_aiosell_reservation(hotel_name, item, outcome)
-        for day in outcome.get("stay_dates") or []:
-            text = str(day)[:10]
-            if text and text not in stay_dates:
-                stay_dates.append(text)
-    if stay_dates:
-        _push_stay_dates(hotel_name, stay_dates)
-    record_sync(hotel_name, hotel_code, start, end, "")
-    return read_list(hotel_name, "reservation_out")
-
-
-def sync_linked_hotels() -> dict:
-    from booking_system.front_desk_manager import intelligent_front_desk
-    col = intelligent_front_desk.get_mongodb_connection().get_collection("ota_link")
-    hotels = []
-    for doc in col.find({}, {"_id": 0, "hotel_name": 1, "hotel_code": 1}):
-        hotel = str((doc or {}).get("hotel_name") or "").strip().upper()
-        code = str((doc or {}).get("hotel_code") or "").strip()
-        if hotel and code and hotel not in [item.get("hotel_name") for item in hotels]:
-            hotels.append(sync_hotel(hotel))
-    return {"hotels": hotels}
