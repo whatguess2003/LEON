@@ -8,7 +8,7 @@
   },
   "containers": [
     {
-      "class_name": "pms_PmsService",
+      "class_name": "PmsService",
       "scheduling_policy": "default",
       "image": "./Dockerfile.pms",
       "instance_type": "standard-1",
@@ -19,7 +19,7 @@
     "bindings": [
       {
         "name": "PMS",
-        "class_name": "pms_PmsService"
+        "class_name": "PmsService"
       }
     ]
   },
