@@ -48,7 +48,7 @@ async function probe(port) {
 
 async function waitHealthy(container) {
   let lastError;
-  for (let attempt = 0; attempt < 20; attempt++) {
+  for (let attempt = 0; attempt < 45; attempt++) {
     try {
       if (!container.running) throw new Error("container is not running");
       await probe(container.getTcpPort(PORT));
@@ -56,7 +56,7 @@ async function waitHealthy(container) {
     } catch (error) {
       lastError = error;
       console.log("health probe failed", errorText(error));
-      await scheduler.wait(1000);
+      await scheduler.wait(2000);
     }
   }
   throw new Error("PMS container did not become ready: " + errorText(lastError), { cause: lastError });
