@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "leon-channel-manager",
+  "name": "cm",
   "main": "workers/cm.js",
   "compatibility_date": "2026-10-22",
   "observability": {
@@ -8,31 +8,33 @@
   },
   "containers": [
     {
-      "class_name": "CmContainer",
-      "scheduling_policy": "durable_object",
-      "images": {
-        "base": {
-          "dockerfile": "./Dockerfile.cm"
-        }
-      }
+      "class_name": "CmService",
+      "scheduling_policy": "default",
+      "image": "./Dockerfile.cm",
+      "instance_type": "standard-1",
+      "max_instances": 2
     }
   ],
   "durable_objects": {
     "bindings": [
       {
         "name": "CM",
-        "class_name": "CmContainer"
+        "class_name": "CmService"
       }
     ]
   },
   "exports": {
+    "CmService": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    },
     "CmContainer": {
       "type": "durable-object",
       "storage": "sqlite"
     }
   },
   "vars": {
-    "FRONTEND_ORIGINS": "https://inap.ai,https://leon.whatguess2003.workers.dev",
+    "FRONTEND_ORIGINS": "https://inap.ai,https://leon.whatguess2003.workers.dev,https://static.whatguess2003.workers.dev",
     "AIOSSELL_PARTNER_ID": "sample-pms"
   },
   "triggers": {

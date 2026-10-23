@@ -6,6 +6,7 @@ const NAMES = [
   "DATABASE_URL",
   "MONGO_URL",
   "REDIS_URL",
+  "OPENAI_API_KEY",
   "AIOSSELL_USERNAME",
   "AIOSSELL_PASSWORD",
   "AIOSSELL_PARTNER_ID",
@@ -23,14 +24,47 @@ function passedEnv(env) {
   return out;
 }
 
+function errorText(error) {
+  return error && error.message ? error.message : String(error);
+}
+
+async function probe(port) {
+  const response = await Promise.race([
+    port.fetch("http://container/health", { signal: AbortSignal.timeout(3000) }),
+    scheduler.wait(4000).then(() => {
+      throw new Error("health probe timed out");
+    }),
+  ]);
+  await response.body?.cancel();
+  if (!response.ok) throw new Error("Health check returned " + response.status);
+}
+
+async function waitHealthy(container) {
+  let lastError;
+  for (let attempt = 0; attempt < 45; attempt++) {
+    try {
+      if (!container.running) throw new Error("container is not running");
+      await probe(container.getTcpPort(PORT));
+      return;
+    } catch (error) {
+      lastError = error;
+      console.log("health probe failed", errorText(error));
+      await scheduler.wait(2000);
+    }
+  }
+  throw new Error("Channel manager container did not become ready: " + errorText(lastError), { cause: lastError });
+}
+
 export class CmContainer extends DurableObject {
+  async fetch() {
+    return new Response("Channel manager container moved", { status: 410 });
+  }
+}
+
+export class CmService extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
     this.starting = undefined;
-    const container = ctx.container;
-    if (container && container.running) {
-      void ctx.blockConcurrencyWhile(() => container.setInactivityTimeout(IDLE_MS));
-    }
   }
 
   async fetch(request) {
@@ -50,37 +84,20 @@ export class CmContainer extends DurableObject {
     const container = this.ctx.container;
     if (!container.running) {
       container.start({
-        image: container.images.base,
-        instance: "standard-1",
         enableInternet: true,
         env: passedEnv(this.env),
       });
     }
     await container.setInactivityTimeout(IDLE_MS);
-    const port = container.getTcpPort(PORT);
-    let lastError;
-    for (let attempt = 0; attempt < 180; attempt++) {
-      try {
-        const response = await port.fetch("http://container/health", {
-          signal: AbortSignal.timeout(2000),
-        });
-        await response.body?.cancel();
-        if (!response.ok) throw new Error("Health check returned " + response.status);
-        return;
-      } catch (error) {
-        lastError = error;
-        await scheduler.wait(1000);
-      }
-    }
-    throw new Error("Channel manager container did not become ready", { cause: lastError });
+    await waitHealthy(container);
   }
 }
 
 export default {
   fetch(request, env) {
-    return env.CM.getByName("leon-channel-manager").fetch(request);
+    return env.CM.getByName("leon-cm").fetch(request);
   },
   scheduled(_event, env, ctx) {
-    ctx.waitUntil(env.CM.getByName("leon-channel-manager").fetch("https://cm.inap.ai/health"));
+    ctx.waitUntil(env.CM.getByName("leon-cm").fetch("https://cm.inap.ai/health"));
   },
 };
