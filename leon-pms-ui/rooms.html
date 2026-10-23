@@ -349,9 +349,8 @@
                         });
                         const out = await res.json();
                         if (!res.ok || (out && out.error)) { throw new Error(out?.error || 'Create failed'); }
-                        try { const s=document.getElementById('crt-status'); const sp=document.getElementById('crt-spinner'); const t=document.getElementById('crt-status-text'); if(s&&sp&&t){ s.classList.remove('hidden'); sp.classList.add('hidden'); t.textContent='UPDATE SUCCESSFUL'; t.classList.remove('text-blue-700'); t.classList.add('text-green-700'); } } catch(_){ }
-                        if (window.rooms && window.rooms.loadRoomsData) await window.rooms.loadRoomsData();
-                        document.getElementById('manage-room-types-modal').classList.add('hidden');
+                        try { const s=document.getElementById('crt-status'); const sp=document.getElementById('crt-spinner'); const t=document.getElementById('crt-status-text'); if(s&&sp&&t){ s.classList.remove('hidden'); sp.classList.add('hidden'); t.textContent='ROOM CREATED SUCCESSFULLY'; t.classList.remove('text-blue-700'); t.classList.add('text-green-700'); } } catch(_){ }
+                        setTimeout(function () { window.location.reload(); }, 600);
                     } catch(err) {
                         try { const s=document.getElementById('crt-status'); const sp=document.getElementById('crt-spinner'); const t=document.getElementById('crt-status-text'); if(s&&sp&&t){ s.classList.remove('hidden'); sp.classList.add('hidden'); t.textContent=('ERROR: '+err.message).toUpperCase(); t.classList.remove('text-blue-700'); t.classList.add('text-red-700'); } } catch(_){ }
                     }
