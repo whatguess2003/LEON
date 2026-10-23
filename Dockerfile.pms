@@ -6,8 +6,8 @@ ENV PYTHONIOENCODING=utf-8
 ENV PGCONNECT_TIMEOUT=10
 ENV PORT=8080
 RUN printf 'precedence ::ffff:0:0/96 100\n' >> /etc/gai.conf
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.pms.txt .
+RUN pip install --no-cache-dir -r requirements.pms.txt
 COPY . .
 EXPOSE 8080
 CMD ["python", "container_entry.py"]
