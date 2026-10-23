@@ -69,6 +69,12 @@ export class PmsContainer extends DurableObject {
 }
 
 export class PmsService extends DurableObject {
+  async fetch() {
+    return new Response("PMS container moved", { status: 410 });
+  }
+}
+
+export class pms_PmsService extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
     this.starting = undefined;

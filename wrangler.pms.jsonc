@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "leon-pms",
+  "name": "pms",
   "main": "workers/pms.js",
   "compatibility_date": "2026-10-22",
   "observability": {
@@ -8,7 +8,7 @@
   },
   "containers": [
     {
-      "class_name": "PmsService",
+      "class_name": "pms_PmsService",
       "scheduling_policy": "default",
       "image": "./Dockerfile.pms",
       "instance_type": "standard-1",
@@ -19,11 +19,15 @@
     "bindings": [
       {
         "name": "PMS",
-        "class_name": "PmsService"
+        "class_name": "pms_PmsService"
       }
     ]
   },
   "exports": {
+    "pms_PmsService": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    },
     "PmsService": {
       "type": "durable-object",
       "storage": "sqlite"
