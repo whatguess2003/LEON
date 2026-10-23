@@ -243,14 +243,7 @@
     const params = new URLSearchParams(window.location.search);
     const fromQuery = params.get('hotel');
     if (fromQuery) return fromQuery.toUpperCase();
-    try {
-      const res = await fetch(`${API_BASE}/api/auth/me`, { credentials: 'include' });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.hotel_name) return String(data.hotel_name).toUpperCase();
-      }
-    } catch (_) {}
-    return '';
+    return String(window.leonHotel ? window.leonHotel() : '').toUpperCase();
   }
 
   async function init(){

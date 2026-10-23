@@ -24,18 +24,12 @@ class GuestComponent {
 
     async loadManagerContext() {
         const box = document.getElementById('hotel-context-info');
-        try {
-            const response = await fetch(`${this.apiUrl}/auth/active`, { credentials: 'include' });
-            if (response.ok) {
-                const data = await response.json();
-                const manager = data.manager || {};
-                this.currentHotel = String(manager.hotel_name || '').toUpperCase();
-                box.textContent = this.currentHotel;
-                box.className = 'mt-2 text-sm text-green-600 bg-green-50 px-3 py-1 rounded-full inline-block';
-                return;
-            }
-        } catch (error) {
-            console.error(error);
+        const hotel = String(window.leonHotel ? window.leonHotel() : '').toUpperCase();
+        if (hotel) {
+            this.currentHotel = hotel;
+            box.textContent = this.currentHotel;
+            box.className = 'mt-2 text-sm text-green-600 bg-green-50 px-3 py-1 rounded-full inline-block';
+            return;
         }
         const params = new URLSearchParams(window.location.search);
         this.currentHotel = String(params.get('hotel_name') || params.get('hotel') || '').toUpperCase();

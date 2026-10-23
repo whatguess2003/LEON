@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <script src="js/session.js?v=persist"></script>
+    <script src="js/session.js?v=hotel"></script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Room Management - LEON PMS</title>
@@ -339,9 +339,7 @@
                         if (!room_type || room_numbers.some(number => !number)) { throw new Error('Room number is required'); }
                         const seen = {};
                         room_numbers.forEach(number => { if (seen[number]) { throw new Error('Room number ' + number + ' is already used'); } seen[number] = true; });
-                        const me = await fetch(`${apiBase}/auth/me`, { credentials: 'include' });
-                        const session = me.ok ? await me.json() : {};
-                        const hotelName = String(session.hotel_name || '').trim();
+                        const hotelName = window.leonHotel ? String(window.leonHotel() || '').trim() : '';
                         if (!hotelName) { throw new Error('Sign in again'); }
                         // show loading banner
                         try { const s=document.getElementById('crt-status'); const sp=document.getElementById('crt-spinner'); const t=document.getElementById('crt-status-text'); if(s&&sp&&t){ s.classList.remove('hidden'); sp.classList.remove('hidden'); t.textContent='PROCESSING...'; t.classList.remove('text-green-700'); t.classList.add('text-blue-700'); } } catch(_){ }

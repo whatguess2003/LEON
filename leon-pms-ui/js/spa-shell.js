@@ -467,7 +467,7 @@
       var data = await res.json();
       var prof = document.getElementById('spa-side-profile');
       if (!prof) return;
-      var hotel = (data.hotel_name || '').toString().toUpperCase();
+      var hotel = String(window.leonHotel ? window.leonHotel() : (data.hotel_name || '')).toUpperCase();
       var manager = (data.manager_name || '').toString().toUpperCase();
       var html = '';
       html += '<div class="spa-side-label" style="font-weight:700;color:#111827;">'+ (hotel || '') +'</div>';

@@ -24,10 +24,7 @@ class OperationsComponent {
     }
     
     async sessionHotel() {
-        const res = await fetch(`${this.apiUrl}/auth/me`, { credentials: 'include' });
-        if (!res.ok) return '';
-        const data = await res.json();
-        this.hotel = String(data.hotel_name || '').toUpperCase();
+        this.hotel = String(window.leonHotel ? window.leonHotel() : '').toUpperCase();
         return this.hotel;
     }
 
