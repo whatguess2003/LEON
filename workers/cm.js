@@ -61,13 +61,13 @@ export class CmContainer extends DurableObject {
   }
 }
 
-export class CmService extends DurableObject {
+export class cm_CmService extends DurableObject {
   async fetch() {
     return new Response("Channel manager container moved", { status: 410 });
   }
 }
 
-export class cm_CmService extends DurableObject {
+export class CmService extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
     this.starting = undefined;

@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "leon-pms",
+  "name": "pms",
   "main": "workers/pms.js",
   "compatibility_date": "2026-10-22",
   "observability": {
@@ -24,6 +24,10 @@
     ]
   },
   "exports": {
+    "pms_PmsService": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    },
     "PmsService": {
       "type": "durable-object",
       "storage": "sqlite"
