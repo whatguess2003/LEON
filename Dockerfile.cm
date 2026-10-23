@@ -7,7 +7,7 @@ ENV PGCONNECT_TIMEOUT=10
 ENV CHANNEL_MANAGER_PORT=8080
 RUN printf 'precedence ::ffff:0:0/96 100\n' >> /etc/gai.conf
 COPY requirements.cm.txt .
-RUN pip install --no-cache-dir -r requirements.cm.txt
+RUN pip install --no-cache-dir --disable-pip-version-check --only-binary=:all: -r requirements.cm.txt
 COPY . .
 EXPOSE 8080
 CMD ["python", "channel_manager_server.py"]
