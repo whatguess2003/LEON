@@ -226,9 +226,7 @@ class DashboardComponent {
     async loadDashboardData() {
         try {
             const api = this.apiBase();
-            const meRes = await fetch(`${api}/auth/me`, { credentials: 'include' });
-            const me = meRes.ok ? await meRes.json() : {};
-            this.hotel = String(me.hotel_name || '').toUpperCase();
+            this.hotel = String(window.leonHotel ? window.leonHotel() : '').toUpperCase();
             const [roomsRes, bookingsRes, analyticsRes, maintRes] = await Promise.all([
                 fetch(`${api}/hotels/rooms?hotel_name=${encodeURIComponent(this.hotel)}`, { credentials: 'include' }),
                 fetch(`${api}/bookings-calendar`, { credentials: 'include' }),

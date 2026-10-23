@@ -22,12 +22,7 @@
 
   async function pageHotel(){
     if (sessionHotel) return sessionHotel;
-    try {
-      var res = await fetch(API + '/api/auth/me', { credentials: 'include' });
-      if (!res.ok) return '';
-      var data = await res.json();
-      sessionHotel = String((data && data.hotel_name) || '').toUpperCase();
-    } catch(_) {}
+    sessionHotel = String(window.leonHotel ? window.leonHotel() : '').toUpperCase();
     return sessionHotel;
   }
 
