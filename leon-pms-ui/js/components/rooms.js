@@ -541,7 +541,7 @@ class RoomsComponent {
             const m = document.cookie.match(/(?:^|; )leon_hotel=([^;]+)/);
             if (m && m[1]) return decodeURIComponent(m[1]);
         } catch (_) {}
-        return '';
+        return this.hotelName || '';
     }
     
     async loadRooms(hotelId) {
@@ -666,10 +666,14 @@ class RoomsComponent {
         try {
             console.log('🏨 Loading rooms data...');
             // Fetch canonical room portfolio structure (context-locked)
-            const params = new URLSearchParams(window.location.search);
-            const hotelParam = params.get('hotel') || '';
-            const cookieHotel = (document.cookie.match(/(?:^|; )leon_hotel=([^;]+)/)?.[1] ? decodeURIComponent(document.cookie.match(/(?:^|; )leon_hotel=([^;]+)/)[1]) : '');
-            const hotelName = hotelParam || cookieHotel;
+            const hotelName = await this.ensureHotel();
+            this.hotelName = hotelName;
+            if (!hotelName) {
+                this.roomTypes = [];
+                this.roomNumbers = [];
+                this.renderRoomTypesAndRoomNumbers();
+                return;
+            }
             const query = `/hotels/rooms?hotel_name=${encodeURIComponent(hotelName)}`;
             const data = await this.apiRequest(query);
             console.log('API response:', data);

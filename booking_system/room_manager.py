@@ -578,8 +578,12 @@ class RoomManager:
             # Get hotel_name from manager_context.json (single source of truth)
             if hotel_name.startswith("❌"):
                 return hotel_name if not include_structured else {"error": hotel_name}
+            hotel = canonical_key(hotel_name)
+            if not hotel:
+                msg = "❌ No room types found"
+                return msg if not include_structured else {"hotel_name": "", "room_types": []}
             query = {}
-            query["hotel_name"] = {"$regex": hotel_name, "$options": "i"}
+            query["hotel_name"] = hotel
             if room_type:
                 query["room_type"] = {"$regex": room_type, "$options": "i"}
             # Get room types

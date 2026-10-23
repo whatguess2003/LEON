@@ -2923,11 +2923,22 @@ async function openEditModal(bookingId, initialStatus, stayDate, currentRoomType
         })();
 	}
 
+	let signedHotel = '';
+
+	async function hotelFromSession() {
+		if (signedHotel) return signedHotel;
+		const res = await fetch(`${apiBase}/auth/me`, { credentials: 'include' });
+		if (!res.ok) return '';
+		const data = await res.json();
+		signedHotel = String(data.hotel_name || '').toUpperCase();
+		return signedHotel;
+	}
+
 	function getParamsFromUI() {
 		const u = new URL(location.href);
 		const cookieHotelMatch = document.cookie.match(/(?:^|; )leon_hotel=([^;]+)/);
 		const cookieHotel = cookieHotelMatch ? decodeURIComponent(cookieHotelMatch[1]) : '';
-		const hotel = document.getElementById('hotel')?.value || u.searchParams.get('hotel') || cookieHotel || '';
+		const hotel = document.getElementById('hotel')?.value || u.searchParams.get('hotel') || cookieHotel || signedHotel || '';
 		const start = document.getElementById('start')?.value || u.searchParams.get('start') || (() => { const d = new Date(); d.setDate(d.getDate()-1); return toLocalISODate(d); })();
 		const end = document.getElementById('end')?.value || u.searchParams.get('end') || (() => { const d = new Date(); d.setDate(d.getDate()+12); return toLocalISODate(d); })();
 		const room_type = document.getElementById('room_type')?.value || u.searchParams.get('room_type') || '';
@@ -2950,6 +2961,7 @@ async function openEditModal(bookingId, initialStatus, stayDate, currentRoomType
 	async function load(opts) {
 		const silent = !!(opts && opts.silent);
 		const params = getParamsFromUI();
+		if (!params.hotel_name) params.hotel_name = await hotelFromSession();
 		const cal = document.getElementById('calendar');
 		if (!silent) {
 			parkDateTools();
