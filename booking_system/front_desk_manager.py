@@ -3169,8 +3169,64 @@ class IntelligentFrontDeskManager:
                 pass
             return {"error": str(e)}
 
-    def verify_booking_phone(self, booking_id: str, manager_name: str) -> dict:
-        """Create the guest profile from the Aiosell reference phone, then link the booking."""
+    def _international_phone(self, country_code: str, phone: str) -> str:
+        dial = str(country_code or "").strip()
+        local = "".join(ch for ch in str(phone or "") if ch.isdigit() or ch == "+")
+        dial_digits = dial[1:] if dial.startswith("+") else ""
+        if not dial_digits.isdigit() or dial_digits.startswith("0"):
+            return ""
+        if local.startswith(dial):
+            return local
+        if local.startswith("+"):
+            return ""
+        if local.startswith("0"):
+            local = local[1:]
+        if not local.isdigit():
+            return ""
+        return dial + local
+
+    def send_whatsapp_template(self, guest_phone: str) -> dict:
+        """Send the configured WhatsApp template. A first message to a guest must be a template."""
+        import urllib.error
+        import urllib.request
+        token = str(os.getenv("WHATSAPP_ACCESS_TOKEN") or "").strip()
+        phone_number_id = str(os.getenv("WHATSAPP_PHONE_NUMBER_ID") or "").strip()
+        template_name = str(os.getenv("WHATSAPP_TEMPLATE_NAME") or "").strip()
+        language = str(os.getenv("WHATSAPP_TEMPLATE_LANGUAGE") or "").strip()
+        if not token or not phone_number_id or not template_name or not language:
+            return {"error": "WhatsApp template is not configured"}
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": guest_phone,
+            "type": "template",
+            "template": {"name": template_name, "language": {"code": language}},
+        }
+        request = urllib.request.Request(
+            "https://graph.facebook.com/v23.0/" + phone_number_id + "/messages",
+            data=json.dumps(payload).encode(),
+            headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                body = json.loads(response.read().decode())
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode()
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed = {}
+            return {"error": str((parsed.get("error") or {}).get("message") or "WhatsApp send failed")}
+        except Exception as exc:
+            return {"error": str(exc)}
+        sent = (body.get("messages") or [{}])[0]
+        message_id = str((sent or {}).get("id") or "")
+        if not message_id:
+            return {"error": "WhatsApp did not accept the template"}
+        return {"message_id": message_id, "template_name": template_name}
+
+    def verify_booking_phone(self, booking_id: str, manager_name: str, guest_phone: str = "", guest_name: str = "", country_code: str = "") -> dict:
+        """Create or link the guest profile from the phone and country code on the stay edit."""
         conn = self.get_postgresql_connection()
         cur = conn.cursor()
         cur.execute("SELECT hotel_name, guest_phone FROM room_bookings WHERE booking_id = %s", (booking_id,))
@@ -3180,6 +3236,9 @@ class IntelligentFrontDeskManager:
             conn.close()
             return {"error": "Booking " + booking_id + " not found"}
         hotel_name = str(row[0] or "").strip().upper()
+        typed_phone = str(guest_phone or "").strip()
+        typed_name = str(guest_name or "").strip()
+        typed_dial = str(country_code or "").strip()
         db = self.get_mongodb_connection()
         booking_doc = db.get_collection("guest_bookings").find_one({"hotel_name": hotel_name, "booking_id": booking_id}, {"_id": 0})
         reference_phone = str((booking_doc or {}).get("reference_phone") or "").strip()
@@ -3191,38 +3250,56 @@ class IntelligentFrontDeskManager:
             reference_phone = _guest_phone(payload)
         if not guest_name:
             guest_name = _guest_name(payload)
-        if not reference_phone:
+        raw_phone = typed_phone or reference_phone
+        name = typed_name or guest_name
+        if not typed_dial:
             cur.close()
             conn.close()
-            return {"error": "Aiosell did not send a phone number"}
-        if not guest_name:
+            return {"error": "Country code is required"}
+        if not raw_phone:
+            cur.close()
+            conn.close()
+            return {"error": "Phone is required"}
+        phone = self._international_phone(typed_dial, raw_phone)
+        if not phone:
+            cur.close()
+            conn.close()
+            return {"error": "Country code does not match the phone number"}
+        if not name:
             cur.close()
             conn.close()
             return {"error": "Guest name is required"}
-        current = db.get_collection("guests").find_one({"guest_phone": reference_phone, "hotel_name": hotel_name})
+        sent = self.send_whatsapp_template(phone)
+        if sent.get("error"):
+            cur.close()
+            conn.close()
+            return {"error": sent["error"]}
+        current = db.get_collection("guests").find_one({"guest_phone": phone, "hotel_name": hotel_name})
         if not current:
             from booking_system.guest_manager import guest_manager
-            text = guest_manager.create_guest_profile(hotel_name, manager_name, reference_phone, guest_name)
+            text = guest_manager.create_guest_profile(hotel_name, manager_name, phone, name)
             if str(text).startswith("❌"):
                 cur.close()
                 conn.close()
                 return {"error": text}
         cur.execute(
             "UPDATE room_bookings SET guest_phone = %s, updated_at = CURRENT_TIMESTAMP, updated_by = %s WHERE booking_id = %s AND hotel_name = %s",
-            (reference_phone, manager_name, booking_id, hotel_name),
+            (phone, manager_name, booking_id, hotel_name),
         )
         cur.execute(
             "UPDATE room_number_assignments SET guest_phone = %s, updated_by = %s WHERE hotel_name = %s AND booking_id = %s",
-            (reference_phone, manager_name, hotel_name, booking_id),
+            (phone, manager_name, hotel_name, booking_id),
         )
         cur.execute(
             "UPDATE payment_tracking SET guest_phone_number = %s WHERE booking_id = %s",
-            (reference_phone, booking_id),
+            (phone, booking_id),
         )
         conn.commit()
         cur.close()
         conn.close()
-        fields = {"guest_phone": reference_phone, "reference_phone": reference_phone, "phone_verified": True, "guest_name": guest_name}
+        fields = {"guest_phone": phone, "phone_verified": True, "guest_name": name}
+        if reference_phone:
+            fields["reference_phone"] = reference_phone
         coll = db.get_collection("guest_bookings")
         if booking_doc:
             coll.update_one({"hotel_name": hotel_name, "booking_id": booking_id}, {"$set": fields})
@@ -3230,7 +3307,10 @@ class IntelligentFrontDeskManager:
             fields["hotel_name"] = hotel_name
             fields["booking_id"] = booking_id
             coll.insert_one(fields)
-        return {"success": True, "guest_phone": reference_phone, "guest_name": guest_name, "phone_verified": True}
+        from booking_system.guest_manager import guest_manager
+        sent_at = datetime.now(timezone.utc).isoformat()
+        guest_manager.save_whatsapp_event(sent["message_id"], phone, hotel_name, sent_at, sent["template_name"], "out")
+        return {"success": True, "guest_phone": phone, "guest_name": name, "phone_verified": True, "whatsapp_message_id": sent["message_id"]}
 
     def read_booking_detail_internal(self, booking_id: str, stay_date: str = None) -> dict:
         """READ full booking detail for edit modal: guest, booking, payment sections.

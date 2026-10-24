@@ -410,6 +410,30 @@ class EnhancedGuestManager:
         coll.insert_one({**key, **fields})
         return "created"
 
+    def save_whatsapp_event(self, source_ref: str, guest_phone: str = "", hotel_name: str = "", sent_at: str = "", body: str = "", direction: str = "", status: str = "") -> str:
+        """Read the WhatsApp event by message id. Update it when that id exists, otherwise create it."""
+        key = {"channel": "whatsapp", "source_ref": str(source_ref or "")}
+        coll = self.mongo_db["guest_messages"]
+        existing = coll.find_one(key)
+        fields = {
+            "guest_phone": str(guest_phone or ""),
+            "hotel_name": str(hotel_name or "").upper(),
+            "sent_at": str(sent_at or ""),
+            "body": str(body or ""),
+            "direction": str(direction or "").strip().lower(),
+            "status": str(status or ""),
+        }
+        filled = {}
+        for name, value in fields.items():
+            if value:
+                filled[name] = value
+        if existing:
+            if filled:
+                coll.update_one(key, {"$set": filled})
+            return "updated"
+        coll.insert_one({**key, **filled})
+        return "created"
+
     def read_guest_profile(self, guest_phone: str) -> str:
         """READ comprehensive guest profile data (MongoDB only)"""
         try:

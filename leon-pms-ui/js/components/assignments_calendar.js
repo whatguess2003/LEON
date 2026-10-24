@@ -315,7 +315,7 @@ async function fetchAvailableRoomsCached(hotel, roomType, stayDate) {
 				</div>
 				<div id="pane-guest" class="hidden text-sm space-y-1">
 					<div>Name: <input id="det-guest-name" class="border rounded px-1 py-0.5 w-full" /></div>
-					<div class="flex items-center flex-wrap gap-2">Phone: <span id="det-guest-phone"></span><button id="det-verify-phone" type="button" class="hidden px-2 py-0.5 text-xs bg-blue-600 text-white rounded">Verified phone</button></div>
+					<div class="flex items-center flex-wrap gap-2">Phone: <select id="det-guest-dial" class="border rounded px-1 py-0.5"><option value="">Country code</option></select><input id="det-guest-phone" class="border rounded px-1 py-0.5 w-40" placeholder="Phone number" /><button id="det-verify-phone" type="button" class="hidden px-2 py-0.5 text-xs bg-blue-600 text-white rounded">Verify phone</button></div>
 					<div>Email: <input id="det-guest-email" class="border rounded px-1 py-0.5 w-full" /></div>
 					<div>Country: <select id="det-guest-country" class="border rounded px-1 py-0.5 w-full"></select></div>
 					<div>Date of Birth: <input id="det-guest-dob" type="date" class="border rounded px-1 py-0.5" /></div>
@@ -1019,6 +1019,25 @@ function wireStayDocuments(modal) {
     }
 }
 
+function fillCountryDial(select) {
+    if (!select || select.dataset.ready === '1') return;
+    (window.COUNTRY_CODES || []).forEach((row) => {
+        const opt = document.createElement('option');
+        opt.value = row.dial;
+        opt.textContent = row.code + ' ' + row.dial;
+        select.appendChild(opt);
+    });
+    select.dataset.ready = '1';
+}
+
+function splitCountryDial(phone) {
+    const value = String(phone || '').trim();
+    const dials = (window.COUNTRY_CODES || []).map((row) => row.dial).sort((a, b) => b.length - a.length);
+    const dial = dials.find((item) => value.indexOf(item) === 0) || '';
+    if (!dial) return {dial: '', local: value};
+    return {dial: dial, local: value.slice(dial.length)};
+}
+
 async function openEditModal(bookingId, initialStatus, stayDate, currentRoomType, currentRoomNumber) {
 		const modal = ensureEditModal();
 		wireStayDocuments(modal);
@@ -1080,26 +1099,46 @@ async function openEditModal(bookingId, initialStatus, stayDate, currentRoomType
                 setField('#det-guest-name', guest.guest_name, true);
                 var referencePhone = String(guest.reference_phone || '');
                 var phoneVerified = !!guest.phone_verified;
-                setField('#det-guest-phone', phoneVerified ? (guest.guest_phone || referencePhone) : referencePhone, false);
+                var phoneShown = phoneVerified ? (guest.guest_phone || referencePhone) : (referencePhone || guest.guest_phone || '');
+                var dialEl = modal.querySelector('#det-guest-dial');
+                fillCountryDial(dialEl);
+                var split = phoneVerified ? {dial: '', local: phoneShown} : splitCountryDial(phoneShown);
+                setField('#det-guest-phone', phoneVerified ? phoneShown : split.local, true);
+                if (dialEl) {
+                    dialEl.value = split.dial || '';
+                    dialEl.disabled = phoneVerified;
+                    dialEl.classList.toggle('hidden', phoneVerified);
+                }
+                var phoneInput = modal.querySelector('#det-guest-phone');
+                if (phoneInput) phoneInput.disabled = phoneVerified;
                 var verifyBtn = modal.querySelector('#det-verify-phone');
                 if (verifyBtn) {
-                    verifyBtn.classList.toggle('hidden', !(referencePhone && !phoneVerified));
+                    verifyBtn.classList.toggle('hidden', phoneVerified);
                     verifyBtn.disabled = false;
                     verifyBtn.onclick = async function() {
+                        var dial = dialEl ? String(dialEl.value || '').trim() : '';
+                        var typedPhone = phoneInput ? String(phoneInput.value || '').trim() : '';
+                        var typedName = String((modal.querySelector('#det-guest-name') || {}).value || '').trim();
+                        if (!dial) {
+                            window.alert('Enter country code');
+                            return;
+                        }
                         verifyBtn.disabled = true;
                         try {
                             var resp = await fetch(apiBase + '/assignments/verify-phone', {
                                 method: 'POST',
                                 headers: {'Content-Type': 'application/json'},
                                 credentials: 'include',
-                                body: JSON.stringify({booking_id: bookingId})
+                                body: JSON.stringify({booking_id: bookingId, guest_phone: typedPhone, guest_name: typedName, country_code: dial})
                             });
                             var body = await resp.json();
                             if (!resp.ok || body.error) throw new Error(body.error || 'Verify failed');
-                            setField('#det-guest-phone', body.guest_phone || referencePhone, false);
+                            setField('#det-guest-phone', body.guest_phone || typedPhone, true);
+                            if (phoneInput) phoneInput.disabled = true;
+                            if (dialEl) dialEl.classList.add('hidden');
                             verifyBtn.classList.add('hidden');
                             var header = modal.querySelector('#assign-guest');
-                            if (header) header.textContent = ((body.guest_name || guest.guest_name || '') + ' (' + (body.guest_phone || '') + ')').trim();
+                            if (header) header.textContent = ((body.guest_name || typedName || '') + ' (' + (body.guest_phone || '') + ')').trim();
                         } catch (err) {
                             verifyBtn.disabled = false;
                             window.alert(err.message || 'Verify failed');

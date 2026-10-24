@@ -11,7 +11,7 @@ import json
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body, Query, Cookie
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
 import logging
@@ -1114,6 +1114,33 @@ def _stay_dates_for_booking(hotel: str, booking_id: str) -> list:
     _bm._safe_rollback()
     return days
 
+@app.get("/webhook/whatsapp")
+async def whatsapp_webhook_verify(request: Request):
+    """Meta subscription handshake. The response body is the hub.challenge string."""
+    from booking_system.whatsapp_webhook import subscription_challenge
+    challenge = subscription_challenge(
+        request.query_params.get("hub.mode", ""),
+        request.query_params.get("hub.verify_token", ""),
+        request.query_params.get("hub.challenge", ""),
+    )
+    if not challenge:
+        return Response(status_code=403)
+    return Response(content=challenge, media_type="text/plain")
+
+@app.post("/webhook/whatsapp")
+async def whatsapp_webhook(request: Request):
+    """Incoming WhatsApp messages and delivery statuses for the messages field."""
+    from booking_system.whatsapp_webhook import accept_webhook, signature_ok
+    raw = await request.body()
+    if not signature_ok(raw, request.headers.get("x-hub-signature-256", "")):
+        return Response(status_code=403)
+    try:
+        payload = json.loads(raw.decode() or "{}")
+    except json.JSONDecodeError:
+        return JSONResponse(content={"error": "Invalid webhook payload"}, status_code=400)
+    await run_in_threadpool(accept_webhook, payload if isinstance(payload, dict) else {})
+    return {"success": True}
+
 @app.post("/update_reservation")
 async def update_reservation(request: Request, background_tasks: BackgroundTasks):
     """Aiosell book, modify, and cancel. The body is the full reservation state."""
@@ -1731,6 +1758,9 @@ class UpdateBookingDetailPayload(BaseModel):
 
 class VerifyPhonePayload(BaseModel):
     booking_id: str
+    guest_phone: str = ""
+    guest_name: str = ""
+    country_code: str = ""
 
 @app.post("/api/assignments/verify-phone")
 async def verify_assignment_phone(payload: VerifyPhonePayload, leon_jwt: str = Cookie(None)):
@@ -1740,7 +1770,7 @@ async def verify_assignment_phone(payload: VerifyPhonePayload, leon_jwt: str = C
         if not isinstance(manager_name, str) or manager_name.startswith("❌"):
             return JSONResponse(content={"error": "Invalid manager in token"}, status_code=401)
         from booking_system.front_desk_manager import intelligent_front_desk
-        data = intelligent_front_desk.verify_booking_phone(str(payload.booking_id or "").strip(), manager_name.upper())
+        data = intelligent_front_desk.verify_booking_phone(str(payload.booking_id or "").strip(), manager_name.upper(), str(payload.guest_phone or "").strip(), str(payload.guest_name or "").strip(), str(payload.country_code or "").strip())
         if data.get("error"):
             return JSONResponse(content=data, status_code=400)
         return JSONResponse(content=data)
