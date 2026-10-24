@@ -77,6 +77,19 @@ def _lookup_hotel_timezone(hotel_name: str) -> str:
     env_tz = os.getenv('HOTEL_TIMEZONE')
     if env_tz:
         return env_tz
+    name = str(hotel_name or "")
+    name_upper = name.upper()
+    try:
+        mdb = _get_manager_db()
+        if mdb is not None:
+            doc = mdb.get_collection("manager_collection").find_one(
+                {"hotel_name": name_upper},
+                {"hotel_timezone": 1},
+            )
+            if doc and doc.get("hotel_timezone"):
+                return str(doc.get("hotel_timezone"))
+    except Exception:
+        pass
     db = _get_mongo_db()
     candidates = (
         ('hotel_info', 'timezone'),

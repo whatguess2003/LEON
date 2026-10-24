@@ -3124,8 +3124,7 @@ async def api_availability(hotel_name: str = Query(...), room_type: str = Query(
 async def api_guest_profile(guest_phone: str = Query(...)):
     """Return guest profile text for a phone number. Response: { profile: str } or { error: str }"""
     try:
-        from booking_system.guest_manager import EnhancedGuestManager
-        gm = EnhancedGuestManager()
+        from booking_system.guest_manager import guest_manager as gm
         phone = str(guest_phone or '').upper()
         txt = gm.read_guest_profile(phone)
         if isinstance(txt, str) and txt.strip().startswith("❌"):
@@ -3162,8 +3161,7 @@ async def api_guests_search(q: str = "", hotel_name: str = "", leon_jwt: str = C
         hotel, denied = _guests_hotel(leon_jwt, hotel_name)
         if denied:
             return denied
-        from booking_system.guest_manager import EnhancedGuestManager
-        gm = EnhancedGuestManager()
+        from booking_system.guest_manager import guest_manager as gm
         return {"success": True, "hotel_name": hotel, "guests": gm.search_guests(hotel, q)}
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
@@ -3175,8 +3173,7 @@ async def api_guests_record(guest_phone: str = Query(...), hotel_name: str = "",
         hotel, denied = _guests_hotel(leon_jwt, hotel_name)
         if denied:
             return denied
-        from booking_system.guest_manager import EnhancedGuestManager
-        gm = EnhancedGuestManager()
+        from booking_system.guest_manager import guest_manager as gm
         record = gm.read_guest_with_bookings(hotel, str(guest_phone or "").upper())
         if not record:
             return JSONResponse(content={"error": "Guest profile not found"}, status_code=404)
@@ -3195,18 +3192,44 @@ async def api_guest_whatsapp(payload: Dict[str, Any] = Body(...), leon_jwt: str 
         text = str((payload or {}).get("body") or "").strip()
         if not guest_phone or not text:
             return JSONResponse(content={"error": "guest_phone and body are required"}, status_code=400)
-        from booking_system.guest_manager import EnhancedGuestManager
+        from booking_system.guest_manager import guest_manager as gm
         from booking_system.front_desk_manager import intelligent_front_desk
-        gm = EnhancedGuestManager()
         guest = gm.mongo_db["guests"].find_one({"guest_phone": guest_phone, "status": "active"})
         if not guest or str(guest.get("hotel_name") or "").upper() != hotel:
             return JSONResponse(content={"error": "Guest profile not found"}, status_code=404)
+        window = gm.whatsapp_text_window(gm.list_guest_messages(hotel, guest_phone))
+        if not window["open"]:
+            return JSONResponse(content={"error": "Free text is closed"}, status_code=400)
         sent = intelligent_front_desk.send_whatsapp_text(guest_phone, text)
         if sent.get("error"):
             return JSONResponse(content={"error": sent["error"]}, status_code=400)
         sent_at = datetime.now(timezone.utc).isoformat()
         gm.save_whatsapp_event(sent["message_id"], guest_phone, hotel, sent_at, text, "out")
         return {"success": True, "guest_phone": guest_phone, "body": text, "sent_at": sent_at, "source_ref": sent["message_id"], "direction": "out", "channel": "whatsapp"}
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.post("/api/guests/whatsapp/template")
+async def api_guest_whatsapp_template(payload: Dict[str, Any] = Body(...), leon_jwt: str = Cookie(None)):
+    """Send the env template to a guest and save it on the guest record."""
+    try:
+        hotel, denied = _guests_hotel(leon_jwt, str((payload or {}).get("hotel_name") or ""))
+        if denied:
+            return denied
+        guest_phone = str((payload or {}).get("guest_phone") or "").upper()
+        if not guest_phone:
+            return JSONResponse(content={"error": "guest_phone is required"}, status_code=400)
+        from booking_system.guest_manager import guest_manager as gm
+        from booking_system.front_desk_manager import intelligent_front_desk
+        guest = gm.mongo_db["guests"].find_one({"guest_phone": guest_phone, "status": "active"})
+        if not guest or str(guest.get("hotel_name") or "").upper() != hotel:
+            return JSONResponse(content={"error": "Guest profile not found"}, status_code=404)
+        sent = intelligent_front_desk.send_whatsapp_template(guest_phone)
+        if sent.get("error"):
+            return JSONResponse(content={"error": sent["error"]}, status_code=400)
+        sent_at = datetime.now(timezone.utc).isoformat()
+        gm.save_whatsapp_event(sent["message_id"], guest_phone, hotel, sent_at, sent["template_name"], "out")
+        return {"success": True, "guest_phone": guest_phone, "body": sent["template_name"], "sent_at": sent_at, "source_ref": sent["message_id"], "direction": "out", "channel": "whatsapp"}
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
@@ -3229,8 +3252,7 @@ async def api_guest_message(payload: Dict[str, Any] = Body(...), leon_jwt: str =
             return JSONResponse(content={"error": "direction must be in or out"}, status_code=400)
         if not guest_phone or not sent_at or not body:
             return JSONResponse(content={"error": "guest_phone, sent_at, and body are required"}, status_code=400)
-        from booking_system.guest_manager import EnhancedGuestManager
-        gm = EnhancedGuestManager()
+        from booking_system.guest_manager import guest_manager as gm
         guest = gm.mongo_db["guests"].find_one({"guest_phone": guest_phone, "status": "active"})
         if not guest or str(guest.get("hotel_name") or "").upper() != hotel:
             return JSONResponse(content={"error": "Guest profile not found"}, status_code=404)
@@ -3251,8 +3273,7 @@ async def api_guest_summarize(payload: Dict[str, Any] = Body(...), leon_jwt: str
             return JSONResponse(content={"error": "guest_phone is required"}, status_code=400)
         if _OpenAI is None or not os.getenv("OPENAI_API_KEY"):
             return JSONResponse(content={"error": "ChatGPT is unavailable"}, status_code=503)
-        from booking_system.guest_manager import EnhancedGuestManager
-        gm = EnhancedGuestManager()
+        from booking_system.guest_manager import guest_manager as gm
         record = gm.read_guest_with_bookings(hotel, guest_phone)
         if not record:
             return JSONResponse(content={"error": "Guest profile not found"}, status_code=404)
@@ -3318,8 +3339,7 @@ async def api_guest_profile_create(payload: Dict[str, Any] = Body(...), leon_jwt
         nationality = str(nationality).upper().strip() if nationality is not None else None
         if not guest_phone or not guest_name:
             return JSONResponse(content={"error": "❌ guest_phone and guest_name are required"}, status_code=400)
-        from booking_system.guest_manager import EnhancedGuestManager
-        gm = EnhancedGuestManager()
+        from booking_system.guest_manager import guest_manager as gm
         txt = gm.create_guest_profile(hotel, mgr, guest_phone, guest_name, email=email, nationality=nationality)
         if isinstance(txt, str) and txt.strip().startswith("❌"):
             return JSONResponse(content={"error": txt}, status_code=400)
@@ -3456,9 +3476,8 @@ async def api_guest_profile_update(payload: Dict[str, Any] = Body(...), leon_jwt
         guest_phone = str((payload or {}).get("guest_phone") or "").upper()
         if not guest_phone:
             return JSONResponse(content={"error": "guest_phone is required"}, status_code=400)
-        from booking_system.guest_manager import EnhancedGuestManager
+        from booking_system.guest_manager import guest_manager as gm
         from datetime import datetime, timezone
-        gm = EnhancedGuestManager()
         existing = gm.mongo_db["guests"].find_one({"guest_phone": guest_phone})
         if not existing:
             return JSONResponse(content={"error": "Guest profile not found"}, status_code=404)
@@ -3500,9 +3519,8 @@ async def api_guest_profile_deactivate(payload: Dict[str, Any] = Body(...), leon
         guest_phone = str((payload or {}).get("guest_phone") or "").upper()
         if not guest_phone:
             return JSONResponse(content={"error": "guest_phone is required"}, status_code=400)
-        from booking_system.guest_manager import EnhancedGuestManager
+        from booking_system.guest_manager import guest_manager as gm
         from datetime import datetime, timezone
-        gm = EnhancedGuestManager()
         existing = gm.mongo_db["guests"].find_one({"guest_phone": guest_phone})
         if not existing:
             return JSONResponse(content={"error": "Guest profile not found"}, status_code=404)

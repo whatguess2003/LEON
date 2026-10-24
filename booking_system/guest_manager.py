@@ -17,6 +17,7 @@ PMS ENHANCEMENTS:
 import pymongo
 import os
 import json
+import threading
 from datetime import date, timedelta
 from datetime import datetime, timezone
 from typing import List, Dict, Any
@@ -42,6 +43,9 @@ class EnhancedGuestManager:
             openai_api_key=os.getenv('OPENAI_API_KEY')
         )
         
+        self._pg_lock = threading.Lock()
+        self._pg_conn = None
+        self._currency = {}
         self._connect_database()
         self._ensure_guest_collection()
         self._ensure_loyalty_collection()
@@ -55,6 +59,9 @@ class EnhancedGuestManager:
             # MongoDB connection
             self.mongo_client = pymongo.MongoClient(os.getenv('MONGO_URL'))
             self.mongo_db = self.mongo_client['leon_hotel_memory']
+            from booking_system import timezone_utils
+            if timezone_utils._memory_client is None:
+                timezone_utils._memory_client = self.mongo_client
             
             # Database connection established silently
             self._ensure_guest_collection()
@@ -247,35 +254,58 @@ class EnhancedGuestManager:
         except Exception as e:
             return f"❌ Error creating guest profile: {e}"
 
+    def _with_pg(self, fn):
+        """Reuse one autocommit Postgres connection for guest reads."""
+        import psycopg2
+        with self._pg_lock:
+            conn = self._pg_conn
+            if conn is None or conn.closed:
+                conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+                conn.autocommit = True
+                self._pg_conn = conn
+            cur = conn.cursor()
+            try:
+                return fn(cur)
+            except psycopg2.Error:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                self._pg_conn = None
+                raise
+            finally:
+                cur.close()
+
+    def hotel_currency(self, hotel_name: str) -> str:
+        """Hotel profile currency. Read once per hotel and kept on this manager."""
+        hotel = str(hotel_name or "").upper()
+        if hotel in self._currency:
+            return self._currency[hotel]
+        profile = self.mongo_client["leon_manager_system"]["manager_collection"].find_one(
+            {"hotel_name": hotel},
+            {"_id": 0, "hotel_currency": 1},
+        )
+        currency = str((profile or {}).get("hotel_currency") or "")
+        self._currency[hotel] = currency
+        return currency
+
     def guest_booking_totals(self, guest_phone: str, hotel_name: str):
         """Active booking count and tracked stay total for one guest. Currency is the hotel profile currency."""
-        import psycopg2
-        from pymongo.collation import Collation
-        conn = psycopg2.connect(os.getenv("DATABASE_URL"))
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT COUNT(rb.booking_id), COALESCE(SUM(pt.total_amount), 0)
-            FROM room_bookings rb
-            LEFT JOIN payment_tracking pt ON pt.booking_id = rb.booking_id
-            WHERE rb.guest_phone = %s
-              AND UPPER(rb.hotel_name) = UPPER(%s)
-              AND LOWER(COALESCE(rb.booking_status, '')) <> 'cancelled'
-            """,
-            (guest_phone, hotel_name or ""),
-        )
-        row = cur.fetchone() or (0, 0)
-        cur.close()
-        conn.close()
-        profile = self.mongo_client["leon_manager_system"]["manager_collection"].find_one(
-            {"hotel_name": hotel_name or ""},
-            {"_id": 0, "hotel_currency": 1},
-            collation=Collation(locale="en", strength=2),
-        )
-        currency = ""
-        if profile and profile.get("hotel_currency"):
-            currency = str(profile.get("hotel_currency"))
-        return int(row[0] or 0), float(row[1] or 0), currency
+        def query(cur):
+            cur.execute(
+                """
+                SELECT COUNT(rb.booking_id), COALESCE(SUM(pt.total_amount), 0)
+                FROM room_bookings rb
+                LEFT JOIN payment_tracking pt ON pt.booking_id = rb.booking_id
+                WHERE rb.guest_phone = %s
+                  AND UPPER(rb.hotel_name) = UPPER(%s)
+                  AND LOWER(COALESCE(rb.booking_status, '')) <> 'cancelled'
+                """,
+                (guest_phone, hotel_name or ""),
+            )
+            return cur.fetchone() or (0, 0)
+        row = self._with_pg(query)
+        return int(row[0] or 0), float(row[1] or 0), self.hotel_currency(hotel_name)
 
     def search_guests(self, hotel_name: str, query: str):
         """Active guests at one hotel. Query matches phone, name, or email."""
@@ -297,19 +327,7 @@ class EnhancedGuestManager:
         found.sort(key=lambda row: row["guest_name"])
         return found
 
-    def read_guest_with_bookings(self, hotel_name: str, guest_phone: str):
-        """Guest profile plus past, current, and future bookings and their assigned rooms."""
-        import psycopg2
-        from datetime import timedelta
-        from booking_system.timezone_utils import hotel_local_today
-        hotel = str(hotel_name or "").upper()
-        phone = str(guest_phone or "").upper()
-        guest = self.mongo_db["guests"].find_one({"guest_phone": phone, "status": "active"})
-        if not guest or str(guest.get("hotel_name") or "").upper() != hotel:
-            return None
-        today = hotel_local_today(hotel)
-        conn = psycopg2.connect(os.getenv("DATABASE_URL"))
-        cur = conn.cursor()
+    def _guest_booking_rows(self, cur, hotel: str, phone: str):
         cur.execute(
             """
             SELECT rb.booking_id, rb.booking_status, rb.room_type,
@@ -347,8 +365,18 @@ class EnhancedGuestManager:
                     "check_in": first_night.isoformat() if first_night else "",
                     "check_out": (last_night + timedelta(days=1)).isoformat() if last_night else "",
                 })
-        cur.close()
-        conn.close()
+        return booking_rows, rooms_by_booking
+
+    def read_guest_with_bookings(self, hotel_name: str, guest_phone: str):
+        """Guest profile plus past, current, and future bookings and their assigned rooms."""
+        from booking_system.timezone_utils import hotel_local_today
+        hotel = str(hotel_name or "").upper()
+        phone = str(guest_phone or "").upper()
+        guest = self.mongo_db["guests"].find_one({"guest_phone": phone, "status": "active"})
+        if not guest or str(guest.get("hotel_name") or "").upper() != hotel:
+            return None
+        today = hotel_local_today(hotel)
+        booking_rows, rooms_by_booking = self._with_pg(lambda cur: self._guest_booking_rows(cur, hotel, phone))
         past, current, future = [], [], []
         for booking_id, booking_status, room_type, first_night, last_night, total_amount in booking_rows:
             item = {
@@ -367,12 +395,13 @@ class EnhancedGuestManager:
                 future.append(item)
             else:
                 current.append(item)
-        _, _, currency = self.guest_booking_totals(phone, hotel)
+        currency = self.hotel_currency(hotel)
         record = {}
         for key in ("guest_phone", "guest_name", "email", "guest_email", "nationality", "country", "date_of_birth", "gender", "company", "address", "identity_type", "identity_number", "special_request", "vip", "status", "ai_summary", "ai_summary_at"):
             record[key] = guest.get(key)
         if not record.get("email"):
             record["email"] = guest.get("guest_email") or ""
+        messages = self.list_guest_messages(hotel, phone)
         return {
             "guest": record,
             "currency": currency,
@@ -380,7 +409,8 @@ class EnhancedGuestManager:
             "past": past,
             "current": current,
             "future": future,
-            "messages": self.list_guest_messages(hotel, phone),
+            "messages": messages,
+            "whatsapp_window": self.whatsapp_text_window(messages),
         }
 
     def list_guest_messages(self, hotel_name: str, guest_phone: str):
@@ -391,6 +421,26 @@ class EnhancedGuestManager:
         ))
         rows.sort(key=lambda row: str(row.get("sent_at") or ""))
         return rows
+
+    def whatsapp_text_window(self, messages):
+        """Free text is open for 24 hours after the guest's latest WhatsApp message."""
+        latest = ""
+        for row in messages or []:
+            if str((row or {}).get("channel") or "") != "whatsapp" or str((row or {}).get("direction") or "") != "in":
+                continue
+            sent_at = str((row or {}).get("sent_at") or "")
+            if sent_at > latest:
+                latest = sent_at
+        if not latest:
+            return {"open": False, "until": ""}
+        try:
+            opened = datetime.fromisoformat(latest)
+        except ValueError:
+            return {"open": False, "until": ""}
+        if opened.tzinfo is None:
+            opened = opened.replace(tzinfo=timezone.utc)
+        until = opened + timedelta(hours=24)
+        return {"open": datetime.now(timezone.utc) < until, "until": until.isoformat()}
 
     def save_guest_message(self, hotel_name: str, guest_phone: str, channel: str, sent_at: str, body: str, direction: str, source_ref: str):
         """Read the message first. Update it when the natural key matches, otherwise create it."""

@@ -116,10 +116,15 @@ class GuestComponent {
                 </div>
                 <div id="msg-list" class="space-y-2"></div>
                 <div id="wa-compose" class="hidden mt-3 border rounded p-3">
-                    <label class="text-sm text-gray-700" for="wa-body">WhatsApp message</label>
-                    <textarea id="wa-body" rows="3" class="border rounded w-full p-2 mt-1" placeholder="Write a message to this guest"></textarea>
+                    <div class="flex items-center justify-between">
+                        <span class="text-sm text-gray-700">Approved template</span>
+                        <button type="button" id="wa-template" class="bg-green-600 text-white px-3 py-1 rounded text-sm">Send template</button>
+                    </div>
+                    <p id="wa-window" class="text-sm mt-3"></p>
+                    <label class="text-sm text-gray-700 mt-3 block" for="wa-body">WhatsApp message</label>
+                    <textarea id="wa-body" rows="3" class="border rounded w-full p-2 mt-1" placeholder="Write a message after the guest replies"></textarea>
                     <div class="flex justify-end mt-2">
-                        <button type="button" id="wa-send" class="bg-green-600 text-white px-3 py-1 rounded text-sm">Send</button>
+                        <button type="button" id="wa-send" class="bg-blue-600 text-white px-3 py-1 rounded text-sm">Send</button>
                     </div>
                     <p id="wa-status" class="text-sm mt-2"></p>
                 </div>
@@ -173,6 +178,7 @@ class GuestComponent {
         document.querySelectorAll('.msg-filter').forEach(button => {
             button.addEventListener('click', () => this.renderMessages(button.dataset.channel || ''));
         });
+        document.getElementById('wa-template').addEventListener('click', () => this.sendWhatsappTemplate());
         document.getElementById('wa-send').addEventListener('click', () => this.sendWhatsapp());
         this.renderMessages(this.messageChannel || '');
         if (this.viewTab) this.showTab(this.viewTab);
@@ -218,6 +224,7 @@ class GuestComponent {
             button.className = 'msg-filter px-3 py-1 rounded text-sm ' + (selected ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700');
         });
         if (compose) compose.classList.toggle('hidden', channel !== 'whatsapp');
+        if (channel === 'whatsapp') this.applyWhatsappWindow();
         if (!rows.length) {
             const empty = {
                 '': 'Email, WhatsApp, and voice recordings will appear here once they are connected.',
@@ -245,6 +252,24 @@ class GuestComponent {
                 <div class="mt-1 text-gray-900 whitespace-pre-wrap">${this.esc(message.body)}</div>
             </div>
         `).join('');
+    }
+
+    applyWhatsappWindow() {
+        const windowState = (this.record && this.record.whatsapp_window) || { open: false, until: '' };
+        const note = document.getElementById('wa-window');
+        const field = document.getElementById('wa-body');
+        const send = document.getElementById('wa-send');
+        if (!note) return;
+        note.textContent = windowState.open ? 'Free text open until ' + windowState.until : 'Free text closed';
+        note.className = 'text-sm mt-3 ' + (windowState.open ? 'text-green-700' : 'text-gray-500');
+        if (field) {
+            field.disabled = !windowState.open;
+            field.classList.toggle('opacity-50', !windowState.open);
+        }
+        if (send) {
+            send.disabled = !windowState.open;
+            send.classList.toggle('opacity-50', !windowState.open);
+        }
     }
 
     whatsappBubble(message) {
@@ -282,6 +307,26 @@ class GuestComponent {
             return;
         }
         field.value = '';
+        this.viewTab = 'messages';
+        this.messageChannel = 'whatsapp';
+        await this.openGuest(guest.guest_phone);
+    }
+
+    async sendWhatsappTemplate() {
+        const guest = (this.record && this.record.guest) || {};
+        const status = document.getElementById('wa-status');
+        status.textContent = 'Sending template...';
+        const response = await fetch(`${this.apiUrl}/guests/whatsapp/template`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ guest_phone: guest.guest_phone, hotel_name: this.currentHotel })
+        });
+        const data = await response.json();
+        if (!response.ok || data.error) {
+            status.textContent = data.error || 'WhatsApp template failed';
+            return;
+        }
         this.viewTab = 'messages';
         this.messageChannel = 'whatsapp';
         await this.openGuest(guest.guest_phone);

@@ -35,6 +35,21 @@ from .llm_utils import canonical_key
 
 load_dotenv()
 
+# Longest country calling code first. WhatsApp matches the code, then the national number.
+_WHATSAPP_DIAL_CODES = (
+    "376", "971", "355", "374", "244", "297", "994", "387", "880", "226", "359", "973", "257", "229", "673", "591",
+    "975", "267", "375", "501", "243", "236", "242", "225", "237", "506", "238", "599", "357", "420", "253", "213",
+    "593", "372", "251", "358", "679", "241", "995", "233", "350", "220", "224", "240", "502", "592", "852", "504",
+    "385", "509", "353", "972", "964", "354", "962", "254", "996", "855", "686", "269", "850", "965", "856", "961",
+    "423", "231", "266", "370", "352", "371", "218", "212", "377", "373", "382", "261", "692", "389", "223", "976",
+    "853", "222", "356", "230", "960", "265", "258", "264", "227", "234", "505", "977", "674", "968", "507", "689",
+    "675", "351", "595", "974", "381", "250", "966", "248", "249", "386", "421", "232", "221", "252", "597", "503",
+    "992", "670", "993", "216", "886", "255", "380", "256", "598", "998", "379", "678", "685", "967", "260", "263",
+    "93", "54", "43", "61", "32", "55", "41", "56", "86", "57", "53", "49", "45", "20", "34", "33", "44", "30",
+    "36", "62", "91", "98", "39", "81", "82", "94", "95", "52", "60", "31", "47", "64", "51", "63", "92", "48",
+    "40", "46", "65", "66", "90", "58", "84", "27", "1", "7",
+)
+
 # LLM-Enhanced Front Desk Manager Class
 class IntelligentFrontDeskManager:
     """Hybrid Front Desk Manager with LLM for natural language processing and direct tools for operations"""
@@ -3185,6 +3200,21 @@ class IntelligentFrontDeskManager:
             return ""
         return dial + local
 
+    def _whatsapp_to(self, guest_phone: str) -> str:
+        """Country calling code plus national number, trunk 0 removed. Guest profiles stay unchanged."""
+        digits = "".join(ch for ch in str(guest_phone or "") if ch.isdigit())
+        dial = ""
+        for code in _WHATSAPP_DIAL_CODES:
+            if digits.startswith(code):
+                dial = code
+                break
+        national = digits[len(dial):]
+        if national.startswith("0"):
+            national = national[1:]
+        if not dial or not national.isdigit():
+            return ""
+        return "+" + dial + national
+
     def _post_whatsapp(self, payload: dict) -> dict:
         import urllib.error
         import urllib.request
@@ -3220,10 +3250,13 @@ class IntelligentFrontDeskManager:
         body = str(text or "").strip()
         if not body:
             return {"error": "Message is required"}
+        recipient = self._whatsapp_to(guest_phone)
+        if not recipient:
+            return {"error": "WhatsApp number needs a country code"}
         return self._post_whatsapp({
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
-            "to": guest_phone,
+            "to": recipient,
             "type": "text",
             "text": {"body": body},
         })
@@ -3232,12 +3265,17 @@ class IntelligentFrontDeskManager:
         """Send the configured WhatsApp template. A first message to a guest must be a template."""
         template_name = str(os.getenv("WHATSAPP_TEMPLATE_NAME") or "").strip()
         language = str(os.getenv("WHATSAPP_TEMPLATE_LANGUAGE") or "").strip()
-        if not template_name or not language:
+        if not template_name:
             return {"error": "WhatsApp template is not configured"}
+        if not language:
+            return {"error": "WhatsApp template language is not configured"}
+        recipient = self._whatsapp_to(guest_phone)
+        if not recipient:
+            return {"error": "WhatsApp number needs a country code"}
         sent = self._post_whatsapp({
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
-            "to": guest_phone,
+            "to": recipient,
             "type": "template",
             "template": {"name": template_name, "language": {"code": language}},
         })
