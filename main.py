@@ -3184,6 +3184,32 @@ async def api_guests_record(guest_phone: str = Query(...), hotel_name: str = "",
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
+@app.post("/api/guests/whatsapp")
+async def api_guest_whatsapp(payload: Dict[str, Any] = Body(...), leon_jwt: str = Cookie(None)):
+    """Send one WhatsApp text to a guest and save it on the guest record."""
+    try:
+        hotel, denied = _guests_hotel(leon_jwt, str((payload or {}).get("hotel_name") or ""))
+        if denied:
+            return denied
+        guest_phone = str((payload or {}).get("guest_phone") or "").upper()
+        text = str((payload or {}).get("body") or "").strip()
+        if not guest_phone or not text:
+            return JSONResponse(content={"error": "guest_phone and body are required"}, status_code=400)
+        from booking_system.guest_manager import EnhancedGuestManager
+        from booking_system.front_desk_manager import intelligent_front_desk
+        gm = EnhancedGuestManager()
+        guest = gm.mongo_db["guests"].find_one({"guest_phone": guest_phone, "status": "active"})
+        if not guest or str(guest.get("hotel_name") or "").upper() != hotel:
+            return JSONResponse(content={"error": "Guest profile not found"}, status_code=404)
+        sent = intelligent_front_desk.send_whatsapp_text(guest_phone, text)
+        if sent.get("error"):
+            return JSONResponse(content={"error": sent["error"]}, status_code=400)
+        sent_at = datetime.now(timezone.utc).isoformat()
+        gm.save_whatsapp_event(sent["message_id"], guest_phone, hotel, sent_at, text, "out")
+        return {"success": True, "guest_phone": guest_phone, "body": text, "sent_at": sent_at, "source_ref": sent["message_id"], "direction": "out", "channel": "whatsapp"}
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
 @app.post("/api/guests/messages")
 async def api_guest_message(payload: Dict[str, Any] = Body(...), leon_jwt: str = Cookie(None)):
     """Save one guest message. Natural key is hotel, phone, channel, sent_at, and source_ref."""

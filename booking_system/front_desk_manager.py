@@ -3185,23 +3185,13 @@ class IntelligentFrontDeskManager:
             return ""
         return dial + local
 
-    def send_whatsapp_template(self, guest_phone: str) -> dict:
-        """Send the configured WhatsApp template. A first message to a guest must be a template."""
+    def _post_whatsapp(self, payload: dict) -> dict:
         import urllib.error
         import urllib.request
         token = str(os.getenv("WHATSAPP_ACCESS_TOKEN") or "").strip()
         phone_number_id = str(os.getenv("WHATSAPP_PHONE_NUMBER_ID") or "").strip()
-        template_name = str(os.getenv("WHATSAPP_TEMPLATE_NAME") or "").strip()
-        language = str(os.getenv("WHATSAPP_TEMPLATE_LANGUAGE") or "").strip()
-        if not token or not phone_number_id or not template_name or not language:
-            return {"error": "WhatsApp template is not configured"}
-        payload = {
-            "messaging_product": "whatsapp",
-            "recipient_type": "individual",
-            "to": guest_phone,
-            "type": "template",
-            "template": {"name": template_name, "language": {"code": language}},
-        }
+        if not token or not phone_number_id:
+            return {"error": "WhatsApp access token is not configured"}
         request = urllib.request.Request(
             "https://graph.facebook.com/v23.0/" + phone_number_id + "/messages",
             data=json.dumps(payload).encode(),
@@ -3222,8 +3212,38 @@ class IntelligentFrontDeskManager:
         sent = (body.get("messages") or [{}])[0]
         message_id = str((sent or {}).get("id") or "")
         if not message_id:
-            return {"error": "WhatsApp did not accept the template"}
-        return {"message_id": message_id, "template_name": template_name}
+            return {"error": "WhatsApp did not accept the message"}
+        return {"message_id": message_id}
+
+    def send_whatsapp_text(self, guest_phone: str, text: str) -> dict:
+        """Send one free-form WhatsApp text. Meta accepts this only inside an open customer service window."""
+        body = str(text or "").strip()
+        if not body:
+            return {"error": "Message is required"}
+        return self._post_whatsapp({
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": guest_phone,
+            "type": "text",
+            "text": {"body": body},
+        })
+
+    def send_whatsapp_template(self, guest_phone: str) -> dict:
+        """Send the configured WhatsApp template. A first message to a guest must be a template."""
+        template_name = str(os.getenv("WHATSAPP_TEMPLATE_NAME") or "").strip()
+        language = str(os.getenv("WHATSAPP_TEMPLATE_LANGUAGE") or "").strip()
+        if not template_name or not language:
+            return {"error": "WhatsApp template is not configured"}
+        sent = self._post_whatsapp({
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": guest_phone,
+            "type": "template",
+            "template": {"name": template_name, "language": {"code": language}},
+        })
+        if sent.get("message_id"):
+            sent["template_name"] = template_name
+        return sent
 
     def verify_booking_phone(self, booking_id: str, manager_name: str, guest_phone: str = "", guest_name: str = "", country_code: str = "") -> dict:
         """Create or link the guest profile from the phone and country code on the stay edit."""

@@ -8,7 +8,7 @@ class GuestComponent {
         this.record = null;
         this.initialize();
     }
-
+    
     async initialize() {
         await this.loadManagerContext();
         document.getElementById('guest-search-btn').addEventListener('click', () => this.search());
@@ -21,7 +21,7 @@ class GuestComponent {
         document.getElementById('add-save').addEventListener('click', () => this.createGuest());
         await this.search();
     }
-
+    
     async loadManagerContext() {
         const box = document.getElementById('hotel-context-info');
         const hotel = String(window.leonHotel ? window.leonHotel() : '').toUpperCase();
@@ -67,7 +67,7 @@ class GuestComponent {
 
     async openGuest(phone) {
         const response = await fetch(`${this.apiUrl}/guests/record?hotel_name=${encodeURIComponent(this.currentHotel)}&guest_phone=${encodeURIComponent(phone)}`, { credentials: 'include' });
-        const data = await response.json();
+                const data = await response.json();
         if (!response.ok || data.error) {
             document.getElementById('guest-detail').textContent = data.error || 'Could not load the guest';
             return;
@@ -115,6 +115,14 @@ class GuestComponent {
                     <button type="button" data-channel="voice" class="msg-filter px-3 py-1 rounded text-sm bg-gray-100 text-gray-700">Voice</button>
                 </div>
                 <div id="msg-list" class="space-y-2"></div>
+                <div id="wa-compose" class="hidden mt-3 border rounded p-3">
+                    <label class="text-sm text-gray-700" for="wa-body">WhatsApp message</label>
+                    <textarea id="wa-body" rows="3" class="border rounded w-full p-2 mt-1" placeholder="Write a message to this guest"></textarea>
+                    <div class="flex justify-end mt-2">
+                        <button type="button" id="wa-send" class="bg-green-600 text-white px-3 py-1 rounded text-sm">Send</button>
+                    </div>
+                    <p id="wa-status" class="text-sm mt-2"></p>
+                </div>
             </div>
             <div id="pane-biography" class="hidden">
                 <div class="flex justify-end mb-3">
@@ -165,7 +173,9 @@ class GuestComponent {
         document.querySelectorAll('.msg-filter').forEach(button => {
             button.addEventListener('click', () => this.renderMessages(button.dataset.channel || ''));
         });
-        this.renderMessages('');
+        document.getElementById('wa-send').addEventListener('click', () => this.sendWhatsapp());
+        this.renderMessages(this.messageChannel || '');
+        if (this.viewTab) this.showTab(this.viewTab);
     }
 
     showTab(name) {
@@ -199,12 +209,15 @@ class GuestComponent {
     }
 
     renderMessages(channel) {
+        this.messageChannel = channel || '';
         const list = document.getElementById('msg-list');
+        const compose = document.getElementById('wa-compose');
         const rows = (this.record.messages || []).filter(message => !channel || message.channel === channel);
         document.querySelectorAll('.msg-filter').forEach(button => {
             const selected = (button.dataset.channel || '') === channel;
             button.className = 'msg-filter px-3 py-1 rounded text-sm ' + (selected ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700');
         });
+        if (compose) compose.classList.toggle('hidden', channel !== 'whatsapp');
         if (!rows.length) {
             const empty = {
                 '': 'Email, WhatsApp, and voice recordings will appear here once they are connected.',
@@ -213,6 +226,12 @@ class GuestComponent {
                 voice: 'No voice recordings saved for this guest.'
             };
             list.innerHTML = `<p class="text-sm text-gray-500">${empty[channel] || 'No messages saved.'}</p>`;
+            return;
+        }
+        if (channel === 'whatsapp') {
+            list.innerHTML = `<div class="border rounded p-3 max-h-96 overflow-y-auto space-y-2 bg-gray-50">${rows.map(message => this.whatsappBubble(message)).join('')}</div>`;
+            const thread = list.firstChild;
+            if (thread) thread.scrollTop = thread.scrollHeight;
             return;
         }
         const directionLabel = { in: 'In', out: 'Out' };
@@ -224,9 +243,48 @@ class GuestComponent {
                     <span>${this.esc(message.sent_at)}</span>
                 </div>
                 <div class="mt-1 text-gray-900 whitespace-pre-wrap">${this.esc(message.body)}</div>
-                ${message.source_ref ? `<div class="mt-1 text-gray-400">${this.esc(message.source_ref)}</div>` : ''}
             </div>
         `).join('');
+    }
+
+    whatsappBubble(message) {
+        const outbound = message.direction === 'out';
+        const status = message.status ? ' · ' + message.status : '';
+        return `
+            <div class="flex ${outbound ? 'justify-end' : 'justify-start'}">
+                <div class="max-w-md rounded px-3 py-2 text-sm ${outbound ? 'bg-green-100' : 'bg-white border'}">
+                    <div class="whitespace-pre-wrap text-gray-900">${this.esc(message.body)}</div>
+                    <div class="text-xs text-gray-500 mt-1">${this.esc(message.sent_at)}${this.esc(status)}</div>
+                </div>
+            </div>
+        `;
+    }
+
+    async sendWhatsapp() {
+        const guest = (this.record && this.record.guest) || {};
+        const field = document.getElementById('wa-body');
+        const status = document.getElementById('wa-status');
+        const text = String((field && field.value) || '').trim();
+        if (!text) {
+            status.textContent = 'Write a message first';
+            return;
+        }
+        status.textContent = 'Sending...';
+        const response = await fetch(`${this.apiUrl}/guests/whatsapp`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ guest_phone: guest.guest_phone, hotel_name: this.currentHotel, body: text })
+        });
+        const data = await response.json();
+        if (!response.ok || data.error) {
+            status.textContent = data.error || 'WhatsApp send failed';
+            return;
+        }
+        field.value = '';
+        this.viewTab = 'messages';
+        this.messageChannel = 'whatsapp';
+        await this.openGuest(guest.guest_phone);
     }
 
     async summarizeGuest() {
