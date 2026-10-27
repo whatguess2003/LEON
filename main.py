@@ -1123,6 +1123,7 @@ def _write_guest_needs(hotel: str, guest_phone: str) -> dict:
     record = gm.read_guest_with_bookings(hotel, guest_phone)
     if not record:
         return {"error": "Guest profile not found", "status": 404}
+    record["hotel_name"] = str(hotel or "").upper()
     client = _OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     try:
         brief = summarize_guest(client, record, gm.read_guest_media)
@@ -1141,6 +1142,7 @@ def _write_guest_needs(hotel: str, guest_phone: str) -> dict:
         "recommended_action": brief["recommended_action"],
         "ai_summary_at": summary_at,
         "ai_summary_for": "brief",
+        "executable_actions": brief.get("executable_actions") or [],
     }
     gm.mongo_db["guests"].update_one({"guest_phone": guest_phone}, {"$set": saved})
     return {"guest_phone": guest_phone, **saved}
@@ -3240,6 +3242,29 @@ async def api_guest_whatsapp(payload: Dict[str, Any] = Body(...), leon_jwt: str 
         sent_at = datetime.now(timezone.utc).isoformat()
         gm.save_whatsapp_event(sent["message_id"], guest_phone, hotel, sent_at, text, "out")
         return {"success": True, "guest_phone": guest_phone, "body": text, "sent_at": sent_at, "source_ref": sent["message_id"], "direction": "out", "channel": "whatsapp"}
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.post("/api/guests/whatsapp/simulate")
+async def api_guest_whatsapp_simulate(payload: Dict[str, Any] = Body(...), leon_jwt: str = Cookie(None)):
+    """Save a WhatsApp message on the guest without sending it. Meta is not called."""
+    try:
+        hotel, denied = _guests_hotel(leon_jwt, str((payload or {}).get("hotel_name") or ""))
+        if denied:
+            return denied
+        guest_phone = str((payload or {}).get("guest_phone") or "").upper()
+        text = str((payload or {}).get("body") or "").strip()
+        if not guest_phone or not text:
+            return JSONResponse(content={"error": "guest_phone and body are required"}, status_code=400)
+        from booking_system.guest_manager import guest_manager as gm
+        guest = gm.mongo_db["guests"].find_one({"guest_phone": guest_phone, "status": "active"})
+        if not guest or str(guest.get("hotel_name") or "").upper() != hotel:
+            return JSONResponse(content={"error": "Guest profile not found"}, status_code=404)
+        import uuid
+        sent_at = datetime.now(timezone.utc).isoformat()
+        source_ref = "sim-" + uuid.uuid4().hex
+        gm.save_whatsapp_event(source_ref, guest_phone, hotel, sent_at, text, "out", "simulated")
+        return {"success": True, "guest_phone": guest_phone, "body": text, "sent_at": sent_at, "source_ref": source_ref, "direction": "out", "channel": "whatsapp", "status": "simulated"}
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
 

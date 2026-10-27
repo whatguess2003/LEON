@@ -97,21 +97,27 @@ class GuestComponent {
                     ${this.summaryCard('Cancelled', counts.cancelled)}
                     ${this.summaryCard('Total spent', (this.record.currency || '') + ' ' + counts.spent.toFixed(2))}
                 </div>
-                <div class="mt-4 border rounded p-3 space-y-3">
-                    <div>
-                        <h3 class="text-sm font-semibold">Guest profile summary</h3>
-                        <div id="guest-profile-summary" class="text-sm whitespace-pre-wrap mt-1">${this.esc(guest.guest_profile_summary) || ''}</div>
+                <div class="mt-4 border rounded p-3 md:flex">
+                    <div class="flex-1 md:pr-4 space-y-3">
+                        <div>
+                            <h3 class="text-sm font-semibold">Guest profile summary</h3>
+                            <div id="guest-profile-summary" class="text-sm whitespace-pre-wrap mt-1">${this.esc(guest.guest_profile_summary) || ''}</div>
+                        </div>
+                        <div>
+                            <h3 class="text-sm font-semibold">Guest needs</h3>
+                            <div id="guest-needs" class="text-sm whitespace-pre-wrap mt-1">${this.esc(guest.guest_needs) || ''}</div>
+                        </div>
+                        <div>
+                            <h3 class="text-sm font-semibold">Recommended action</h3>
+                            <div id="recommended-action" class="text-sm whitespace-pre-wrap mt-1">${this.esc(guest.recommended_action) || ''}</div>
+                        </div>
+                        <p id="ai-when" class="text-xs text-gray-500">${guest.ai_summary_at ? 'Saved ' + this.esc(guest.ai_summary_at) : ''}</p>
+                        <p id="ai-status" class="text-sm"></p>
                     </div>
-                    <div>
-                        <h3 class="text-sm font-semibold">Guest needs</h3>
-                        <div id="guest-needs" class="text-sm whitespace-pre-wrap mt-1">${this.esc(guest.guest_needs) || ''}</div>
+                    <div class="md:w-80 md:border-l md:pl-4 mt-4 md:mt-0 flex-shrink-0">
+                        <h3 class="text-sm font-semibold">Executable actions</h3>
+                        <div id="executable-actions" class="mt-2 space-y-2"></div>
                     </div>
-                    <div>
-                        <h3 class="text-sm font-semibold">Recommended action</h3>
-                        <div id="recommended-action" class="text-sm whitespace-pre-wrap mt-1">${this.esc(guest.recommended_action) || ''}</div>
-                    </div>
-                    <p id="ai-when" class="text-xs text-gray-500">${guest.ai_summary_at ? 'Saved ' + this.esc(guest.ai_summary_at) : ''}</p>
-                    <p id="ai-status" class="text-sm"></p>
                 </div>
             </div>
             <div id="pane-messages" class="hidden">
@@ -140,8 +146,10 @@ class GuestComponent {
                         <span id="wa-file-name" class="text-sm text-gray-600 ml-2"></span>
                     </div>
                     <div class="flex justify-end mt-2">
-                        <button type="button" id="wa-send" class="bg-blue-600 text-white px-3 py-1 rounded text-sm">Send</button>
+                        <button type="button" id="wa-simulate" class="bg-gray-700 text-white px-3 py-1 rounded text-sm">Simulate</button>
+                        <button type="button" id="wa-send" class="bg-blue-600 text-white px-3 py-1 rounded text-sm ml-2">Send</button>
                     </div>
+                    <p class="text-xs text-gray-500 mt-2">Simulate saves the message on this guest. WhatsApp is not sent.</p>
                     <p id="wa-status" class="text-sm mt-2"></p>
                 </div>
             </div>
@@ -196,6 +204,7 @@ class GuestComponent {
         document.getElementById('wa-template-pick').addEventListener('change', () => this.showWhatsappTemplate());
         document.getElementById('wa-template').addEventListener('click', () => this.sendWhatsappTemplate());
         document.getElementById('wa-send').addEventListener('click', () => this.sendWhatsapp());
+        document.getElementById('wa-simulate').addEventListener('click', () => this.simulateWhatsapp());
         document.getElementById('wa-upload').addEventListener('click', () => {
             const input = document.getElementById('wa-file');
             if (input && !input.disabled) input.click();
@@ -207,6 +216,7 @@ class GuestComponent {
             if (name) name.textContent = chosen ? chosen.name : '';
         });
         this.renderMessages(this.messageChannel || '');
+        this.renderActions(guest.executable_actions);
         if (this.viewTab) this.showTab(this.viewTab);
     }
 
@@ -287,15 +297,10 @@ class GuestComponent {
     applyWhatsappWindow() {
         const windowState = (this.record && this.record.whatsapp_window) || { open: false, until: '' };
         const note = document.getElementById('wa-window');
-        const field = document.getElementById('wa-body');
         const send = document.getElementById('wa-send');
         if (!note) return;
         note.textContent = windowState.open ? 'Free text open until ' + windowState.until : 'Free text closed';
         note.className = 'text-sm mt-3 ' + (windowState.open ? 'text-green-700' : 'text-gray-500');
-        if (field) {
-            field.disabled = !windowState.open;
-            field.classList.toggle('opacity-50', !windowState.open);
-        }
         if (send) {
             send.disabled = !windowState.open;
             send.classList.toggle('opacity-50', !windowState.open);
@@ -413,6 +418,33 @@ class GuestComponent {
         await this.openGuest(guest.guest_phone);
     }
 
+    async simulateWhatsapp() {
+        const guest = (this.record && this.record.guest) || {};
+        const field = document.getElementById('wa-body');
+        const status = document.getElementById('wa-status');
+        const text = String((field && field.value) || '').trim();
+        if (!text) {
+            status.textContent = 'Write a message first';
+            return;
+        }
+        status.textContent = 'Saving on this guest...';
+        const response = await fetch(`${this.apiUrl}/guests/whatsapp/simulate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ guest_phone: guest.guest_phone, hotel_name: this.currentHotel, body: text })
+        });
+        const data = await response.json();
+        if (!response.ok || data.error) {
+            status.textContent = data.error || 'Simulation failed';
+            return;
+        }
+        field.value = '';
+        this.viewTab = 'messages';
+        this.messageChannel = 'whatsapp';
+        await this.openGuest(guest.guest_phone);
+    }
+
     async loadWhatsappTemplates() {
         const guest = (this.record && this.record.guest) || {};
         const select = document.getElementById('wa-template-pick');
@@ -474,7 +506,18 @@ class GuestComponent {
             return sent > max ? sent : max;
         }, '');
         const filled = guest.guest_profile_summary && guest.guest_needs && guest.recommended_action;
-        const current = guest.ai_summary_for === 'brief' && filled && (!latest || String(guest.ai_summary_at || '') >= latest);
+        const listed = Array.isArray(guest.executable_actions);
+        const bookings = [].concat(this.record.past || [], this.record.current || [], this.record.future || []);
+        const byId = {};
+        bookings.forEach(booking => { byId[booking.booking_id] = booking; });
+        const needsConfirmed = { cancel_booking: 1, modify_booking: 1, check_in: 1 };
+        const stale = listed && guest.executable_actions.some(action => {
+            if (!action.booking_id) return false;
+            const booking = byId[action.booking_id];
+            if (!booking) return true;
+            return needsConfirmed[action.action] && String(booking.booking_status || '').toLowerCase() !== 'confirmed';
+        });
+        const current = guest.ai_summary_for === 'brief' && filled && listed && !stale && (!latest || String(guest.ai_summary_at || '') >= latest);
         if (current) return;
         const status = document.getElementById('ai-status');
         if (status) status.textContent = 'Reading what the guest needs...';
@@ -493,6 +536,7 @@ class GuestComponent {
         guest.guest_profile_summary = data.guest_profile_summary;
         guest.guest_needs = data.guest_needs;
         guest.recommended_action = data.recommended_action;
+        guest.executable_actions = data.executable_actions || [];
         guest.ai_summary_at = data.ai_summary_at;
         guest.ai_summary_for = data.ai_summary_for;
         const boxes = {
@@ -507,6 +551,96 @@ class GuestComponent {
         const when = document.getElementById('ai-when');
         if (when) when.textContent = 'Saved ' + data.ai_summary_at;
         if (status) status.textContent = '';
+        this.renderActions(guest.executable_actions);
+    }
+
+    renderActions(actions) {
+        const box = document.getElementById('executable-actions');
+        if (!box) return;
+        const rows = Array.isArray(actions) ? actions : [];
+        box.innerHTML = rows.map((action, index) => `
+            <div class="border rounded p-2">
+                <p class="text-sm">${this.esc(action.label || '')}</p>
+                <button type="button" data-action-index="${index}" class="execute-action mt-2 bg-blue-600 text-white px-3 py-1 rounded text-sm">Execute?</button>
+                <p class="execute-result text-sm mt-1"></p>
+            </div>
+        `).join('');
+        box.querySelectorAll('.execute-action').forEach(button => {
+            button.addEventListener('click', () => this.executeAction(rows[Number(button.dataset.actionIndex)], button));
+        });
+    }
+
+    async executeAction(action, button) {
+        const guest = (this.record && this.record.guest) || {};
+        const hotel = this.currentHotel;
+        const phone = guest.guest_phone;
+        const nights = (value) => String(value || '').split(',').map(part => part.trim()).filter(Boolean);
+        const post = (path, body) => fetch(`${this.apiUrl}${path}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify(body),
+        });
+        const runners = {
+            cancel_booking: () => post('/bookings/cancel', { booking_id: action.booking_id }),
+            create_booking: () => post('/bookings/create', {
+                guest_phone: phone,
+                room_type: action.room_type,
+                stay_dates: nights(action.stay_dates),
+                rooms_booked: Number(action.rooms_booked || 1),
+            }),
+            modify_booking: () => {
+                const body = { booking_id: action.booking_id };
+                if (action.new_stay_dates) body.new_stay_dates = nights(action.new_stay_dates);
+                if (action.new_room_type) body.new_room_type = action.new_room_type;
+                if (action.new_rooms_booked) body.new_rooms_booked = Number(action.new_rooms_booked);
+                return post('/bookings/modify', body);
+            },
+            check_in: () => post('/assignments/check_in', { hotel_name: hotel, booking_id: action.booking_id, room_number: action.room_number }),
+            check_out: () => post('/assignments/check_out', { hotel_name: hotel, booking_id: action.booking_id, room_number: action.room_number }),
+            reassign_room: () => post('/assignments/reassign', {
+                hotel_name: hotel,
+                booking_id: action.booking_id,
+                stay_date: action.stay_date,
+                old_room_number: action.old_room_number,
+                new_room_number: action.new_room_number,
+            }),
+            record_payment: () => post('/payments/update', {
+                hotel_name: hotel,
+                booking_id: action.booking_id,
+                payment_amount: Number(action.payment_amount),
+                payment_method: action.payment_method,
+            }),
+            record_refund: () => post('/payments/refund', {
+                hotel_name: hotel,
+                booking_id: action.booking_id,
+                payment_seq: Number(action.payment_seq),
+            }),
+            update_guest_profile: () => {
+                const body = { guest_phone: phone };
+                ['guest_name', 'email', 'country', 'special_request'].forEach(key => {
+                    if (action[key]) body[key] = action[key];
+                });
+                return post('/guest_profile/update', body);
+            },
+        };
+        const run = runners[action.action];
+        const result = button.parentElement.querySelector('.execute-result');
+        if (!run) {
+            if (result) result.textContent = 'This action cannot be executed';
+            return;
+        }
+        button.disabled = true;
+        if (result) result.textContent = 'Executing...';
+        const response = await run();
+        const data = await response.json();
+        if (!response.ok || data.error) {
+            if (result) result.textContent = data.error || 'Execute failed';
+            button.disabled = false;
+            return;
+        }
+        if (result) result.textContent = data.result || 'Done';
+        await this.openGuest(guest.guest_phone);
     }
 
     fact(label, value) {

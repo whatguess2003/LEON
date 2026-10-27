@@ -26,8 +26,19 @@ _INSTRUCTIONS = (
     "The reader is the human front-desk agent. "
     "guest_profile_summary is who the guest is and the stay facts the agent should know, in one short paragraph. "
     "guest_needs is the guest's concerns and what they need from the hotel. If none were raised, say the guest has not raised a concern or request. "
-    "recommended_action is the next step the agent should take. If there is no open need, say no action is needed. "
-    "Use only the messages, images, PDFs, transcripts, and stay facts given."
+    "recommended_action is the next sentence that agent says, in a confident voice. "
+    "When the guest wants an operation and a required parameter is missing, that sentence asks for it and names the choices already in the stay facts. "
+    "When the named booking is not confirmed, the sentence says that operation cannot be done. "
+    "If there is no open need, say no action is needed. "
+    "executable_actions lists an operation only when every required parameter was stated or is already on the record. "
+    "Copy booking ids, room numbers, room types, and dates from the stay facts and messages. "
+    "Put each gathered parameter in parameters as name and value. Omit parameters that were not gathered. "
+    "When the guest did not ask for an operation, return an empty list. "
+    "Use only the working card, file notes, messages, and stay facts given."
+)
+_NOTE_INSTRUCTIONS = (
+    "Write one short sentence about what this file shows and what the guest needs from it. "
+    "Do not invent dates, prices, or room numbers that are not visible."
 )
 _BRIEF_FIELDS = ("guest_profile_summary", "guest_needs", "recommended_action")
 
@@ -95,53 +106,120 @@ def _file_part(mime: str, data: bytes, filename: str, label: str):
     ]
 
 
-def _speech_part(client, mime: str, data: bytes, filename: str, label: str):
-    try:
-        spoken = _transcript(client, mime, data, filename)
-    except Exception as exc:
-        spoken = "Transcription failed: " + str(exc)
-    heard = spoken or "No speech was found."
-    return [{"type": "input_text", "text": label + "\nFile " + str(filename or "") + "\nSpoken content: " + heard}]
-
-
-def _parts_for(client, kind: str, mime: str, data: bytes, filename: str, label: str):
-    makers = {"image": _image_part, "file": _file_part}
-    maker = makers.get(kind)
-    if maker:
-        return maker(mime, data, filename, label)
+def _file_note(client, kind: str, mime: str, data: bytes, filename: str) -> str:
     if kind == "speech":
-        return _speech_part(client, mime, data, filename, label)
-    return [{"type": "input_text", "text": label}]
+        spoken = _transcript(client, mime, data, filename)
+        return spoken or "No speech was found."
+    maker = {"image": _image_part, "file": _file_part}.get(kind)
+    if not maker:
+        return ""
+    response = client.responses.create(
+        model=_SUMMARY_MODEL,
+        instructions=_NOTE_INSTRUCTIONS,
+        input=[{"role": "user", "content": maker(mime, data, filename, "File")}],
+        reasoning={"effort": "low"},
+        store=False,
+        max_output_tokens=200,
+        timeout=90,
+    )
+    return str(getattr(response, "output_text", "") or "").strip()
 
 
-def summary_input(client, record: dict, read_media) -> list:
-    """Text for every message, plus the image, PDF, or transcript saved with it."""
-    parts = [{"type": "input_text", "text": _facts(record)}]
-    budget = 0
+def ensure_file_notes(client, record: dict, read_media, save_note):
+    """Write a file note once. Later briefs read the note and do not resend the bytes."""
     for message in (record or {}).get("messages") or []:
-        label = _label(message)
+        if str(message.get("media_note") or "").strip():
+            continue
         mime = str(message.get("media_mime") or "").split(";")[0].strip().lower()
         kind = _kind(mime)
-        stored = read_media(str(message.get("source_ref") or "")) if kind and message.get("source_ref") else None
+        ref = str(message.get("source_ref") or "")
+        if not kind or not ref:
+            continue
+        stored = read_media(ref)
         data = (stored or {}).get("data") or b""
+        if not data:
+            continue
         filename = str((stored or {}).get("filename") or message.get("media_name") or "")
         limit = _SPEECH_LIMIT if kind == "speech" else _FILE_LIMIT
-        too_big = bool(data) and (len(data) > limit or (kind != "speech" and budget + len(data) > _FILE_LIMIT))
-        if too_big:
-            parts.append({"type": "input_text", "text": label + "\nFile " + filename + " was too large to read."})
+        if len(data) > limit:
+            note = "File " + filename + " was too large to read."
+        else:
+            try:
+                note = _file_note(client, kind, mime, data, filename)
+            except Exception:
+                note = "File could not be read."
+        note = str(note or "").strip()
+        if not note:
             continue
-        if data and kind != "speech":
-            budget += len(data)
-        parts.extend(_parts_for(client, kind, mime, data, filename, label) if data else [{"type": "input_text", "text": label}])
+        message["media_note"] = note
+        if save_note:
+            save_note(ref, note)
+
+
+def _selected_messages(record: dict) -> list:
+    messages = list((record or {}).get("messages") or [])
+    marker = str(((record or {}).get("guest") or {}).get("ai_summary_at") or "")
+    if not marker:
+        return messages
+    latest_in = ""
+    for message in messages:
+        sent = str(message.get("sent_at") or "")
+        if str(message.get("direction") or "") == "in" and sent > latest_in:
+            latest_in = sent
+    chosen = []
+    for message in messages:
+        sent = str(message.get("sent_at") or "")
+        inbound = str(message.get("direction") or "") == "in" and sent == latest_in
+        if sent > marker or inbound:
+            chosen.append(message)
+    return chosen
+
+
+def summary_input(record: dict) -> list:
+    """Working card, action catalog, stay facts, and messages newer than the card."""
+    from booking_system.desk_actions import catalog_text
+    guest = (record or {}).get("guest") or {}
+    card = "\n".join([
+        "Today " + str((record or {}).get("today") or ""),
+        "Working card",
+        "Profile " + str(guest.get("guest_profile_summary") or ""),
+        "Needs " + str(guest.get("guest_needs") or ""),
+        "Previous action " + str(guest.get("recommended_action") or ""),
+        "Actions",
+        catalog_text(),
+        _facts(record),
+    ])
+    parts = [{"type": "input_text", "text": card}]
+    for message in _selected_messages(record):
+        note = str(message.get("media_note") or "").strip()
+        text = _label(message) + ("\nFile note: " + note if note else "")
+        parts.append({"type": "input_text", "text": text})
     return parts
 
 
+def _proposed(items):
+    from booking_system.desk_actions import PARAMS
+    names = set(PARAMS)
+    rows = []
+    for item in items or []:
+        row = {"action": str((item or {}).get("action") or "")}
+        for pair in (item or {}).get("parameters") or []:
+            name = str((pair or {}).get("name") or "")
+            if name in names and name not in row:
+                row[name] = str((pair or {}).get("value") or "").strip()
+        rows.append(row)
+    return rows
+
+
 def summarize_guest(client, record: dict, read_media) -> dict:
-    """Ask GPT-6 Astra for the profile, the guest's needs, and the next action."""
+    """Ask GPT-6 Astra for the desk sentence, then keep only actions the system allows."""
+    from booking_system.desk_actions import action_names, keep, PARAMS
+    from booking_system.guest_manager import guest_manager
+    ensure_file_notes(client, record, read_media, guest_manager.save_media_note)
     response = client.responses.create(
         model=_SUMMARY_MODEL,
         instructions=_INSTRUCTIONS,
-        input=[{"role": "user", "content": summary_input(client, record, read_media)}],
+        input=[{"role": "user", "content": summary_input(record)}],
         text={
             "format": {
                 "type": "json_schema",
@@ -149,8 +227,33 @@ def summarize_guest(client, record: dict, read_media) -> dict:
                 "strict": True,
                 "schema": {
                     "type": "object",
-                    "properties": {name: {"type": "string"} for name in _BRIEF_FIELDS},
-                    "required": list(_BRIEF_FIELDS),
+                    "properties": {
+                        **{name: {"type": "string"} for name in _BRIEF_FIELDS},
+                        "executable_actions": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "action": {"type": "string", "enum": action_names()},
+                                    "parameters": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "name": {"type": "string", "enum": list(PARAMS)},
+                                                "value": {"type": "string"},
+                                            },
+                                            "required": ["name", "value"],
+                                            "additionalProperties": False,
+                                        },
+                                    },
+                                },
+                                "required": ["action", "parameters"],
+                                "additionalProperties": False,
+                            },
+                        },
+                    },
+                    "required": list(_BRIEF_FIELDS) + ["executable_actions"],
                     "additionalProperties": False,
                 },
             }
@@ -161,4 +264,12 @@ def summarize_guest(client, record: dict, read_media) -> dict:
         timeout=90,
     )
     parsed = json.loads(str(getattr(response, "output_text", "") or ""))
-    return {name: str(parsed.get(name) or "").strip() for name in _BRIEF_FIELDS}
+    guest = (record or {}).get("guest") or {}
+    brief = {name: str(parsed.get(name) or "").strip() for name in _BRIEF_FIELDS}
+    brief["executable_actions"] = keep(
+        _proposed(parsed.get("executable_actions")),
+        (record or {}).get("hotel_name"),
+        str(guest.get("guest_phone") or ""),
+        (record or {}).get("today"),
+    )
+    return brief

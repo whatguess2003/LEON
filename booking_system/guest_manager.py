@@ -397,7 +397,7 @@ class EnhancedGuestManager:
                 current.append(item)
         currency = self.hotel_currency(hotel)
         record = {}
-        for key in ("guest_phone", "guest_name", "email", "guest_email", "nationality", "country", "date_of_birth", "gender", "company", "address", "identity_type", "identity_number", "special_request", "vip", "status", "ai_summary_at", "ai_summary_for", "guest_profile_summary", "guest_needs", "recommended_action"):
+        for key in ("guest_phone", "guest_name", "email", "guest_email", "nationality", "country", "date_of_birth", "gender", "company", "address", "identity_type", "identity_number", "special_request", "vip", "status", "ai_summary_at", "ai_summary_for", "guest_profile_summary", "guest_needs", "recommended_action", "executable_actions"):
             record[key] = guest.get(key)
         if not record.get("email"):
             record["email"] = guest.get("guest_email") or ""
@@ -495,6 +495,15 @@ class EnhancedGuestManager:
             return "updated"
         fs.put(data, filename=name, content_type=str(mime or "application/octet-stream"), metadata={"filename": str(filename or "")})
         return "created"
+
+    def save_media_note(self, source_ref: str, note: str) -> str:
+        """Read the WhatsApp message by id. Update it with the file note when that id exists."""
+        key = {"channel": "whatsapp", "source_ref": str(source_ref or "")}
+        coll = self.mongo_db["guest_messages"]
+        if not coll.find_one(key):
+            return "missing"
+        coll.update_one(key, {"$set": {"media_note": str(note or "")}})
+        return "updated"
 
     def read_guest_media(self, source_ref: str):
         """Bytes saved for one WhatsApp message id."""
