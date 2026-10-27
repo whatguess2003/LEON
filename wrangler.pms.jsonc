@@ -10,7 +10,7 @@
     {
       "class_name": "PmsService",
       "scheduling_policy": "default",
-      "image": "./Dockerfile.pms",
+      "image": "registry.cloudflare.com/332c5e41cdaf724cedc69e812890fa6d/pms:20261027b",
       "instance_type": "standard-1",
       "max_instances": 2
     }
