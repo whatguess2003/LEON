@@ -1114,6 +1114,38 @@ def _stay_dates_for_booking(hotel: str, booking_id: str) -> list:
     _bm._safe_rollback()
     return days
 
+def _write_guest_needs(hotel: str, guest_phone: str) -> dict:
+    """Read the guest and save what the front desk needs to know."""
+    if _OpenAI is None or not os.getenv("OPENAI_API_KEY"):
+        return {"error": "ChatGPT is unavailable", "status": 503}
+    from booking_system.guest_manager import guest_manager as gm
+    from booking_system.guest_summary import summarize_guest
+    record = gm.read_guest_with_bookings(hotel, guest_phone)
+    if not record:
+        return {"error": "Guest profile not found", "status": 404}
+    client = _OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    try:
+        brief = summarize_guest(client, record, gm.read_guest_media)
+    except Exception as model_error:
+        detail = str(model_error)
+        if "insufficient_quota" in detail:
+            return {"error": "ChatGPT has no credits remaining", "status": 429}
+        return {"error": detail, "status": 502}
+    missing = [name for name in ("guest_profile_summary", "guest_needs", "recommended_action") if not brief.get(name)]
+    if missing:
+        return {"error": "ChatGPT returned an empty summary", "status": 502}
+    summary_at = datetime.now(timezone.utc).isoformat()
+    saved = {
+        "guest_profile_summary": brief["guest_profile_summary"],
+        "guest_needs": brief["guest_needs"],
+        "recommended_action": brief["recommended_action"],
+        "ai_summary_at": summary_at,
+        "ai_summary_for": "brief",
+    }
+    gm.mongo_db["guests"].update_one({"guest_phone": guest_phone}, {"$set": saved})
+    return {"guest_phone": guest_phone, **saved}
+
+
 @app.get("/webhook/whatsapp")
 async def whatsapp_webhook_verify(request: Request):
     """Meta subscription handshake. The response body is the hub.challenge string."""
@@ -1128,7 +1160,7 @@ async def whatsapp_webhook_verify(request: Request):
     return Response(content=challenge, media_type="text/plain")
 
 @app.post("/webhook/whatsapp")
-async def whatsapp_webhook(request: Request):
+async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
     """Incoming WhatsApp messages and delivery statuses for the messages field."""
     from booking_system.whatsapp_webhook import accept_webhook, signature_ok
     raw = await request.body()
@@ -1138,7 +1170,9 @@ async def whatsapp_webhook(request: Request):
         payload = json.loads(raw.decode() or "{}")
     except json.JSONDecodeError:
         return JSONResponse(content={"error": "Invalid webhook payload"}, status_code=400)
-    await run_in_threadpool(accept_webhook, payload if isinstance(payload, dict) else {})
+    touched = await run_in_threadpool(accept_webhook, payload if isinstance(payload, dict) else {})
+    for hotel, phone in touched or []:
+        background_tasks.add_task(_write_guest_needs, hotel, phone)
     return {"success": True}
 
 @app.post("/update_reservation")
@@ -3409,7 +3443,7 @@ async def api_guest_message(payload: Dict[str, Any] = Body(...), leon_jwt: str =
 
 @app.post("/api/guests/summarize")
 async def api_guest_summarize(payload: Dict[str, Any] = Body(...), leon_jwt: str = Cookie(None)):
-    """Write a ChatGPT summary of the guest from stays and saved messages."""
+    """Write a guest summary from stays, messages, and saved files."""
     try:
         hotel, denied = _guests_hotel(leon_jwt, str((payload or {}).get("hotel_name") or ""))
         if denied:
@@ -3417,48 +3451,10 @@ async def api_guest_summarize(payload: Dict[str, Any] = Body(...), leon_jwt: str
         guest_phone = str((payload or {}).get("guest_phone") or "").upper()
         if not guest_phone:
             return JSONResponse(content={"error": "guest_phone is required"}, status_code=400)
-        if _OpenAI is None or not os.getenv("OPENAI_API_KEY"):
-            return JSONResponse(content={"error": "ChatGPT is unavailable"}, status_code=503)
-        from booking_system.guest_manager import guest_manager as gm
-        record = gm.read_guest_with_bookings(hotel, guest_phone)
-        if not record:
-            return JSONResponse(content={"error": "Guest profile not found"}, status_code=404)
-        guest = record.get("guest") or {}
-        lines = [
-            f"Guest {guest.get('guest_name') or ''} {guest_phone}",
-            f"Country {guest.get('country') or ''}. Special request {guest.get('special_request') or ''}.",
-            f"In house {len(record.get('current') or [])}. Future {len(record.get('future') or [])}. Past {len(record.get('past') or [])}.",
-        ]
-        for label, rows in (("In house", record.get("current")), ("Future", record.get("future")), ("Past", record.get("past"))):
-            for booking in rows or []:
-                rooms = ", ".join(str(room.get("room_number") or "") for room in (booking.get("rooms") or []))
-                lines.append(f"{label} {booking.get('booking_id')} {booking.get('booking_status')} {booking.get('check_in')} to {booking.get('check_out')} {booking.get('room_type')} rooms {rooms} amount {booking.get('total_amount')}")
-        for message in record.get("messages") or []:
-            lines.append(f"Message {message.get('channel')} {message.get('direction')} {message.get('sent_at')}: {message.get('body')}")
-        client = _OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        try:
-            resp = client.chat.completions.create(
-                model=os.getenv("LEON_SUGGESTION_MODEL", "gpt-4o-mini"),
-                temperature=0.2,
-                messages=[
-                    {"role": "system", "content": "You are the hotel front desk assistant. Summarize this guest in two short paragraphs using only the facts given. Mention stays and any saved messages. If there are no messages, say no messages are saved yet."},
-                    {"role": "user", "content": "\n".join(lines)},
-                ],
-                timeout=25,
-            )
-        except Exception as model_error:
-            detail = str(model_error)
-            if "insufficient_quota" in detail:
-                return JSONResponse(content={"error": "ChatGPT has no credits remaining"}, status_code=429)
-            return JSONResponse(content={"error": detail}, status_code=502)
-        summary = ""
-        if resp and resp.choices:
-            summary = str(resp.choices[0].message.content or "").strip()
-        if not summary:
-            return JSONResponse(content={"error": "ChatGPT returned an empty summary"}, status_code=502)
-        summary_at = datetime.now(timezone.utc).isoformat()
-        gm.mongo_db["guests"].update_one({"guest_phone": guest_phone}, {"$set": {"ai_summary": summary, "ai_summary_at": summary_at}})
-        return {"guest_phone": guest_phone, "ai_summary": summary, "ai_summary_at": summary_at}
+        written = await run_in_threadpool(_write_guest_needs, hotel, guest_phone)
+        if written.get("error"):
+            return JSONResponse(content={"error": written["error"]}, status_code=written.get("status") or 502)
+        return written
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
 

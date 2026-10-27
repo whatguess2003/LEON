@@ -397,7 +397,7 @@ class EnhancedGuestManager:
                 current.append(item)
         currency = self.hotel_currency(hotel)
         record = {}
-        for key in ("guest_phone", "guest_name", "email", "guest_email", "nationality", "country", "date_of_birth", "gender", "company", "address", "identity_type", "identity_number", "special_request", "vip", "status", "ai_summary", "ai_summary_at"):
+        for key in ("guest_phone", "guest_name", "email", "guest_email", "nationality", "country", "date_of_birth", "gender", "company", "address", "identity_type", "identity_number", "special_request", "vip", "status", "ai_summary_at", "ai_summary_for", "guest_profile_summary", "guest_needs", "recommended_action"):
             record[key] = guest.get(key)
         if not record.get("email"):
             record["email"] = guest.get("guest_email") or ""

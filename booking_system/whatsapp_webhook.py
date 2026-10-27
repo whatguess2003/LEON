@@ -98,8 +98,10 @@ def _keep_media(source_ref: str, message: dict) -> None:
     guest_manager.save_whatsapp_event(source_ref, media_mime=fetched["mime"], media_name=filename)
 
 
-def accept_webhook(payload: dict) -> None:
+def accept_webhook(payload: dict) -> list:
+    """Save inbound messages and return each guest whose needs should be summarized."""
     from booking_system.guest_manager import guest_manager
+    touched = []
     for entry in (payload or {}).get("entry") or []:
         for change in (entry or {}).get("changes") or []:
             if str((change or {}).get("field") or "") != "messages":
@@ -111,8 +113,12 @@ def accept_webhook(payload: dict) -> None:
                 sent_at = _sent_at(str((message or {}).get("timestamp") or ""))
                 if not phone or not source_ref or not sent_at:
                     continue
-                guest_manager.save_whatsapp_event(source_ref, phone, _guest_hotel(phone), sent_at, _text_body(message), "in")
+                hotel = _guest_hotel(phone)
+                guest_manager.save_whatsapp_event(source_ref, phone, hotel, sent_at, _text_body(message), "in")
                 _keep_media(source_ref, message)
+                pair = (hotel, phone)
+                if hotel and pair not in touched:
+                    touched.append(pair)
             for status in value.get("statuses") or []:
                 source_ref = str((status or {}).get("id") or "")
                 phone = _phone(str((status or {}).get("recipient_id") or ""))
@@ -120,3 +126,4 @@ def accept_webhook(payload: dict) -> None:
                 if not source_ref or not state:
                     continue
                 guest_manager.save_whatsapp_event(source_ref, phone, _guest_hotel(phone), _sent_at(str((status or {}).get("timestamp") or "")), "", "out", state)
+    return touched

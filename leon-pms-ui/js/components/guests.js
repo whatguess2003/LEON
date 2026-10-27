@@ -74,6 +74,7 @@ class GuestComponent {
         }
         this.record = data;
         this.renderRecord();
+        this.refreshSummary();
     }
 
     renderRecord() {
@@ -96,14 +97,21 @@ class GuestComponent {
                     ${this.summaryCard('Cancelled', counts.cancelled)}
                     ${this.summaryCard('Total spent', (this.record.currency || '') + ' ' + counts.spent.toFixed(2))}
                 </div>
-                <div class="mt-4 border rounded p-3">
-                    <div class="flex items-center justify-between mb-2">
-                        <h3 class="text-sm font-semibold">AI summary</h3>
-                        <button id="ai-run" class="bg-blue-600 text-white px-3 py-1 rounded text-sm">Summarize</button>
+                <div class="mt-4 border rounded p-3 space-y-3">
+                    <div>
+                        <h3 class="text-sm font-semibold">Guest profile summary</h3>
+                        <div id="guest-profile-summary" class="text-sm whitespace-pre-wrap mt-1">${this.esc(guest.guest_profile_summary) || ''}</div>
                     </div>
-                    <div id="ai-summary" class="text-sm whitespace-pre-wrap">${this.esc(guest.ai_summary) || 'No summary yet.'}</div>
-                    <p id="ai-when" class="text-xs text-gray-500 mt-2">${guest.ai_summary_at ? 'Saved ' + this.esc(guest.ai_summary_at) : ''}</p>
-                    <p id="ai-status" class="text-sm mt-2"></p>
+                    <div>
+                        <h3 class="text-sm font-semibold">Guest needs</h3>
+                        <div id="guest-needs" class="text-sm whitespace-pre-wrap mt-1">${this.esc(guest.guest_needs) || ''}</div>
+                    </div>
+                    <div>
+                        <h3 class="text-sm font-semibold">Recommended action</h3>
+                        <div id="recommended-action" class="text-sm whitespace-pre-wrap mt-1">${this.esc(guest.recommended_action) || ''}</div>
+                    </div>
+                    <p id="ai-when" class="text-xs text-gray-500">${guest.ai_summary_at ? 'Saved ' + this.esc(guest.ai_summary_at) : ''}</p>
+                    <p id="ai-status" class="text-sm"></p>
                 </div>
             </div>
             <div id="pane-messages" class="hidden">
@@ -182,7 +190,6 @@ class GuestComponent {
         document.getElementById('tab-biography').addEventListener('click', () => this.showTab('biography'));
         document.getElementById('tab-bookings').addEventListener('click', () => this.showTab('bookings'));
         document.getElementById('g-edit').addEventListener('click', () => this.showEditForm());
-        document.getElementById('ai-run').addEventListener('click', () => this.summarizeGuest());
         document.querySelectorAll('.msg-filter').forEach(button => {
             button.addEventListener('click', () => this.renderMessages(button.dataset.channel || ''));
         });
@@ -459,26 +466,47 @@ class GuestComponent {
         await this.openGuest(guest.guest_phone);
     }
 
-    async summarizeGuest() {
-        const guest = this.record.guest || {};
+    async refreshSummary() {
+        const guest = (this.record && this.record.guest) || {};
+        const phone = guest.guest_phone;
+        const latest = (this.record.messages || []).reduce((max, message) => {
+            const sent = String(message.sent_at || '');
+            return sent > max ? sent : max;
+        }, '');
+        const filled = guest.guest_profile_summary && guest.guest_needs && guest.recommended_action;
+        const current = guest.ai_summary_for === 'brief' && filled && (!latest || String(guest.ai_summary_at || '') >= latest);
+        if (current) return;
         const status = document.getElementById('ai-status');
-        status.textContent = 'Writing summary...';
+        if (status) status.textContent = 'Reading what the guest needs...';
         const response = await fetch(`${this.apiUrl}/guests/summarize`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
-            body: JSON.stringify({ guest_phone: guest.guest_phone, hotel_name: this.currentHotel })
+            body: JSON.stringify({ guest_phone: phone, hotel_name: this.currentHotel })
         });
         const data = await response.json();
+        if ((this.record.guest || {}).guest_phone !== phone) return;
         if (!response.ok || data.error) {
-            status.textContent = data.error || 'Summary failed';
+            if (status) status.textContent = data.error || 'Summary failed';
             return;
         }
-        guest.ai_summary = data.ai_summary;
+        guest.guest_profile_summary = data.guest_profile_summary;
+        guest.guest_needs = data.guest_needs;
+        guest.recommended_action = data.recommended_action;
         guest.ai_summary_at = data.ai_summary_at;
-        document.getElementById('ai-summary').textContent = data.ai_summary;
-        document.getElementById('ai-when').textContent = 'Saved ' + data.ai_summary_at;
-        status.textContent = 'Saved';
+        guest.ai_summary_for = data.ai_summary_for;
+        const boxes = {
+            'guest-profile-summary': data.guest_profile_summary,
+            'guest-needs': data.guest_needs,
+            'recommended-action': data.recommended_action,
+        };
+        Object.keys(boxes).forEach(id => {
+            const box = document.getElementById(id);
+            if (box) box.textContent = boxes[id];
+        });
+        const when = document.getElementById('ai-when');
+        if (when) when.textContent = 'Saved ' + data.ai_summary_at;
+        if (status) status.textContent = '';
     }
 
     fact(label, value) {
