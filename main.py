@@ -9,7 +9,7 @@ import os
 import sys
 import json
 import uvicorn
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body, Query, Cookie
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body, Query, Cookie, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
@@ -3209,27 +3209,173 @@ async def api_guest_whatsapp(payload: Dict[str, Any] = Body(...), leon_jwt: str 
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
+@app.post("/api/guests/whatsapp/media")
+async def api_guest_whatsapp_media(guest_phone: str = Form(""), hotel_name: str = Form(""), caption: str = Form(""), file: UploadFile = File(...), leon_jwt: str = Cookie(None)):
+    """Upload a file to WhatsApp and send it. Free text must be open."""
+    try:
+        hotel, denied = _guests_hotel(leon_jwt, hotel_name)
+        if denied:
+            return denied
+        phone = str(guest_phone or "").upper()
+        if not phone:
+            return JSONResponse(content={"error": "guest_phone is required"}, status_code=400)
+        from booking_system.guest_manager import guest_manager as gm
+        from booking_system.front_desk_manager import intelligent_front_desk
+        from booking_system.whatsapp_media import upload_media
+        guest = gm.mongo_db["guests"].find_one({"guest_phone": phone, "status": "active"})
+        if not guest or str(guest.get("hotel_name") or "").upper() != hotel:
+            return JSONResponse(content={"error": "Guest profile not found"}, status_code=404)
+        window = gm.whatsapp_text_window(gm.list_guest_messages(hotel, phone))
+        if not window["open"]:
+            return JSONResponse(content={"error": "Free text is closed"}, status_code=400)
+        data = await file.read()
+        uploaded = upload_media(file.filename or "file", file.content_type or "", data)
+        if uploaded.get("error"):
+            return JSONResponse(content={"error": uploaded["error"]}, status_code=400)
+        text = str(caption or "").strip()
+        sent = intelligent_front_desk.send_whatsapp_media(phone, uploaded["kind"], uploaded["id"], text)
+        if sent.get("error"):
+            return JSONResponse(content={"error": sent["error"]}, status_code=400)
+        sent_at = datetime.now(timezone.utc).isoformat()
+        body = text or uploaded["filename"]
+        gm.save_whatsapp_event(sent["message_id"], phone, hotel, sent_at, body, "out", "", uploaded["mime"], uploaded["filename"])
+        gm.save_guest_media(sent["message_id"], data, uploaded["mime"], uploaded["filename"])
+        return {"success": True, "guest_phone": phone, "body": body, "sent_at": sent_at, "source_ref": sent["message_id"], "direction": "out", "channel": "whatsapp", "media_mime": uploaded["mime"], "media_name": uploaded["filename"]}
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.get("/api/guests/whatsapp/media")
+async def api_guest_whatsapp_media_file(source_ref: str = Query(""), guest_phone: str = Query(""), hotel_name: str = "", leon_jwt: str = Cookie(None)):
+    """The file saved for one WhatsApp message."""
+    try:
+        hotel, denied = _guests_hotel(leon_jwt, hotel_name)
+        if denied:
+            return denied
+        phone = str(guest_phone or "").upper()
+        ref = str(source_ref or "").strip()
+        if not phone or not ref:
+            return JSONResponse(content={"error": "guest_phone and source_ref are required"}, status_code=400)
+        from booking_system.guest_manager import guest_manager as gm
+        row = gm.mongo_db["guest_messages"].find_one({"channel": "whatsapp", "source_ref": ref, "hotel_name": hotel})
+        if not row or str(row.get("guest_phone") or "").upper() != phone:
+            return JSONResponse(content={"error": "Message not found"}, status_code=404)
+        stored = gm.read_guest_media(ref)
+        if not stored:
+            return JSONResponse(content={"error": "File not found"}, status_code=404)
+        filename = "".join(ch for ch in str(stored.get("filename") or "file") if ch not in "\"\r\n\\") or "file"
+        from urllib.parse import quote
+        return Response(content=stored["data"], media_type=stored["mime"], headers={"Content-Disposition": "attachment; filename*=UTF-8''" + quote(filename)})
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.get("/api/guests/whatsapp/templates")
+async def api_guest_whatsapp_templates(guest_phone: str = Query(""), hotel_name: str = "", leon_jwt: str = Cookie(None)):
+    """Active WhatsApp templates with the two fields already filled into the sentence."""
+    try:
+        hotel, denied = _guests_hotel(leon_jwt, hotel_name)
+        if denied:
+            return denied
+        phone = str(guest_phone or "").upper()
+        if not phone:
+            return JSONResponse(content={"error": "guest_phone is required"}, status_code=400)
+        from booking_system.guest_manager import guest_manager as gm
+        from booking_system.whatsapp_templates import active_templates
+        guest = gm.mongo_db["guests"].find_one({"guest_phone": phone, "status": "active"})
+        if not guest or str(guest.get("hotel_name") or "").upper() != hotel:
+            return JSONResponse(content={"error": "Guest profile not found"}, status_code=404)
+        guest_name = str(guest.get("guest_name") or "").strip()
+        rows = active_templates({"guest_name": guest_name, "hotel_name": hotel})
+        if isinstance(rows, dict):
+            return JSONResponse(content={"error": rows.get("error") or "WhatsApp templates are not available"}, status_code=400)
+        return {"templates": rows}
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
 @app.post("/api/guests/whatsapp/template")
 async def api_guest_whatsapp_template(payload: Dict[str, Any] = Body(...), leon_jwt: str = Cookie(None)):
-    """Send the env template to a guest and save it on the guest record."""
+    """Send the template the staff selected. Fields are filled from the guest, not from typed text."""
     try:
         hotel, denied = _guests_hotel(leon_jwt, str((payload or {}).get("hotel_name") or ""))
         if denied:
             return denied
         guest_phone = str((payload or {}).get("guest_phone") or "").upper()
-        if not guest_phone:
-            return JSONResponse(content={"error": "guest_phone is required"}, status_code=400)
+        template_key = str((payload or {}).get("template") or "").strip()
+        if not guest_phone or not template_key:
+            return JSONResponse(content={"error": "guest_phone and template are required"}, status_code=400)
         from booking_system.guest_manager import guest_manager as gm
         from booking_system.front_desk_manager import intelligent_front_desk
+        from booking_system.guest_link import guest_link
+        from booking_system.whatsapp_templates import render_template
         guest = gm.mongo_db["guests"].find_one({"guest_phone": guest_phone, "status": "active"})
         if not guest or str(guest.get("hotel_name") or "").upper() != hotel:
             return JSONResponse(content={"error": "Guest profile not found"}, status_code=404)
-        sent = intelligent_front_desk.send_whatsapp_template(guest_phone)
+        guest_name = str(guest.get("guest_name") or "").strip()
+        rendered = render_template(template_key, {"guest_name": guest_name, "hotel_name": hotel, "guest_link": guest_link(hotel, guest_phone)})
+        if rendered.get("error"):
+            return JSONResponse(content={"error": rendered["error"]}, status_code=400)
+        sent = intelligent_front_desk.send_whatsapp_template(guest_phone, rendered["template_name"], rendered["language"], rendered["values"], rendered["button"], rendered["sentence"], rendered.get("names"), rendered.get("named"))
         if sent.get("error"):
             return JSONResponse(content={"error": sent["error"]}, status_code=400)
         sent_at = datetime.now(timezone.utc).isoformat()
-        gm.save_whatsapp_event(sent["message_id"], guest_phone, hotel, sent_at, sent["template_name"], "out")
-        return {"success": True, "guest_phone": guest_phone, "body": sent["template_name"], "sent_at": sent_at, "source_ref": sent["message_id"], "direction": "out", "channel": "whatsapp"}
+        gm.save_whatsapp_event(sent["message_id"], guest_phone, hotel, sent_at, sent["body"], "out")
+        return {"success": True, "guest_phone": guest_phone, "body": sent["body"], "sent_at": sent_at, "source_ref": sent["message_id"], "direction": "out", "channel": "whatsapp"}
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+def _guest_from_link(token: str):
+    from booking_system.guest_link import read_guest_link
+    from booking_system.guest_manager import guest_manager as gm
+    opened = read_guest_link(token)
+    if opened.get("error"):
+        return None, JSONResponse(content={"error": opened["error"]}, status_code=400)
+    guest = gm.mongo_db["guests"].find_one({"guest_phone": opened["guest_phone"], "status": "active"})
+    if not guest or str(guest.get("hotel_name") or "").upper() != opened["hotel_name"]:
+        return None, JSONResponse(content={"error": "Guest profile not found"}, status_code=404)
+    return guest, None
+
+@app.get("/api/guest/biography")
+async def api_guest_biography(token: str = Query("")):
+    """Biography for the guest who opened the WhatsApp verify link."""
+    try:
+        guest, denied = _guest_from_link(token)
+        if denied:
+            return denied
+        record = {}
+        for key in ("guest_phone", "guest_name", "email", "guest_email", "country", "nationality", "date_of_birth", "gender", "company", "address", "identity_type", "identity_number", "special_request", "hotel_name"):
+            record[key] = guest.get(key)
+        if not record.get("email"):
+            record["email"] = guest.get("guest_email") or ""
+        if not record.get("country"):
+            record["country"] = guest.get("nationality") or ""
+        return record
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.post("/api/guest/biography")
+async def api_guest_biography_save(payload: Dict[str, Any] = Body(...)):
+    """Save the biography the guest typed. The link is the login."""
+    try:
+        guest, denied = _guest_from_link(str((payload or {}).get("token") or ""))
+        if denied:
+            return denied
+        phone = str(guest.get("guest_phone") or "")
+        fields = {"last_updated": datetime.now(timezone.utc), "updated_by": {"guest_phone": phone}}
+        for key in ("guest_name", "email", "country", "date_of_birth", "gender", "company", "address", "identity_type", "identity_number", "special_request"):
+            if key in (payload or {}):
+                fields[key] = str((payload or {}).get(key) or "").strip()
+        if "guest_name" in fields and not fields["guest_name"]:
+            return JSONResponse(content={"error": "Name is required"}, status_code=400)
+        if "country" in fields:
+            fields["nationality"] = fields["country"]
+        if "email" in fields:
+            fields["guest_email"] = fields["email"]
+        if "special_request" in fields:
+            fields["special_requests"] = fields["special_request"]
+        from booking_system.guest_manager import guest_manager as gm
+        from booking_system.front_desk_manager import intelligent_front_desk
+        gm.mongo_db["guests"].update_one({"guest_phone": phone}, {"$set": fields})
+        name = fields.get("guest_name") or str(guest.get("guest_name") or "")
+        return {"success": True, "whatsapp_url": intelligent_front_desk.whatsapp_click_url(name)}
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
 

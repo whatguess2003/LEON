@@ -460,7 +460,7 @@ class EnhancedGuestManager:
         coll.insert_one({**key, **fields})
         return "created"
 
-    def save_whatsapp_event(self, source_ref: str, guest_phone: str = "", hotel_name: str = "", sent_at: str = "", body: str = "", direction: str = "", status: str = "") -> str:
+    def save_whatsapp_event(self, source_ref: str, guest_phone: str = "", hotel_name: str = "", sent_at: str = "", body: str = "", direction: str = "", status: str = "", media_mime: str = "", media_name: str = "") -> str:
         """Read the WhatsApp event by message id. Update it when that id exists, otherwise create it."""
         key = {"channel": "whatsapp", "source_ref": str(source_ref or "")}
         coll = self.mongo_db["guest_messages"]
@@ -472,6 +472,8 @@ class EnhancedGuestManager:
             "body": str(body or ""),
             "direction": str(direction or "").strip().lower(),
             "status": str(status or ""),
+            "media_mime": str(media_mime or ""),
+            "media_name": str(media_name or ""),
         }
         filled = {}
         for name, value in fields.items():
@@ -483,6 +485,28 @@ class EnhancedGuestManager:
             return "updated"
         coll.insert_one({**key, **filled})
         return "created"
+
+    def save_guest_media(self, source_ref: str, data: bytes, mime: str, filename: str) -> str:
+        """Store the file bytes for one WhatsApp message. The natural key is the message id."""
+        from gridfs import GridFS
+        fs = GridFS(self.mongo_db, collection="guest_media")
+        name = str(source_ref or "")
+        if fs.find_one({"filename": name}):
+            return "updated"
+        fs.put(data, filename=name, content_type=str(mime or "application/octet-stream"), metadata={"filename": str(filename or "")})
+        return "created"
+
+    def read_guest_media(self, source_ref: str):
+        """Bytes saved for one WhatsApp message id."""
+        from gridfs import GridFS
+        found = GridFS(self.mongo_db, collection="guest_media").find_one({"filename": str(source_ref or "")})
+        if not found:
+            return None
+        return {
+            "data": found.read(),
+            "mime": found.content_type or "application/octet-stream",
+            "filename": str((found.metadata or {}).get("filename") or ""),
+        }
 
     def read_guest_profile(self, guest_phone: str) -> str:
         """READ comprehensive guest profile data (MongoDB only)"""

@@ -3215,6 +3215,17 @@ class IntelligentFrontDeskManager:
             return ""
         return "+" + dial + national
 
+    def whatsapp_click_url(self, guest_name: str = "") -> str:
+        """Chat link that makes the guest message the hotel first."""
+        from urllib.parse import quote
+        raw = str(os.getenv("WHATSAPP_PHONE_NUMBER") or "").strip()
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        if not digits:
+            return ""
+        name = str(guest_name or "").strip()
+        text = "Hi, this is " + name + ". I have completed my profile." if name else "Hi, I have completed my profile."
+        return "https://wa.me/" + digits + "?text=" + quote(text)
+
     def _post_whatsapp(self, payload: dict) -> dict:
         import urllib.error
         import urllib.request
@@ -3261,10 +3272,32 @@ class IntelligentFrontDeskManager:
             "text": {"body": body},
         })
 
-    def send_whatsapp_template(self, guest_phone: str) -> dict:
-        """Send the configured WhatsApp template. A first message to a guest must be a template."""
-        template_name = str(os.getenv("WHATSAPP_TEMPLATE_NAME") or "").strip()
-        language = str(os.getenv("WHATSAPP_TEMPLATE_LANGUAGE") or "").strip()
+    def send_whatsapp_media(self, guest_phone: str, kind: str, media_id: str, caption: str = "") -> dict:
+        """Send a file already uploaded to WhatsApp. kind is image, video, audio, or document."""
+        from booking_system.whatsapp_media import caption_allowed
+        recipient = self._whatsapp_to(guest_phone)
+        if not recipient:
+            return {"error": "WhatsApp number needs a country code"}
+        media = str(kind or "").strip()
+        file_id = str(media_id or "").strip()
+        if not media or not file_id:
+            return {"error": "WhatsApp media is not configured"}
+        part = {"id": file_id}
+        text = str(caption or "").strip()
+        if text and caption_allowed(media):
+            part["caption"] = text
+        return self._post_whatsapp({
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": recipient,
+            "type": media,
+            media: part,
+        })
+
+    def send_whatsapp_template(self, guest_phone: str, template_name: str, language: str, values=None, button: str = "", sentence: str = "", names=None, named: bool = False) -> dict:
+        """Send one approved Meta template. values fill the body fields in order. button is a dynamic URL suffix."""
+        template_name = str(template_name or "").strip()
+        language = str(language or "").strip()
         if not template_name:
             return {"error": "WhatsApp template is not configured"}
         if not language:
@@ -3272,15 +3305,40 @@ class IntelligentFrontDeskManager:
         recipient = self._whatsapp_to(guest_phone)
         if not recipient:
             return {"error": "WhatsApp number needs a country code"}
+        labels = list(names or [])
+        parameters = []
+        for index, value in enumerate(values or []):
+            text = str(value or "").strip()
+            if not text:
+                continue
+            row = {"type": "text", "text": text}
+            if named and index < len(labels) and labels[index]:
+                row["parameter_name"] = str(labels[index])
+            parameters.append(row)
+        components = []
+        if parameters:
+            components.append({"type": "body", "parameters": parameters})
+        suffix = str(button or "").strip()
+        if suffix:
+            components.append({
+                "type": "button",
+                "sub_type": "url",
+                "index": "0",
+                "parameters": [{"type": "text", "text": suffix}],
+            })
+        template = {"name": template_name, "language": {"code": language}}
+        if components:
+            template["components"] = components
         sent = self._post_whatsapp({
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
             "to": recipient,
             "type": "template",
-            "template": {"name": template_name, "language": {"code": language}},
+            "template": template,
         })
         if sent.get("message_id"):
             sent["template_name"] = template_name
+            sent["body"] = str(sentence or "").strip() or template_name
         return sent
 
     def verify_booking_phone(self, booking_id: str, manager_name: str, guest_phone: str = "", guest_name: str = "", country_code: str = "") -> dict:
@@ -3327,7 +3385,15 @@ class IntelligentFrontDeskManager:
             cur.close()
             conn.close()
             return {"error": "Guest name is required"}
-        sent = self.send_whatsapp_template(phone)
+        from booking_system.guest_link import guest_link
+        from booking_system.whatsapp_templates import link_template_key, render_template
+        template_key = link_template_key()
+        rendered = render_template(template_key, {"guest_name": name, "hotel_name": hotel_name, "guest_link": guest_link(hotel_name, phone)})
+        if rendered.get("error"):
+            cur.close()
+            conn.close()
+            return {"error": rendered["error"]}
+        sent = self.send_whatsapp_template(phone, rendered["template_name"], rendered["language"], rendered["values"], rendered["button"], rendered["sentence"], rendered.get("names"), rendered.get("named"))
         if sent.get("error"):
             cur.close()
             conn.close()
@@ -3367,7 +3433,7 @@ class IntelligentFrontDeskManager:
             coll.insert_one(fields)
         from booking_system.guest_manager import guest_manager
         sent_at = datetime.now(timezone.utc).isoformat()
-        guest_manager.save_whatsapp_event(sent["message_id"], phone, hotel_name, sent_at, sent["template_name"], "out")
+        guest_manager.save_whatsapp_event(sent["message_id"], phone, hotel_name, sent_at, sent.get("body") or sent["template_name"], "out")
         return {"success": True, "guest_phone": phone, "guest_name": name, "phone_verified": True, "whatsapp_message_id": sent["message_id"]}
 
     def read_booking_detail_internal(self, booking_id: str, stay_date: str = None) -> dict:

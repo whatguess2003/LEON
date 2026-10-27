@@ -116,13 +116,21 @@ class GuestComponent {
                 </div>
                 <div id="msg-list" class="space-y-2"></div>
                 <div id="wa-compose" class="hidden mt-3 border rounded p-3">
-                    <div class="flex items-center justify-between">
-                        <span class="text-sm text-gray-700">Approved template</span>
+                    <label class="text-sm text-gray-700 block" for="wa-template-pick">WhatsApp template</label>
+                    <select id="wa-template-pick" class="border rounded w-full px-2 py-1 mt-1 text-sm"></select>
+                    <p id="wa-template-sentence" class="text-sm text-gray-900 mt-2 whitespace-pre-wrap"></p>
+                    <div class="flex justify-end mt-2">
                         <button type="button" id="wa-template" class="bg-green-600 text-white px-3 py-1 rounded text-sm">Send template</button>
                     </div>
                     <p id="wa-window" class="text-sm mt-3"></p>
                     <label class="text-sm text-gray-700 mt-3 block" for="wa-body">WhatsApp message</label>
                     <textarea id="wa-body" rows="3" class="border rounded w-full p-2 mt-1" placeholder="Write a message after the guest replies"></textarea>
+                    <label class="text-sm text-gray-700 mt-2 block" for="wa-upload">Upload</label>
+                    <div class="flex items-center mt-1">
+                        <input id="wa-file" type="file" accept="image/*,audio/*,video/*,application/pdf" class="hidden">
+                        <button type="button" id="wa-upload" class="bg-gray-100 text-gray-700 px-3 py-1 rounded text-sm">Choose file</button>
+                        <span id="wa-file-name" class="text-sm text-gray-600 ml-2"></span>
+                    </div>
                     <div class="flex justify-end mt-2">
                         <button type="button" id="wa-send" class="bg-blue-600 text-white px-3 py-1 rounded text-sm">Send</button>
                     </div>
@@ -178,8 +186,19 @@ class GuestComponent {
         document.querySelectorAll('.msg-filter').forEach(button => {
             button.addEventListener('click', () => this.renderMessages(button.dataset.channel || ''));
         });
+        document.getElementById('wa-template-pick').addEventListener('change', () => this.showWhatsappTemplate());
         document.getElementById('wa-template').addEventListener('click', () => this.sendWhatsappTemplate());
         document.getElementById('wa-send').addEventListener('click', () => this.sendWhatsapp());
+        document.getElementById('wa-upload').addEventListener('click', () => {
+            const input = document.getElementById('wa-file');
+            if (input && !input.disabled) input.click();
+        });
+        document.getElementById('wa-file').addEventListener('change', () => {
+            const input = document.getElementById('wa-file');
+            const chosen = input && input.files && input.files[0];
+            const name = document.getElementById('wa-file-name');
+            if (name) name.textContent = chosen ? chosen.name : '';
+        });
         this.renderMessages(this.messageChannel || '');
         if (this.viewTab) this.showTab(this.viewTab);
     }
@@ -224,7 +243,10 @@ class GuestComponent {
             button.className = 'msg-filter px-3 py-1 rounded text-sm ' + (selected ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700');
         });
         if (compose) compose.classList.toggle('hidden', channel !== 'whatsapp');
-        if (channel === 'whatsapp') this.applyWhatsappWindow();
+        if (channel === 'whatsapp') {
+            this.applyWhatsappWindow();
+            this.loadWhatsappTemplates();
+        }
         if (!rows.length) {
             const empty = {
                 '': 'Email, WhatsApp, and voice recordings will appear here once they are connected.',
@@ -239,6 +261,7 @@ class GuestComponent {
             list.innerHTML = `<div class="border rounded p-3 max-h-96 overflow-y-auto space-y-2 bg-gray-50">${rows.map(message => this.whatsappBubble(message)).join('')}</div>`;
             const thread = list.firstChild;
             if (thread) thread.scrollTop = thread.scrollHeight;
+            this.hydrateMedia(list);
             return;
         }
         const directionLabel = { in: 'In', out: 'Out' };
@@ -270,14 +293,25 @@ class GuestComponent {
             send.disabled = !windowState.open;
             send.classList.toggle('opacity-50', !windowState.open);
         }
+        const file = document.getElementById('wa-file');
+        const upload = document.getElementById('wa-upload');
+        if (file) file.disabled = !windowState.open;
+        if (upload) {
+            upload.disabled = !windowState.open;
+            upload.classList.toggle('opacity-50', !windowState.open);
+        }
     }
 
     whatsappBubble(message) {
         const outbound = message.direction === 'out';
         const status = message.status ? ' · ' + message.status : '';
+        const media = message.media_mime
+            ? `<div class="mt-1" data-media="${this.apiUrl}/guests/whatsapp/media?source_ref=${encodeURIComponent(message.source_ref || '')}&guest_phone=${encodeURIComponent(message.guest_phone || '')}&hotel_name=${encodeURIComponent(this.currentHotel || '')}" data-mime="${this.esc(message.media_mime)}" data-name="${this.esc(message.media_name || '')}"></div>`
+            : '';
         return `
             <div class="flex ${outbound ? 'justify-end' : 'justify-start'}">
                 <div class="max-w-md rounded px-3 py-2 text-sm ${outbound ? 'bg-green-100' : 'bg-white border'}">
+                    ${media}
                     <div class="whitespace-pre-wrap text-gray-900">${this.esc(message.body)}</div>
                     <div class="text-xs text-gray-500 mt-1">${this.esc(message.sent_at)}${this.esc(status)}</div>
                 </div>
@@ -285,10 +319,70 @@ class GuestComponent {
         `;
     }
 
+    mediaTag(mime) {
+        const tags = [
+            ['image/', 'img'],
+            ['video/', 'video'],
+            ['audio/', 'audio'],
+            ['application/pdf', 'iframe'],
+        ];
+        const match = tags.find(row => String(mime || '').toLowerCase().startsWith(row[0]));
+        return match ? match[1] : '';
+    }
+
+    async hydrateMedia(root) {
+        const nodes = root.querySelectorAll('[data-media]');
+        const classes = { img: 'max-w-full rounded', video: 'max-w-full', iframe: 'w-full h-64' };
+        for (const node of nodes) {
+            const response = await fetch(node.dataset.media, { credentials: 'include' });
+            if (!response.ok) continue;
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+            const tag = this.mediaTag(node.dataset.mime || '');
+            if (tag) {
+                const element = document.createElement(tag);
+                element.src = url;
+                element.className = classes[tag] || '';
+                if (tag === 'video' || tag === 'audio') element.controls = true;
+                node.appendChild(element);
+            }
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = node.dataset.name || 'file';
+            link.textContent = 'Download';
+            link.className = 'text-blue-600 text-sm block mt-1';
+            node.appendChild(link);
+        }
+    }
+
     async sendWhatsapp() {
         const guest = (this.record && this.record.guest) || {};
         const field = document.getElementById('wa-body');
         const status = document.getElementById('wa-status');
+        const fileInput = document.getElementById('wa-file');
+        const chosen = fileInput && fileInput.files && fileInput.files[0];
+        if (chosen) {
+            status.textContent = 'Sending file...';
+            const form = new FormData();
+            form.append('guest_phone', guest.guest_phone);
+            form.append('hotel_name', this.currentHotel);
+            form.append('caption', String((field && field.value) || '').trim());
+            form.append('file', chosen, chosen.name);
+            const response = await fetch(`${this.apiUrl}/guests/whatsapp/media`, { method: 'POST', credentials: 'include', body: form });
+            const data = await response.json();
+            if (!response.ok || data.error) {
+                status.textContent = data.error || 'WhatsApp send failed';
+                return;
+            }
+            fileInput.value = '';
+            const chosenName = document.getElementById('wa-file-name');
+            if (chosenName) chosenName.textContent = '';
+            if (field) field.value = '';
+            this.viewTab = 'messages';
+            this.messageChannel = 'whatsapp';
+            await this.openGuest(guest.guest_phone);
+            return;
+        }
         const text = String((field && field.value) || '').trim();
         if (!text) {
             status.textContent = 'Write a message first';
@@ -312,15 +406,48 @@ class GuestComponent {
         await this.openGuest(guest.guest_phone);
     }
 
+    async loadWhatsappTemplates() {
+        const guest = (this.record && this.record.guest) || {};
+        const select = document.getElementById('wa-template-pick');
+        const sentence = document.getElementById('wa-template-sentence');
+        if (!select || !guest.guest_phone) return;
+        const response = await fetch(`${this.apiUrl}/guests/whatsapp/templates?guest_phone=${encodeURIComponent(guest.guest_phone)}&hotel_name=${encodeURIComponent(this.currentHotel)}`, { credentials: 'include' });
+        const data = await response.json();
+        this.whatsappTemplates = (!response.ok || data.error) ? [] : (data.templates || []);
+        select.innerHTML = '';
+        this.whatsappTemplates.forEach(item => {
+            const option = document.createElement('option');
+            option.value = item.key;
+            option.textContent = item.template_name;
+            select.appendChild(option);
+        });
+        if (!this.whatsappTemplates.length) sentence.textContent = (data && data.error) || 'No active WhatsApp template';
+        this.showWhatsappTemplate();
+    }
+
+    showWhatsappTemplate() {
+        const select = document.getElementById('wa-template-pick');
+        const sentence = document.getElementById('wa-template-sentence');
+        if (!select || !sentence) return;
+        const chosen = (this.whatsappTemplates || []).find(item => item.key === select.value);
+        if (chosen) sentence.textContent = chosen.sentence;
+    }
+
     async sendWhatsappTemplate() {
         const guest = (this.record && this.record.guest) || {};
         const status = document.getElementById('wa-status');
+        const select = document.getElementById('wa-template-pick');
+        const template = select ? select.value : '';
+        if (!template) {
+            status.textContent = 'No active WhatsApp template';
+            return;
+        }
         status.textContent = 'Sending template...';
         const response = await fetch(`${this.apiUrl}/guests/whatsapp/template`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
-            body: JSON.stringify({ guest_phone: guest.guest_phone, hotel_name: this.currentHotel })
+            body: JSON.stringify({ guest_phone: guest.guest_phone, hotel_name: this.currentHotel, template: template })
         });
         const data = await response.json();
         if (!response.ok || data.error) {

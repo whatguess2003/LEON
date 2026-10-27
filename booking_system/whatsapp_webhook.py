@@ -59,11 +59,43 @@ def _guest_hotel(phone: str) -> str:
     return ""
 
 
+def _media_part(message: dict) -> dict:
+    kind = str((message or {}).get("type") or "")
+    part = (message or {}).get(kind)
+    if not isinstance(part, dict) or not part.get("id"):
+        return {}
+    if not part.get("mime_type") and not part.get("sha256"):
+        return {}
+    return part
+
+
 def _text_body(message: dict) -> str:
     text = str(((message or {}).get("text") or {}).get("body") or "").strip()
     if text:
         return text
+    part = _media_part(message)
+    caption = str(part.get("caption") or "").strip()
+    if caption:
+        return caption
+    filename = str(part.get("filename") or "").strip()
+    if filename:
+        return filename
     return str((message or {}).get("type") or "")
+
+
+def _keep_media(source_ref: str, message: dict) -> None:
+    part = _media_part(message)
+    media_id = str(part.get("id") or "")
+    if not media_id:
+        return
+    from booking_system.guest_manager import guest_manager
+    from booking_system.whatsapp_media import download_media
+    fetched = download_media(media_id)
+    if fetched.get("error"):
+        return
+    filename = str(part.get("filename") or "")
+    guest_manager.save_guest_media(source_ref, fetched["data"], fetched["mime"], filename)
+    guest_manager.save_whatsapp_event(source_ref, media_mime=fetched["mime"], media_name=filename)
 
 
 def accept_webhook(payload: dict) -> None:
@@ -80,6 +112,7 @@ def accept_webhook(payload: dict) -> None:
                 if not phone or not source_ref or not sent_at:
                     continue
                 guest_manager.save_whatsapp_event(source_ref, phone, _guest_hotel(phone), sent_at, _text_body(message), "in")
+                _keep_media(source_ref, message)
             for status in value.get("statuses") or []:
                 source_ref = str((status or {}).get("id") or "")
                 phone = _phone(str((status or {}).get("recipient_id") or ""))
