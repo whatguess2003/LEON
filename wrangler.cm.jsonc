@@ -10,7 +10,7 @@
     {
       "class_name": "CmService",
       "scheduling_policy": "default",
-      "image": "./Dockerfile.cm",
+      "image": "registry.cloudflare.com/332c5e41cdaf724cedc69e812890fa6d/cm:20261027b",
       "instance_type": "standard-1",
       "max_instances": 2
     }
