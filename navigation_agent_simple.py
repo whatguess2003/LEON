@@ -19,7 +19,7 @@ load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 # Explicit model for navigation agent (no .env required)
-OPENAI_MODEL = "gpt-4o-mini"
+OPENAI_MODEL = "claude-haiku-5-5"
 
 
 TOPIC_TO_ROUTE = {
@@ -72,26 +72,24 @@ def _build_tools_spec() -> list[dict[str, Any]]:
     return [
         {
             "type": "function",
-            "function": {
-                "name": "decide_navigation",
-                "description": "Pick a UI topic to navigate to, based on the instruction.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "topic": {
-                            "type": "string",
-                            "description": "One of: rooms, bookings, analytics, dashboard, inventory, operations, guests, index",
-                        },
-                        "params": {
-                            "type": "object",
-                            "description": "Optional query params to pass to the page, such as hotel or room_type.",
-                            "additionalProperties": {
-                                "type": ["string", "number", "boolean"]
-                            },
+            "name": "decide_navigation",
+            "description": "Pick a UI topic to navigate to, based on the instruction.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "topic": {
+                        "type": "string",
+                        "description": "One of: rooms, bookings, analytics, dashboard, inventory, operations, guests, index",
+                    },
+                    "params": {
+                        "type": "object",
+                        "description": "Optional query params to pass to the page, such as hotel or room_type.",
+                        "additionalProperties": {
+                            "type": ["string", "number", "boolean"]
                         },
                     },
-                    "required": ["topic"],
                 },
+                "required": ["topic"],
             },
         }
     ]
@@ -106,40 +104,19 @@ def _system_prompt() -> str:
 
 
 def decide_navigation_from_text(user_text: str) -> Optional[Dict[str, Any]]:
-    if not OPENAI_API_KEY:
+    if not os.getenv("ANTHROPIC_API_KEY"):
         return None
-
-    payload = {
-        "model": OPENAI_MODEL,
-        "messages": [
-            {"role": "system", "content": _system_prompt()},
-            {"role": "user", "content": user_text.strip()},
-        ],
-        "tools": _build_tools_spec(),
-        "tool_choice": {"type": "function", "function": {"name": "decide_navigation"}},
-        "temperature": 0.0,
-        "max_tokens": 64,
+    from booking_system.llm_utils import haiku_text
+    schema = {
+        "type": "object",
+        "properties": {"topic": {"type": "string"}},
+        "required": ["topic"],
+        "additionalProperties": False,
     }
-
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "Content-Type": "application/json",
-    }
-
-    with httpx.Client(timeout=15.0) as client:
-        resp = client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
-        resp.raise_for_status()
-        data = resp.json()
-
     try:
-        choice = data["choices"][0]["message"]
-        tool_calls = choice.get("tool_calls") or []
-        if not tool_calls:
-            return None
-        args_raw = tool_calls[0]["function"]["arguments"]
-        args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
-        topic = str(args.get("topic", "")).lower().strip()
-        params = args.get("params") or {}
+        parsed = json.loads(haiku_text(_system_prompt(), user_text.strip(), schema=schema, max_tokens=64, timeout=15))
+        topic = str(parsed.get("topic") or "").lower().strip()
+        params = {}
         route = TOPIC_TO_ROUTE.get(topic)
         if not route:
             return None

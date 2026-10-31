@@ -27,9 +27,9 @@ from starlette.concurrency import run_in_threadpool
 import psycopg2
 import psycopg2.extras
 try:
-    from indexes.mongo_index_manifest import ensure_mongo_indexes as _ensure_mongo_indexes
+    from indexes.content_index import ensure_content_tables as _ensure_content_tables
 except Exception:
-    _ensure_mongo_indexes = None
+    _ensure_content_tables = None
 try:
     from openai import OpenAI as _OpenAI
 except Exception:
@@ -58,8 +58,11 @@ def _hotel_from_jwt(token: str) -> str:
 
 load_dotenv(override=True)
 os.environ.setdefault("PGCONNECT_TIMEOUT", "10")
+_database_url = os.getenv("DATABASE_URL") or ""
+if "sslrootcert=system" in _database_url:
+    import certifi
+    os.environ["DATABASE_URL"] = _database_url.replace("sslrootcert=system", "sslrootcert=" + certifi.where())
 print("LEON process starting", flush=True)
-REDIS_URL = os.getenv('REDIS_URL')
 # Add booking_system to path to import LEON
 sys.path.append(os.path.join(os.path.dirname(__file__), 'booking_system'))
 
@@ -317,12 +320,12 @@ async def health_check():
         "timestamp": datetime.now(timezone.utc).isoformat().replace('+00:00','Z')
     }
 
-# Ensure Mongo indexes at startup (idempotent)
+# Ensure PostgreSQL indexes at startup (idempotent)
 @app.on_event("startup")
 async def _startup_indexes():
     try:
-        if _ensure_mongo_indexes:
-            _ensure_mongo_indexes()
+        if _ensure_content_tables:
+            _ensure_content_tables()
     except Exception:
         pass
 
@@ -512,6 +515,42 @@ async def signup_endpoint(request: SignupRequest):
             message=f"Signup failed: {str(e)}"
         )
 
+@app.post("/api/onboard/turn")
+async def api_onboard_turn(payload: Dict[str, Any] = Body(default={}), req: Request = None):
+    """Chat turn that opens a hotel. Sets the sign-in cookie once the account exists."""
+    from booking_system.onboard_turn import onboard_turn
+    try:
+        result = await run_in_threadpool(
+            onboard_turn,
+            str((payload or {}).get("message") or ""),
+            (payload or {}).get("history") or [],
+            (payload or {}).get("fields") or {},
+        )
+    except Exception as error:
+        return JSONResponse(content={"reply": "I could not finish that turn. " + str(error), "saved": [], "booking_id": ""}, status_code=500)
+    token = str(result.pop("token", "") or "")
+    hotel = str(result.pop("cookie_hotel", "") or "")
+    response = JSONResponse(content=result)
+    if token:
+        cookie_attrs = _auth_cookie_attrs(req)
+        response.set_cookie(key="leon_jwt", value=token, httponly=True, max_age=7 * 24 * 3600, **cookie_attrs)
+        if hotel:
+            response.set_cookie(key="leon_hotel", value=urllib.parse.quote(hotel, safe=""), httponly=False, **cookie_attrs)
+        _partition_cross_site_cookies(response)
+    return response
+
+@app.get("/api/guide")
+async def api_guide(leon_jwt: str = Cookie(None)):
+    """The hotel's to-do list and highlights. They remain after onboarding."""
+    from booking_system.onboard_turn import read_guide
+    hotel = _hotel_from_jwt(leon_jwt)
+    if not hotel:
+        return {"hotel_name": "", "highlights": [], "todos": [], "suggestion": "", "booking_id": "", "fields": {}}
+    try:
+        return await run_in_threadpool(read_guide, hotel)
+    except Exception as error:
+        return JSONResponse(content={"error": str(error)}, status_code=500)
+
 @app.post("/api/auth/signin", response_model=AuthResponse)
 async def signin_endpoint(request: SigninRequest, req: Request):
     """Manager signin endpoint (sets JWT as HTTP-only cookie)"""
@@ -656,16 +695,14 @@ async def chat_start(request: ChatRequest, leon_jwt: str = Cookie(None)):
     try:
         jwt_token = leon_jwt
         # Run blocking orchestration in a thread to avoid blocking the event loop
-        response = await run_in_threadpool(leon_instance.process_request, request.message, jwt_token=jwt_token)
-        # If tools were executed in the last request, surface a refresh hint
-        refresh = False
-        try:
-            refresh = bool(getattr(leon_instance, 'last_tools_used', False))
-            # Reset hint so it only triggers once per call
-            leon_instance.last_tools_used = False
-        except Exception:
-            refresh = False
-        return {"final_message": response, "refresh": refresh}
+        response = await run_in_threadpool(leon_instance.process_desk, request.message, jwt_token)
+        return {
+            "final_message": response.get("reply") or "",
+            "refresh": bool(response.get("refresh")),
+            "screen": response.get("screen"),
+            "pins": response.get("pins") or [],
+            "pin_count": response.get("pin_count") or 0,
+        }
     except Exception as e:
         logger.error(f"Exception in /api/chat/start: {e}\n{traceback.format_exc()}")
         return {"final_message": f"Backend error: {str(e)}"}
@@ -676,14 +713,14 @@ async def chat_complete(payload: dict = Body(...), leon_jwt: str = Cookie(None))
     try:
         jwt_token = leon_jwt
         message = payload.get("message")
-        response = await run_in_threadpool(leon_instance.process_request, message, jwt_token=jwt_token)
-        refresh = False
-        try:
-            refresh = bool(getattr(leon_instance, 'last_tools_used', False))
-            leon_instance.last_tools_used = False
-        except Exception:
-            refresh = False
-        return {"final_message": response, "refresh": refresh}
+        response = await run_in_threadpool(leon_instance.process_desk, message, jwt_token)
+        return {
+            "final_message": response.get("reply") or "",
+            "refresh": bool(response.get("refresh")),
+            "screen": response.get("screen"),
+            "pins": response.get("pins") or [],
+            "pin_count": response.get("pin_count") or 0,
+        }
     except Exception as e:
         logger.error(f"Exception in /api/chat/complete: {e}\n{traceback.format_exc()}")
         return {"final_message": f"Backend error: {str(e)}"}
@@ -695,27 +732,22 @@ async def chat_history(leon_jwt: str = Cookie(None)):
         if not leon_jwt:
             return JSONResponse(content={"items": []}, status_code=200)
         # Prime orchestrator context from JWT, then load dialog history
+        hotel = ""
+        mgr = ""
         try:
             from booking_system.leon_meta_orchestrator import get_hotel_name_from_jwt as _get_hotel, get_manager_name_from_jwt as _get_mgr
             hotel = _get_hotel(leon_jwt)
             mgr = _get_mgr(leon_jwt)
-            if isinstance(hotel, str) and not hotel.startswith('❌'):
-                leon_instance.hotel_name = hotel.upper()
-            if isinstance(mgr, str) and not mgr.startswith('❌'):
-                leon_instance.manager_name = mgr.upper()
         except Exception:
-            pass
-        try:
-            if hasattr(leon_instance, 'load_dialog_history'):
-                leon_instance.load_dialog_history()
-        except Exception:
-            pass
-        history = getattr(leon_instance, 'dialog_history', []) or []
+            hotel = ""
+        if not isinstance(hotel, str) or hotel.startswith("❌") or not isinstance(mgr, str) or mgr.startswith("❌"):
+            return JSONResponse(content={"items": []}, status_code=200)
+        history = leon_instance.read_dialog(hotel.upper(), mgr.upper())
         items = []
-        for idx, text in enumerate(history):
+        for idx, entry in enumerate(history):
             try:
-                sender = 'user' if idx % 2 == 0 else 'leon'
-                items.append({"sender": sender, "text": str(text)})
+                sender, text = leon_instance.dialog_line(entry, idx)
+                items.append({"sender": sender, "text": text})
             except Exception:
                 continue
         return JSONResponse(content={"items": items})
@@ -728,26 +760,177 @@ async def chat_clear(leon_jwt: str = Cookie(None)):
         if not leon_jwt:
             return JSONResponse(content={"success": False, "message": "Unauthorized"}, status_code=401)
         # Prime orchestrator context from JWT
-        try:
-            from booking_system.leon_meta_orchestrator import get_hotel_name_from_jwt as _get_hotel, get_manager_name_from_jwt as _get_mgr
-            hotel = _get_hotel(leon_jwt)
-            mgr = _get_mgr(leon_jwt)
-            if isinstance(hotel, str) and not hotel.startswith('❌'):
-                leon_instance.hotel_name = hotel.upper()
-            if isinstance(mgr, str) and not mgr.startswith('❌'):
-                leon_instance.manager_name = mgr.upper()
-        except Exception:
-            pass
-        # Clear and persist
-        try:
-            leon_instance.dialog_history = []
-            if hasattr(leon_instance, 'save_dialog_history'):
-                leon_instance.save_dialog_history()
-        except Exception:
-            pass
+        from booking_system.leon_meta_orchestrator import get_hotel_name_from_jwt as _get_hotel, get_manager_name_from_jwt as _get_mgr
+        hotel = _get_hotel(leon_jwt)
+        mgr = _get_mgr(leon_jwt)
+        if not isinstance(hotel, str) or hotel.startswith("❌") or not isinstance(mgr, str) or mgr.startswith("❌"):
+            return JSONResponse(content={"success": False, "message": "Invalid hotel in token"}, status_code=401)
+        leon_instance.write_dialog(hotel.upper(), mgr.upper(), [])
+        from booking_system.leon_turn import remember_topic
+        from booking_system.runtime_state import delete_session
+        remember_topic(hotel, mgr, "")
+        delete_session(hotel, mgr)
         return {"success": True}
     except Exception as e:
         return JSONResponse(content={"success": False, "message": str(e)}, status_code=500)
+
+@app.get("/api/definitions")
+async def definitions_list(leon_jwt: str = Cookie(None)):
+    """Questions this manager still needs to answer, and the definitions already on the profile."""
+    from booking_system.leon_meta_orchestrator import get_manager_name_from_jwt
+    from booking_system.semantic.definitions import manager_definitions, open_definitions
+    manager = get_manager_name_from_jwt(leon_jwt) if leon_jwt else ""
+    if not isinstance(manager, str) or not manager or manager.startswith("❌"):
+        return JSONResponse(content={"success": False, "message": "Unauthorized"}, status_code=401)
+    return {"manager_name": manager.upper(), "pending": open_definitions(manager), "answered": manager_definitions(manager)}
+
+
+def _jwt_manager(leon_jwt):
+    from booking_system.leon_meta_orchestrator import get_manager_name_from_jwt
+    manager = get_manager_name_from_jwt(leon_jwt) if leon_jwt else ""
+    if not isinstance(manager, str) or not manager or manager.startswith("❌"):
+        return ""
+    return manager.upper()
+
+
+@app.get("/api/personal_recipes")
+async def personal_recipes_list(leon_jwt: str = Cookie(None)):
+    """This manager's saved reports: each references published general recipes with a relative day."""
+    from booking_system.semantic.personal import describe, personal_recipes
+    manager = _jwt_manager(leon_jwt)
+    if not manager:
+        return JSONResponse(content={"success": False, "message": "Unauthorized"}, status_code=401)
+    saved = personal_recipes(manager)
+    return {"manager_name": manager, "personal_recipes": [dict(item, summary=describe(item)) for item in saved]}
+
+
+@app.post("/api/personal_recipes")
+async def personal_recipes_change(payload: Dict[str, Any] = Body(...), leon_jwt: str = Cookie(None)):
+    """Read first. create needs a new name, update and delete need a saved one. figures are mapped onto published recipes."""
+    from booking_system.semantic.personal import delete_personal, find_personal, learn, needed_definitions, save_personal
+    manager = _jwt_manager(leon_jwt)
+    if not manager:
+        return JSONResponse(content={"success": False, "message": "Unauthorized"}, status_code=401)
+    body = payload or {}
+    operation = str(body.get("operation") or "")
+    name = str(body.get("name") or "")
+    existing = find_personal(manager, name)
+    if operation not in ("create", "update", "delete"):
+        return JSONResponse(content={"success": False, "message": "operation is create, update, or delete"}, status_code=400)
+    if operation == "create" and existing:
+        return JSONResponse(content={"success": False, "message": "already saved", "personal_recipe": existing}, status_code=409)
+    if operation != "create" and not existing:
+        return JSONResponse(content={"success": False, "message": "no saved report " + name}, status_code=404)
+    if operation == "delete":
+        return {"success": True, **delete_personal(manager, name)}
+    figures = str(body.get("figures") or "")
+    if not figures:
+        return JSONResponse(content={"success": False, "message": "figures are required"}, status_code=400)
+    items, seen = await run_in_threadpool(learn, manager, name, figures)
+    result = save_personal(manager, name, items, seen)
+    if result.get("error"):
+        return JSONResponse(content={"success": False, "message": result["error"]}, status_code=400)
+    return {"success": True, **result, "needs_definitions": needed_definitions(manager, result["recipe"])}
+
+
+@app.post("/api/definitions")
+async def definitions_answer(payload: Dict[str, Any] = Body(...), leon_jwt: str = Cookie(None)):
+    """The manager answers one definition. Investigations waiting only on answered questions are reviewed again."""
+    from booking_system.leon_meta_orchestrator import get_manager_name_from_jwt
+    from booking_system.semantic.definitions import save_definition
+    from booking_system.semantic.trace import enqueue_resume
+    manager = get_manager_name_from_jwt(leon_jwt) if leon_jwt else ""
+    if not isinstance(manager, str) or not manager or manager.startswith("❌"):
+        return JSONResponse(content={"success": False, "message": "Unauthorized"}, status_code=401)
+    result = save_definition(manager, (payload or {}).get("key"), (payload or {}).get("definition"), "api")
+    if result.get("error"):
+        return JSONResponse(content={"success": False, "message": result["error"]}, status_code=400)
+    if result.get("ready_trace_ids"):
+        enqueue_resume(result["ready_trace_ids"])
+    return {"success": True, **result}
+
+
+@app.post("/api/chat/menu")
+async def chat_menu_open(payload: Dict[str, Any] = Body(...), leon_jwt: str = Cookie(None)):
+    """Open the database list for the catalog action the hotel user chose."""
+    hotel = _hotel_from_jwt(leon_jwt)
+    if not hotel:
+        return JSONResponse(content={"error": "Invalid hotel in token"}, status_code=401)
+    from booking_system.desk_actions import open_action
+    from booking_system.leon_meta_orchestrator import get_manager_name_from_jwt
+    from booking_system.leon_turn import _copy_function, remember_topic
+    chosen = str((payload or {}).get("id") or "")
+    if chosen == "check_availability":
+        manager = get_manager_name_from_jwt(leon_jwt)
+        if isinstance(manager, str) and not manager.startswith("❌"):
+            await run_in_threadpool(remember_topic, hotel, manager, "availability")
+    screen = await run_in_threadpool(open_action, hotel, chosen)
+    if not screen:
+        return JSONResponse(content={"error": "Action was not found"}, status_code=400)
+    await run_in_threadpool(_copy_function, hotel, screen)
+    return {"screen": screen}
+
+
+@app.get("/api/chat/desk")
+async def chat_desk(build: int = 0, leon_jwt: str = Cookie(None)):
+    """The stored list and the three pins. The sales card is built only when the chat opens."""
+    hotel = _hotel_from_jwt(leon_jwt)
+    if not hotel:
+        return {"screen": None, "pins": [], "pin_count": 0}
+    from booking_system.leon_turn import ensure_sales_card, list_pins, read_screen
+    stored = await run_in_threadpool(list_pins, hotel)
+    screen = await run_in_threadpool(ensure_sales_card if build else read_screen, hotel)
+    return {"screen": screen, "pins": stored[:3], "pin_count": len(stored), "stored": stored}
+
+@app.post("/api/chat/card")
+async def chat_card(payload: Dict[str, Any] = Body(...), leon_jwt: str = Cookie(None)):
+    """Pin, mark read, or dismiss the sales card. The same call serves a WhatsApp list reply."""
+    hotel = _hotel_from_jwt(leon_jwt)
+    if not hotel:
+        return JSONResponse(content={"error": "Invalid hotel in token"}, status_code=401)
+    from booking_system.leon_turn import card_click, ensure_sales_card, shown_pins
+    result = await run_in_threadpool(card_click, hotel, (payload or {}).get("card"), (payload or {}).get("id"))
+    if result == "missing":
+        return JSONResponse(content={"error": "Card action was not saved"}, status_code=400)
+    screen = await run_in_threadpool(ensure_sales_card, hotel)
+    shown, count = await run_in_threadpool(shown_pins, hotel)
+    return {"screen": screen, "pins": shown, "pin_count": count, "result": result}
+
+@app.post("/api/chat/pin")
+async def chat_pin(payload: Dict[str, Any] = Body(...), leon_jwt: str = Cookie(None)):
+    """The hotel user pins one message into a category."""
+    hotel = _hotel_from_jwt(leon_jwt)
+    if not hotel:
+        return JSONResponse(content={"error": "Invalid hotel in token"}, status_code=401)
+    from booking_system.leon_turn import pin_message, shown_pins
+    result = await run_in_threadpool(pin_message, hotel, (payload or {}).get("text"), (payload or {}).get("category"), "user")
+    if result == "missing":
+        return JSONResponse(content={"error": "Pin was not saved"}, status_code=400)
+    shown, count = await run_in_threadpool(shown_pins, hotel)
+    return {"pins": shown, "pin_count": count}
+
+@app.post("/api/chat/unpin")
+async def chat_unpin(payload: Dict[str, Any] = Body(...), leon_jwt: str = Cookie(None)):
+    """The hotel user removes one pinned message."""
+    hotel = _hotel_from_jwt(leon_jwt)
+    if not hotel:
+        return JSONResponse(content={"error": "Invalid hotel in token"}, status_code=401)
+    from booking_system.leon_turn import shown_pins, unpin_message
+    result = await run_in_threadpool(unpin_message, hotel, (payload or {}).get("text"))
+    if result == "missing":
+        return JSONResponse(content={"error": "Pin not found"}, status_code=404)
+    shown, count = await run_in_threadpool(shown_pins, hotel)
+    return {"pins": shown, "pin_count": count}
+
+@app.post("/api/chat/screen/drop")
+async def chat_screen_drop(payload: Dict[str, Any] = Body(...), leon_jwt: str = Cookie(None)):
+    """Remove one chosen row from the list the agent sent."""
+    hotel = _hotel_from_jwt(leon_jwt)
+    if not hotel:
+        return JSONResponse(content={"error": "Invalid hotel in token"}, status_code=401)
+    from booking_system.leon_turn import drop_screen_row, read_screen
+    await run_in_threadpool(drop_screen_row, hotel, (payload or {}).get("id"))
+    return {"screen": await run_in_threadpool(read_screen, hotel)}
 
 # --- AI-generated contextual suggestion endpoint (OpenAI Chat Completions, no LangChain) ---
 _SUGGEST_GUARDS = {}
@@ -803,8 +986,9 @@ async def chat_suggest(payload: Dict[str, Any] = Body(...), leon_jwt: str = Cook
                 window = history[-8:]
                 for idx, msg in enumerate(window):
                     try:
-                        role = 'MANAGER' if ((len(history)-len(window)+idx) % 2 == 0) else 'LEON'
-                        recent_history.append(f"{role}: {str(msg)}")
+                        sender, text = leon_instance.dialog_line(msg, len(history) - len(window) + idx)
+                        role = 'MANAGER' if sender == 'user' else 'LEON'
+                        recent_history.append(f"{role}: {text}")
                     except Exception:
                         continue
         except Exception:
@@ -824,14 +1008,14 @@ async def chat_suggest(payload: Dict[str, Any] = Body(...), leon_jwt: str = Cook
             'activities.html': 'Audit recent operational actions across domains.'
         }
         tools_by_page = {
-            'dashboard.html': ['generate_performance_dashboard', 'generate_operational_alerts', 'read_revenue_analytics', 'daily_manager_report', 'daily_forecast_report'],
+            'dashboard.html': [],
             'rooms.html': ['read_room_types_by_criteria_tool', 'create_room_type_tool', 'manage_room_description_tool', 'add_room_numbers_tool', 'read_room_type_from_room_number_tool'],
             'inventory.html': ['manage_room_quantity', 'manage_room_price', 'check_room_pricing', 'read_inventory_information_from_description'],
             'bookings.html': ['create_booking_tool', 'search_bookings_tool', 'modify_stay_dates_tool', 'cancel_booking_tool', 'get_payment_status_for_booking_tool', 'send_booking_confirmation_tool'],
             'guests.html': ['create_guest_profile_tool', 'update_guest_profile_tool', 'read_guests_by_criteria_tool', 'reactivate_guest_profile_tool', 'read_guest_analytics'],
             'housekeeping.html': ['read_dirty_rooms', 'create_cleaning_task', 'update_cleaning_progress', 'read_room_readiness_status_tool', 'read_housekeeping_analytics'],
             'operations.html': ['assign_room_number', 'suggest_room_assignment', 'mark_room_out_of_order', 'mark_room_available', 'read_maintenance_requests'],
-            'analytics.html': ['calculate_revenue_analytics', 'generate_occupancy_and_booking_analytics', 'generate_financial_reconciliation', 'generate_performance_dashboard', 'channel_performance_report'],
+            'analytics.html': [],
             'assignments.html': ['read_room_assignments_for_booking_tool', 'suggest_room_assignment', 'read_assignment_dashboard'],
             'activities.html': ['read_activity_logs_tool']
         }
@@ -839,8 +1023,6 @@ async def chat_suggest(payload: Dict[str, Any] = Body(...), leon_jwt: str = Cook
         purpose = page_purpose.get(key, '')
         tool_list = tools_by_page.get(key, [])
 
-        model = os.getenv('LEON_SUGGESTION_MODEL', 'gpt-4o-mini')
-        client = _OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
         # Language coherence with LEONMetaOrchestrator
         lang_directive = (f"Respond in {primary_language}. " if primary_language else "")
         system = (
@@ -861,16 +1043,8 @@ async def chat_suggest(payload: Dict[str, Any] = Body(...), leon_jwt: str = Cook
             "Guidelines: If there is an unfinished or ongoing discussion, prefer a suggestion that continues it. Otherwise, propose the most valuable action for this page.\n"
         )
         try:
-            resp = client.chat.completions.create(
-                model=model,
-                temperature=1.0,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": content},
-                ],
-                timeout=10,
-            )
-            text = (resp.choices[0].message.content or '').strip() if resp and resp.choices else ''
+            from booking_system.llm_utils import haiku_text
+            text = haiku_text(system, content, max_tokens=40, timeout=10).strip()
             if text.startswith('```'):
                 text = text.strip('`').strip()
             return {"text": text}
@@ -1120,18 +1294,36 @@ def _write_guest_needs(hotel: str, guest_phone: str) -> dict:
         return {"error": "ChatGPT is unavailable", "status": 503}
     from booking_system.guest_manager import guest_manager as gm
     from booking_system.guest_summary import summarize_guest
+    from booking_system.leon_turn import finish_guest, prepare_guest
     record = gm.read_guest_with_bookings(hotel, guest_phone)
     if not record:
         return {"error": "Guest profile not found", "status": 404}
     record["hotel_name"] = str(hotel or "").upper()
+    prepared = prepare_guest(guest_phone)
+    guest = record.get("guest") or {}
+    if prepared["stage"].get("ambiguous"):
+        from booking_system.desk_actions import hotel_names, resolve_hotel
+        ask = resolve_hotel(prepared["stage"], False, "", hotel_names()).get("ask") or ""
+        gm.records["guests"].update_one({"guest_phone": guest_phone}, {"$set": {"guest_reply": ask}})
+        return {
+            "guest_phone": guest_phone,
+            "guest_profile_summary": guest.get("guest_profile_summary") or "",
+            "guest_needs": guest.get("guest_needs") or "",
+            "recommended_action": guest.get("recommended_action") or "",
+            "guest_reply": ask,
+        }
+    record["stage_text"] = prepared["stage_text"]
+    record["phone_messages"] = prepared["phone_messages"]
     client = _OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     try:
         brief = summarize_guest(client, record, gm.read_guest_media)
+        done = finish_guest(client, guest_phone, brief)
     except Exception as model_error:
         detail = str(model_error)
         if "insufficient_quota" in detail:
             return {"error": "ChatGPT has no credits remaining", "status": 429}
         return {"error": detail, "status": 502}
+    brief = done["brief"]
     missing = [name for name in ("guest_profile_summary", "guest_needs", "recommended_action") if not brief.get(name)]
     if missing:
         return {"error": "ChatGPT returned an empty summary", "status": 502}
@@ -1142,10 +1334,30 @@ def _write_guest_needs(hotel: str, guest_phone: str) -> dict:
         "recommended_action": brief["recommended_action"],
         "ai_summary_at": summary_at,
         "ai_summary_for": "brief",
-        "executable_actions": brief.get("executable_actions") or [],
+        "guest_reply": brief.get("guest_reply") or "",
     }
-    gm.mongo_db["guests"].update_one({"guest_phone": guest_phone}, {"$set": saved})
+    if done.get("lists") is not None:
+        saved.update(done["lists"])
+    gm.records["guests"].update_one({"guest_phone": guest_phone}, {"$set": saved})
     return {"guest_phone": guest_phone, **saved}
+
+
+def _answer_simulated(hotel: str, guest_phone: str) -> dict:
+    """Write the brief, then save the assistant reply on the thread. Meta is not called."""
+    written = _write_guest_needs(hotel, guest_phone)
+    if written.get("error"):
+        return written
+    reply = str(written.get("guest_reply") or "").strip()
+    if not reply:
+        return written
+    from booking_system.guest_manager import guest_manager as gm
+    import uuid
+    sent_at = datetime.now(timezone.utc).isoformat()
+    source_ref = "assistant-" + uuid.uuid4().hex
+    gm.save_whatsapp_event(source_ref, guest_phone, hotel, sent_at, reply, "out", "assistant")
+    gm.records["guests"].update_one({"guest_phone": guest_phone}, {"$set": {"ai_summary_at": sent_at}})
+    written["ai_summary_at"] = sent_at
+    return written
 
 
 @app.get("/webhook/whatsapp")
@@ -1258,7 +1470,7 @@ async def read_ota_reservation_in(leon_jwt: str = Cookie(None)):
 
 @app.get("/api/property/policies")
 async def api_property_policies(hotel_name: str = Query(None), policy_type: str = Query(None), manager_name: str = Query(None), leon_jwt: str = Cookie(None)):
-    """READ all policies (MongoDB)."""
+    """READ all policies (PostgreSQL)."""
     try:
         if not leon_jwt:
             return JSONResponse(content={"error": "Unauthorized"}, status_code=401)
@@ -1284,7 +1496,7 @@ async def read_registration_card(hotel_name: str = Query(...)):
     try:
         from booking_system.front_desk_manager import intelligent_front_desk
         hotel = str(hotel_name or "").upper()
-        doc = intelligent_front_desk.get_mongodb_connection().get_collection("registration_card").find_one(
+        doc = intelligent_front_desk.content_db().get_collection("registration_card").find_one(
             {"hotel_name": hotel}, {"_id": 0, "house_rules": 1, "terms": 1}
         )
         if not doc:
@@ -1303,7 +1515,7 @@ async def save_registration_card(payload: Dict[str, Any] = Body(...), leon_jwt: 
         house_rules = str((payload or {}).get("house_rules") or "")
         terms = str((payload or {}).get("terms") or "")
         from booking_system.front_desk_manager import intelligent_front_desk
-        coll = intelligent_front_desk.get_mongodb_connection().get_collection("registration_card")
+        coll = intelligent_front_desk.content_db().get_collection("registration_card")
         current = coll.find_one({"hotel_name": hotel})
         if current:
             coll.update_one({"hotel_name": hotel}, {"$set": {"house_rules": house_rules, "terms": terms}})
@@ -1315,7 +1527,7 @@ async def save_registration_card(payload: Dict[str, Any] = Body(...), leon_jwt: 
 
 @app.post("/api/property/policies/create")
 async def api_property_policies_create(payload: Dict[str, Any] = Body(...), leon_jwt: str = Cookie(None)):
-    """CREATE policy for a hotel (MongoDB)."""
+    """CREATE policy for a hotel (PostgreSQL)."""
     try:
         if not leon_jwt:
             return JSONResponse(content={"error": "Unauthorized"}, status_code=401)
@@ -1345,7 +1557,7 @@ async def api_property_policies_create(payload: Dict[str, Any] = Body(...), leon
 
 @app.post("/api/property/policies/update")
 async def api_property_policies_update(payload: Dict[str, Any] = Body(...), leon_jwt: str = Cookie(None)):
-    """UPDATE policy for a hotel (MongoDB)."""
+    """UPDATE policy for a hotel (PostgreSQL)."""
     try:
         if not leon_jwt:
             return JSONResponse(content={"error": "Unauthorized"}, status_code=401)
@@ -2417,7 +2629,7 @@ async def assignments_bulk_checkout_past(payload: BulkCheckoutPastPayload, leon_
 @app.get("/api/assignments/past_stays")
 async def assignments_past_stays(hotel_name: str, leon_jwt: str = Cookie(None)):
     """READ: List past stays (stay_date < yesterday) not yet departed for a hotel.
-    Database operation: read (PostgreSQL + MongoDB).
+    Database operation: read (PostgreSQL + PostgreSQL).
     """
     try:
         from booking_system.front_desk_manager import intelligent_front_desk
@@ -2504,7 +2716,7 @@ async def manage_room_type_specs(payload: Dict[str, Any] = Body(...), leon_jwt: 
 @app.post("/api/room_types/delete")
 async def delete_room_type_api(payload: Dict[str, Any] = Body(...), leon_jwt: str = Cookie(None)):
     """DELETE a room type and cascade delete all associated room numbers and inventory.
-    Database operation: write (MongoDB + PostgreSQL)."""
+    Database operation: write (PostgreSQL + PostgreSQL)."""
     try:
         if not leon_jwt:
             return JSONResponse(content={"error": "❌ Missing leon_jwt"}, status_code=401)
@@ -3165,7 +3377,7 @@ async def api_guest_profile(guest_phone: str = Query(...)):
         txt = gm.read_guest_profile(phone)
         if isinstance(txt, str) and txt.strip().startswith("❌"):
             return JSONResponse(content={"error": txt}, status_code=404)
-        guest = gm.mongo_db['guests'].find_one({"guest_phone": phone, "status": "active"}, {"_id": 0})
+        guest = gm.records['guests'].find_one({"guest_phone": phone, "status": "active"}, {"_id": 0})
         record = {}
         for key in ("guest_phone", "guest_name", "email", "guest_email", "nationality", "country", "date_of_birth", "gender", "company", "address", "identity_type", "identity_number", "special_request", "special_requests", "vip", "loyalty_tier", "status"):
             record[key] = guest.get(key) if guest else None
@@ -3188,6 +3400,27 @@ def _guests_hotel(leon_jwt: str, hotel_name: str):
     if not hotel:
         return None, JSONResponse(content={"error": "hotel_name is required"}, status_code=400)
     return hotel, None
+
+@app.get("/api/desk/queue")
+async def api_desk_queue(leon_jwt: str = Cookie(None)):
+    """Open approval rows and manual tasks for the hotel in the token."""
+    try:
+        hotel, denied = _guests_hotel(leon_jwt, "")
+        if denied:
+            return denied
+        from booking_system.desk_actions import action_names, approval_names
+        from booking_system.guest_manager import guest_manager as gm
+        approvals, tasks = gm.desk_queue(hotel)
+        names, _manager = approval_names(hotel)
+        return {
+            "hotel_name": hotel,
+            "desk_require_approval": names,
+            "executional_names": action_names(),
+            "approvals": approvals,
+            "tasks": tasks,
+        }
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
 
 @app.get("/api/guests")
 @app.get("/api/guests/search")
@@ -3217,6 +3450,95 @@ async def api_guests_record(guest_phone: str = Query(...), hotel_name: str = "",
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
+@app.get("/api/guests/thread")
+async def api_guests_thread(guest_phone: str = Query(...), hotel_name: str = "", leon_jwt: str = Cookie(None)):
+    """Messages and the saved desk brief for the open guest."""
+    try:
+        hotel, denied = _guests_hotel(leon_jwt, hotel_name)
+        if denied:
+            return denied
+        phone = str(guest_phone or "").upper()
+        from booking_system.guest_manager import guest_manager as gm
+        from booking_system.desk_actions import action_names, approval_names
+        guest = gm.records["guests"].find_one({"guest_phone": phone, "status": "active"})
+        if not guest or str(guest.get("hotel_name") or "").upper() != hotel:
+            return JSONResponse(content={"error": "Guest profile not found"}, status_code=404)
+        messages = gm.list_guest_messages(hotel, phone)
+        return {
+            "guest_phone": phone,
+            "messages": messages,
+            "whatsapp_window": gm.whatsapp_text_window(messages),
+            "guest_profile_summary": guest.get("guest_profile_summary") or "",
+            "guest_needs": guest.get("guest_needs") or "",
+            "recommended_action": guest.get("recommended_action") or "",
+            "executable_actions": guest.get("executable_actions") or [],
+            "approval_actions": guest.get("approval_actions") or [],
+            "desk_tasks": guest.get("desk_tasks") or [],
+            "ai_summary_at": guest.get("ai_summary_at") or "",
+            "ai_summary_for": guest.get("ai_summary_for") or "",
+            "desk_require_approval": approval_names(hotel)[0],
+            "executional_names": action_names(),
+        }
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.post("/api/guests/approval")
+async def api_guest_approval(payload: Dict[str, Any] = Body(...), leon_jwt: str = Cookie(None)):
+    """Remember whether one system change waits for a person at this hotel."""
+    try:
+        hotel, denied = _guests_hotel(leon_jwt, str((payload or {}).get("hotel_name") or ""))
+        if denied:
+            return denied
+        from booking_system.desk_actions import save_approval
+        saved = save_approval(hotel, (payload or {}).get("action"), bool((payload or {}).get("require_approval")))
+        if saved == "missing":
+            return JSONResponse(content={"error": "Hotel profile not found"}, status_code=404)
+        if saved == "unknown":
+            return JSONResponse(content={"error": "Unknown action"}, status_code=400)
+        return {"hotel_name": hotel, "desk_require_approval": saved}
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.post("/api/guests/approval/clear")
+async def api_guest_approval_clear(payload: Dict[str, Any] = Body(...), leon_jwt: str = Cookie(None)):
+    """Remove one held action after the desk approved it."""
+    try:
+        hotel, denied = _guests_hotel(leon_jwt, str((payload or {}).get("hotel_name") or ""))
+        if denied:
+            return denied
+        phone = str((payload or {}).get("guest_phone") or "").upper()
+        from booking_system.desk_actions import drop_approval
+        from booking_system.guest_manager import guest_manager as gm
+        guest = gm.records["guests"].find_one({"guest_phone": phone, "status": "active"})
+        if not guest or str(guest.get("hotel_name") or "").upper() != hotel:
+            return JSONResponse(content={"error": "Guest profile not found"}, status_code=404)
+        result = drop_approval(phone, (payload or {}).get("label"))
+        if result == "missing":
+            return JSONResponse(content={"error": "Approval not found"}, status_code=404)
+        return {"success": True}
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.post("/api/guests/tasks/done")
+async def api_guest_task_done(payload: Dict[str, Any] = Body(...), leon_jwt: str = Cookie(None)):
+    """Mark one manual task done."""
+    try:
+        hotel, denied = _guests_hotel(leon_jwt, str((payload or {}).get("hotel_name") or ""))
+        if denied:
+            return denied
+        phone = str((payload or {}).get("guest_phone") or "").upper()
+        from booking_system.desk_actions import mark_task_done
+        from booking_system.guest_manager import guest_manager as gm
+        guest = gm.records["guests"].find_one({"guest_phone": phone, "status": "active"})
+        if not guest or str(guest.get("hotel_name") or "").upper() != hotel:
+            return JSONResponse(content={"error": "Guest profile not found"}, status_code=404)
+        result = mark_task_done(phone, (payload or {}).get("task"))
+        if result == "missing":
+            return JSONResponse(content={"error": "Task not found"}, status_code=404)
+        return {"success": True}
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
 @app.post("/api/guests/whatsapp")
 async def api_guest_whatsapp(payload: Dict[str, Any] = Body(...), leon_jwt: str = Cookie(None)):
     """Send one WhatsApp text to a guest and save it on the guest record."""
@@ -3230,7 +3552,7 @@ async def api_guest_whatsapp(payload: Dict[str, Any] = Body(...), leon_jwt: str 
             return JSONResponse(content={"error": "guest_phone and body are required"}, status_code=400)
         from booking_system.guest_manager import guest_manager as gm
         from booking_system.front_desk_manager import intelligent_front_desk
-        guest = gm.mongo_db["guests"].find_one({"guest_phone": guest_phone, "status": "active"})
+        guest = gm.records["guests"].find_one({"guest_phone": guest_phone, "status": "active"})
         if not guest or str(guest.get("hotel_name") or "").upper() != hotel:
             return JSONResponse(content={"error": "Guest profile not found"}, status_code=404)
         window = gm.whatsapp_text_window(gm.list_guest_messages(hotel, guest_phone))
@@ -3257,14 +3579,17 @@ async def api_guest_whatsapp_simulate(payload: Dict[str, Any] = Body(...), leon_
         if not guest_phone or not text:
             return JSONResponse(content={"error": "guest_phone and body are required"}, status_code=400)
         from booking_system.guest_manager import guest_manager as gm
-        guest = gm.mongo_db["guests"].find_one({"guest_phone": guest_phone, "status": "active"})
+        guest = gm.records["guests"].find_one({"guest_phone": guest_phone, "status": "active"})
         if not guest or str(guest.get("hotel_name") or "").upper() != hotel:
             return JSONResponse(content={"error": "Guest profile not found"}, status_code=404)
         import uuid
         sent_at = datetime.now(timezone.utc).isoformat()
         source_ref = "sim-" + uuid.uuid4().hex
-        gm.save_whatsapp_event(source_ref, guest_phone, hotel, sent_at, text, "out", "simulated")
-        return {"success": True, "guest_phone": guest_phone, "body": text, "sent_at": sent_at, "source_ref": source_ref, "direction": "out", "channel": "whatsapp", "status": "simulated"}
+        gm.save_whatsapp_event(source_ref, guest_phone, hotel, sent_at, text, "in", "simulated")
+        written = await run_in_threadpool(_answer_simulated, hotel, guest_phone)
+        if written.get("error"):
+            return {"success": True, "guest_phone": guest_phone, "body": text, "sent_at": sent_at, "source_ref": source_ref, "direction": "in", "channel": "whatsapp", "status": "simulated", "reply_error": written["error"]}
+        return {"success": True, "guest_phone": guest_phone, "body": text, "sent_at": sent_at, "source_ref": source_ref, "direction": "in", "channel": "whatsapp", "status": "simulated", "guest_reply": written.get("guest_reply") or "", "executable_actions": written.get("executable_actions") or []}
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
@@ -3281,8 +3606,8 @@ async def api_guest_whatsapp_media(guest_phone: str = Form(""), hotel_name: str 
         from booking_system.guest_manager import guest_manager as gm
         from booking_system.front_desk_manager import intelligent_front_desk
         from booking_system.whatsapp_media import upload_media
-        guest = gm.mongo_db["guests"].find_one({"guest_phone": phone, "status": "active"})
-        if not guest or str(guest.get("hotel_name") or "").upper() != hotel:
+        guest = gm._guest_dict(phone, hotel)
+        if not guest or str(guest.get("status") or "") != "active":
             return JSONResponse(content={"error": "Guest profile not found"}, status_code=404)
         window = gm.whatsapp_text_window(gm.list_guest_messages(hotel, phone))
         if not window["open"]:
@@ -3315,7 +3640,7 @@ async def api_guest_whatsapp_media_file(source_ref: str = Query(""), guest_phone
         if not phone or not ref:
             return JSONResponse(content={"error": "guest_phone and source_ref are required"}, status_code=400)
         from booking_system.guest_manager import guest_manager as gm
-        row = gm.mongo_db["guest_messages"].find_one({"channel": "whatsapp", "source_ref": ref, "hotel_name": hotel})
+        row = gm.whatsapp_message(hotel, ref)
         if not row or str(row.get("guest_phone") or "").upper() != phone:
             return JSONResponse(content={"error": "Message not found"}, status_code=404)
         stored = gm.read_guest_media(ref)
@@ -3339,7 +3664,7 @@ async def api_guest_whatsapp_templates(guest_phone: str = Query(""), hotel_name:
             return JSONResponse(content={"error": "guest_phone is required"}, status_code=400)
         from booking_system.guest_manager import guest_manager as gm
         from booking_system.whatsapp_templates import active_templates
-        guest = gm.mongo_db["guests"].find_one({"guest_phone": phone, "status": "active"})
+        guest = gm.records["guests"].find_one({"guest_phone": phone, "status": "active"})
         if not guest or str(guest.get("hotel_name") or "").upper() != hotel:
             return JSONResponse(content={"error": "Guest profile not found"}, status_code=404)
         guest_name = str(guest.get("guest_name") or "").strip()
@@ -3365,7 +3690,7 @@ async def api_guest_whatsapp_template(payload: Dict[str, Any] = Body(...), leon_
         from booking_system.front_desk_manager import intelligent_front_desk
         from booking_system.guest_link import guest_link
         from booking_system.whatsapp_templates import render_template
-        guest = gm.mongo_db["guests"].find_one({"guest_phone": guest_phone, "status": "active"})
+        guest = gm.records["guests"].find_one({"guest_phone": guest_phone, "status": "active"})
         if not guest or str(guest.get("hotel_name") or "").upper() != hotel:
             return JSONResponse(content={"error": "Guest profile not found"}, status_code=404)
         guest_name = str(guest.get("guest_name") or "").strip()
@@ -3387,7 +3712,7 @@ def _guest_from_link(token: str):
     opened = read_guest_link(token)
     if opened.get("error"):
         return None, JSONResponse(content={"error": opened["error"]}, status_code=400)
-    guest = gm.mongo_db["guests"].find_one({"guest_phone": opened["guest_phone"], "status": "active"})
+    guest = gm.records["guests"].find_one({"guest_phone": opened["guest_phone"], "status": "active"})
     if not guest or str(guest.get("hotel_name") or "").upper() != opened["hotel_name"]:
         return None, JSONResponse(content={"error": "Guest profile not found"}, status_code=404)
     return guest, None
@@ -3432,7 +3757,7 @@ async def api_guest_biography_save(payload: Dict[str, Any] = Body(...)):
             fields["special_requests"] = fields["special_request"]
         from booking_system.guest_manager import guest_manager as gm
         from booking_system.front_desk_manager import intelligent_front_desk
-        gm.mongo_db["guests"].update_one({"guest_phone": phone}, {"$set": fields})
+        gm.records["guests"].update_one({"guest_phone": phone}, {"$set": fields})
         name = fields.get("guest_name") or str(guest.get("guest_name") or "")
         return {"success": True, "whatsapp_url": intelligent_front_desk.whatsapp_click_url(name)}
     except Exception as e:
@@ -3458,7 +3783,7 @@ async def api_guest_message(payload: Dict[str, Any] = Body(...), leon_jwt: str =
         if not guest_phone or not sent_at or not body:
             return JSONResponse(content={"error": "guest_phone, sent_at, and body are required"}, status_code=400)
         from booking_system.guest_manager import guest_manager as gm
-        guest = gm.mongo_db["guests"].find_one({"guest_phone": guest_phone, "status": "active"})
+        guest = gm.records["guests"].find_one({"guest_phone": guest_phone, "status": "active"})
         if not guest or str(guest.get("hotel_name") or "").upper() != hotel:
             return JSONResponse(content={"error": "Guest profile not found"}, status_code=404)
         result = gm.save_guest_message(hotel, guest_phone, channel, sent_at, body, direction, source_ref)
@@ -3519,7 +3844,7 @@ async def list_rate_plans(hotel_name: str = Query(...)):
     """Room packages for a hotel. Natural key is hotel_name + rate_plan."""
     try:
         from booking_system.front_desk_manager import intelligent_front_desk
-        db = intelligent_front_desk.get_mongodb_connection()
+        db = intelligent_front_desk.content_db()
         rows = list(db.get_collection("rate_plans").find(
             {"hotel_name": str(hotel_name or "").upper()},
             {"_id": 0, "rate_plan": 1, "description": 1}
@@ -3530,7 +3855,7 @@ async def list_rate_plans(hotel_name: str = Query(...)):
 
 @app.post("/api/rate_plans")
 async def save_rate_plan(payload: Dict[str, Any] = Body(...), leon_jwt: str = Cookie(None)):
-    """Create or update a room package. Content lives in Mongo. Natural key is hotel_name + rate_plan."""
+    """Create or update a room package. Content lives in PostgreSQL. Natural key is hotel_name + rate_plan."""
     try:
         if not leon_jwt:
             return JSONResponse(content={"error": "Unauthorized"}, status_code=401)
@@ -3544,7 +3869,7 @@ async def save_rate_plan(payload: Dict[str, Any] = Body(...), leon_jwt: str = Co
         if not rate_plan:
             return JSONResponse(content={"error": "rate_plan is required"}, status_code=400)
         from booking_system.front_desk_manager import intelligent_front_desk
-        db = intelligent_front_desk.get_mongodb_connection()
+        db = intelligent_front_desk.content_db()
         db.get_collection("rate_plans").update_one(
             {"hotel_name": hotel, "rate_plan": rate_plan},
             {"$set": {"description": description}},
@@ -3576,7 +3901,7 @@ async def update_rate_plan(payload: Dict[str, Any] = Body(...), leon_jwt: str = 
         if not rate_plan or not new_rate_plan:
             return JSONResponse(content={"error": "rate_plan is required"}, status_code=400)
         from booking_system.front_desk_manager import intelligent_front_desk
-        db = intelligent_front_desk.get_mongodb_connection()
+        db = intelligent_front_desk.content_db()
         coll = db.get_collection("rate_plans")
         current = coll.find_one({"hotel_name": hotel, "rate_plan": rate_plan})
         if not current:
@@ -3610,7 +3935,7 @@ async def delete_rate_plan(payload: Dict[str, Any] = Body(...), leon_jwt: str = 
         if not rate_plan:
             return JSONResponse(content={"error": "rate_plan is required"}, status_code=400)
         from booking_system.front_desk_manager import intelligent_front_desk
-        db = intelligent_front_desk.get_mongodb_connection()
+        db = intelligent_front_desk.content_db()
         coll = db.get_collection("rate_plans")
         current = coll.find_one({"hotel_name": hotel, "rate_plan": rate_plan})
         if not current:
@@ -3645,7 +3970,7 @@ async def api_guest_profile_update(payload: Dict[str, Any] = Body(...), leon_jwt
             return JSONResponse(content={"error": "guest_phone is required"}, status_code=400)
         from booking_system.guest_manager import guest_manager as gm
         from datetime import datetime, timezone
-        existing = gm.mongo_db["guests"].find_one({"guest_phone": guest_phone})
+        existing = gm.records["guests"].find_one({"guest_phone": guest_phone})
         if not existing:
             return JSONResponse(content={"error": "Guest profile not found"}, status_code=404)
         fields = {"last_updated": datetime.now(timezone.utc), "updated_by": {"manager_name": mgr.upper()}}
@@ -3668,7 +3993,7 @@ async def api_guest_profile_update(payload: Dict[str, Any] = Body(...), leon_jwt
             fields["vip"] = bool((payload or {}).get("vip"))
         if len(fields) <= 2:
             return JSONResponse(content={"error": "No fields to update"}, status_code=400)
-        gm.mongo_db["guests"].update_one({"guest_phone": guest_phone}, {"$set": fields})
+        gm.records["guests"].update_one({"guest_phone": guest_phone}, {"$set": fields})
         return {"result": "Updated"}
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
@@ -3688,10 +4013,10 @@ async def api_guest_profile_deactivate(payload: Dict[str, Any] = Body(...), leon
             return JSONResponse(content={"error": "guest_phone is required"}, status_code=400)
         from booking_system.guest_manager import guest_manager as gm
         from datetime import datetime, timezone
-        existing = gm.mongo_db["guests"].find_one({"guest_phone": guest_phone})
+        existing = gm.records["guests"].find_one({"guest_phone": guest_phone})
         if not existing:
             return JSONResponse(content={"error": "Guest profile not found"}, status_code=404)
-        gm.mongo_db["guests"].update_one(
+        gm.records["guests"].update_one(
             {"guest_phone": guest_phone},
             {"$set": {"status": "inactive", "deactivated_at": datetime.now(timezone.utc), "deactivated_by": {"manager_name": mgr.upper()}}},
         )
@@ -4581,7 +4906,7 @@ if __name__ == "__main__":
     
     # Run the server
     uvicorn.run(
-        "main:app",
+        app,
         host="0.0.0.0",
         port=int(os.environ.get("PORT", 8002)),
         log_level="info"

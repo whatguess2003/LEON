@@ -10,6 +10,24 @@ from datetime import datetime, timedelta
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
+def _party_size(rooms):
+    total = 0
+    supplied = False
+    for room in rooms or []:
+        occupancy = room.get("occupancy") if isinstance(room, dict) else None
+        if not isinstance(occupancy, dict):
+            continue
+        for key in ("adults", "children"):
+            if occupancy.get(key) is None:
+                continue
+            supplied = True
+            text = str(occupancy.get(key)).strip()
+            if text.isdigit():
+                total += int(text)
+    if not supplied or total < 1:
+        return 0
+    return total
+
 MANAGER_NAME = "AIOSSELL"
 
 ACTION_MESSAGES = {
@@ -215,7 +233,7 @@ def _apply(payload: dict, hotel_code: str, booking_id: str, message: str, push: 
     from booking_system.booking_manager import booking_manager
 
     booking_manager._ensure_postgres_connection()
-    db = booking_manager.mongo_db
+    db = booking_manager.records
     if db is None or booking_manager.postgres_conn is None:
         return {"success": False, "message": "Database connection not available"}
     hotel_name, hotel_error = _hotel_name(db, hotel_code)
@@ -299,26 +317,27 @@ def _apply_locked(booking_manager, payload, hotel_code, booking_id, message, pus
         notes_text = "" if notes is None else str(notes)
         amount = payload.get("amount") if isinstance(payload.get("amount"), dict) else {}
         total = _money(amount.get("amountAfterTax"))
+        currency = str(amount.get("currency") or "").strip().upper() or None
         if existing:
             cur.execute(
                 """
                 UPDATE room_bookings
                 SET guest_phone = %s, hotel_name = %s, room_type = %s, rooms_booked = %s,
                     booking_status = 'confirmed', booking_reference = %s, nights = %s,
-                    channel = %s, booking_notes = %s, check_in_date = %s,
+                    channel = %s, booking_notes = %s, check_in_date = %s, currency = %s,
                     updated_at = NOW(), updated_by = %s
                 WHERE booking_id = %s
                 """,
-                (phone, hotel_name, header_type, len(lines), reference, len(all_dates), channel, notes_text, checkin or None, MANAGER_NAME, booking_id),
+                (phone, hotel_name, header_type, len(lines), reference, len(all_dates), channel, notes_text, checkin or None, currency, MANAGER_NAME, booking_id),
             )
         else:
             cur.execute(
                 """
                 INSERT INTO room_bookings
-                (booking_id, guest_phone, hotel_name, room_type, rooms_booked, booking_status, booking_reference, created_at, nights, channel, booking_notes, check_in_date)
-                VALUES (%s, %s, %s, %s, %s, 'confirmed', %s, CURRENT_TIMESTAMP, %s, %s, %s, %s)
+                (booking_id, guest_phone, hotel_name, room_type, rooms_booked, booking_status, booking_reference, created_at, nights, channel, booking_notes, check_in_date, currency)
+                VALUES (%s, %s, %s, %s, %s, 'confirmed', %s, CURRENT_TIMESTAMP, %s, %s, %s, %s, %s)
                 """,
-                (booking_id, phone, hotel_name, header_type, len(lines), reference, len(all_dates), channel, notes_text, checkin or None),
+                (booking_id, phone, hotel_name, header_type, len(lines), reference, len(all_dates), channel, notes_text, checkin or None, currency),
             )
         for stay_date, count in per_date.items():
             room_types_that_night = []
@@ -354,19 +373,19 @@ def _apply_locked(booking_manager, payload, hotel_code, booking_id, message, pus
             cur.execute(
                 """
                 UPDATE payment_tracking
-                SET guest_phone_number = %s, total_amount = %s, amount_paid = %s, remaining_balance = %s, payment_status = 'pending'
+                SET guest_phone_number = %s, total_amount = %s, amount_paid = %s, remaining_balance = %s, payment_status = 'pending', currency = %s
                 WHERE booking_id = %s
                 """,
-                (phone, total_value, paid, remaining, booking_id),
+                (phone, total_value, paid, remaining, currency, booking_id),
             )
         else:
             cur.execute(
                 """
                 INSERT INTO payment_tracking
-                (booking_id, guest_phone_number, total_amount, amount_paid, remaining_balance, payment_status, payment_method, payment_date)
-                VALUES (%s, %s, %s, %s, %s, 'pending', NULL, NULL)
+                (booking_id, guest_phone_number, total_amount, amount_paid, remaining_balance, payment_status, payment_method, payment_date, currency)
+                VALUES (%s, %s, %s, %s, %s, 'pending', NULL, NULL, %s)
                 """,
-                (booking_id, phone, total_value, paid, remaining),
+                (booking_id, phone, total_value, paid, remaining, currency),
             )
         stored_rooms = []
         for room in rooms:
@@ -411,6 +430,8 @@ def _apply_locked(booking_manager, payload, hotel_code, booking_id, message, pus
             reservations.update_one({"hotel_name": hotel_name, "booking_id": booking_id}, {"$set": record})
         else:
             reservations.insert_one(record)
+        from booking_system.booking_manager import booking_manager
+        booking_manager.write_booking_guest_count(cur, hotel_name, booking_id, _party_size(rooms), channel or MANAGER_NAME)
         conn.commit()
         pushed_dates = [str(day)[:10] for day in previous_dates] + list(all_dates)
         outcome = {"success": True, "message": message}
@@ -432,7 +453,7 @@ def _cancel(hotel_code: str, booking_id: str, message: str, push: bool = True) -
     from booking_system.booking_manager import booking_manager
 
     booking_manager._ensure_postgres_connection()
-    db = booking_manager.mongo_db
+    db = booking_manager.records
     if db is None or booking_manager.postgres_conn is None:
         return {"success": False, "message": "Database connection not available"}
     hotel_name, hotel_error = _hotel_name(db, hotel_code)
@@ -454,6 +475,45 @@ def _cancel(hotel_code: str, booking_id: str, message: str, push: bool = True) -
     if push:
         _push_stay_dates(hotel_name, previous_dates)
     return {"success": True, "message": message, "stay_dates": previous_dates}
+
+
+def backfill_currency() -> dict:
+    """Fill a NULL booking currency from the stored channel payload. Amounts are not rewritten; no payload currency stays NULL."""
+    from booking_system.content_store import _transaction
+
+    def run(cur):
+        for table in ("room_bookings", "payment_tracking", "payment_ledger"):
+            cur.execute("ALTER TABLE " + table + " ADD COLUMN IF NOT EXISTS currency VARCHAR(3)")
+        cur.execute(
+            """
+            UPDATE room_bookings b
+            SET currency = UPPER(COALESCE(NULLIF(o.body->'payload'->'amount'->>'currency', ''), NULLIF(g.body->'amount'->>'currency', '')))
+            FROM room_bookings r
+            LEFT JOIN content_document o ON o.collection_name = 'ota_reservations'
+             AND o.body->>'booking_id' = r.booking_id AND UPPER(o.body->>'hotel_name') = UPPER(r.hotel_name)
+            LEFT JOIN content_document g ON g.collection_name = 'guest_bookings'
+             AND g.body->>'booking_id' = r.booking_id AND UPPER(g.body->>'hotel_name') = UPPER(r.hotel_name)
+            WHERE r.booking_id = b.booking_id AND b.currency IS NULL
+              AND COALESCE(NULLIF(o.body->'payload'->'amount'->>'currency', ''), NULLIF(g.body->'amount'->>'currency', '')) IS NOT NULL
+            """
+        )
+        bookings = cur.rowcount
+        cur.execute(
+            """
+            UPDATE payment_tracking t SET currency = b.currency FROM room_bookings b
+            WHERE b.booking_id = t.booking_id AND t.currency IS NULL AND b.currency IS NOT NULL
+            """
+        )
+        tracking = cur.rowcount
+        cur.execute(
+            """
+            UPDATE payment_ledger l SET currency = b.currency FROM room_bookings b
+            WHERE b.booking_id = l.booking_id AND UPPER(b.hotel_name) = UPPER(l.hotel_name) AND l.currency IS NULL AND b.currency IS NOT NULL
+            """
+        )
+        return {"room_bookings": bookings, "payment_tracking": tracking, "payment_ledger": cur.rowcount}
+
+    return _transaction(run)
 
 
 def _push_stay_dates(hotel_name: str, stay_dates):
