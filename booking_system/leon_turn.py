@@ -506,8 +506,33 @@ def _send_chat_summary(account):
     for index in indexes:
         sender, turn = LEONMetaOrchestrator.dialog_line(None, history[index], index)
         history[index] = {"sender": sender, "text": turn, "summarized": True}
+    history.append({
+        "sender": "leon",
+        "text": text,
+        "channel": "whatsapp",
+        "summarized": True,
+        "source_ref": str(result.get("message_id") or ""),
+    })
     write_turns(account["hotel_name"], account["user_id"], history)
     return "sent"
+
+
+def share_desk_chat(hotel_name, user_id):
+    """Summarize this user's web desk chat onto their WhatsApp when they have a phone at this hotel."""
+    from booking_system import db
+    found = db.row(
+        """SELECT u.user_id, u.user_name, i.identity_value AS phone, h.hotel_id, h.hotel_name
+           FROM user_account u
+           JOIN user_identity i ON i.user_id = u.user_id AND i.identity_type = 'phone'
+           JOIN hotel h ON upper(h.hotel_name) = %s
+           JOIN hotel_user hu ON hu.user_id = u.user_id AND hu.hotel_id = h.hotel_id AND hu.status = 'active'
+           WHERE u.user_id = %s AND u.status = 'active'
+           ORDER BY i.identity_value LIMIT 1""",
+        (str(hotel_name or "").strip().upper(), user_id),
+    )
+    if not found:
+        return "no-phone"
+    return _send_chat_summary(found)
 
 
 def _deliver_list(hotel, phone, screen):

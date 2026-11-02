@@ -212,12 +212,24 @@ def _create(cur, hotel_id, user_id, guest, room_type_name, check_in, check_out, 
             "gross_amount": float(gross)}
 
 
+def _notify_confirmed(hotel_id, made):
+    if not made or made.get("error") or not made.get("booking_id") or not made.get("guest_id"):
+        return made
+    try:
+        from booking_system.stay_notice import notify_booking_confirmed
+        made["guest_notice"] = notify_booking_confirmed(hotel_id, made["guest_id"], made["booking_id"])
+    except Exception as exc:
+        made["guest_notice"] = {"error": str(exc)}
+    return made
+
+
 def create_booking(hotel_id, user_id, guest, room_type_name, check_in, check_out, rooms=1, adults=1, children=0, channel="PMS",
                    channel_booking_ref=None, rate_plan=None, group_name=None, nightly_rate=None, commission_amount=None,
                    commission_rate=None, notes=None):
     """guest: {'guest_name', 'phone', 'email', 'nationality'} (found by phone, then email, else created)."""
-    return run(lambda cur: _create(cur, hotel_id, user_id, guest, room_type_name, check_in, check_out, rooms, adults, children, channel,
+    made = run(lambda cur: _create(cur, hotel_id, user_id, guest, room_type_name, check_in, check_out, rooms, adults, children, channel,
                                    channel_booking_ref, rate_plan, group_name, nightly_rate, commission_amount, commission_rate, notes))
+    return _notify_confirmed(hotel_id, made)
 
 
 def create_group_booking(hotel_id, user_id, guest, check_in, check_out, lines, group_name=None, channel="PMS", notes=None):
@@ -229,7 +241,11 @@ def create_group_booking(hotel_id, user_id, guest, check_in, check_out, lines, g
                         None, group_name, None, None, None, notes) for line in lines]
         return {"booking_ids": [item["booking_id"] for item in made], "bookings": made,
                 "stay_dates": sorted({day for item in made for day in item["stay_dates"]})}
-    return run(write)
+    made = run(write)
+    if made.get("bookings"):
+        for item in made["bookings"]:
+            _notify_confirmed(hotel_id, item)
+    return made
 
 
 # ---------- status changes ----------

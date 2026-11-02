@@ -156,6 +156,11 @@ DIALOG HISTORY:
             {"sender": "user", "text": str(message or "")},
             {"sender": "leon", "text": reply},
         ])[-20:])
+        try:
+            from booking_system.leon_turn import share_desk_chat
+            share_desk_chat(hotel, manager)
+        except Exception:
+            pass
         self.last_tools_used = bool(acted)
         return {
             "reply": reply,

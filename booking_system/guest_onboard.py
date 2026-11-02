@@ -110,6 +110,11 @@ def _missing(fields):
     return [name for name in _ASK if not _filled(fields, name)]
 
 
+def profile_complete(guest):
+    """True when every profile question Ella asks is already on the guest."""
+    return not _missing(_from_guest(guest or {}))
+
+
 def _next_name(fields):
     missing = _missing(fields)
     return missing[0] if missing else ""
@@ -262,18 +267,96 @@ def _greeting(fields, hotel_name):
     return hello + " I'll take your details for " + hotel_name + ", one piece at a time. " + _QUESTIONS[gap]
 
 
+def _portal_lines(guest):
+    stored = guest.get("portal_chat")
+    return [dict(row) for row in stored if isinstance(row, dict)] if isinstance(stored, list) else []
+
+
+def _remember_line(hotel_id, phone, guest, role, text):
+    """Keep one Ella portal line so a later turn can summarize what WhatsApp has not received."""
+    from booking_system.guest_manager import write_guest_document
+    spoken = _text(text)
+    if not spoken:
+        return
+    rows = _portal_lines(guest)
+    if rows and rows[-1].get("role") == role and rows[-1].get("text") == spoken:
+        return
+    rows.append({"role": role, "text": spoken, "sent": False})
+    rows = rows[-40:]
+    write_guest_document(hotel_id, phone, {"portal_chat": rows})
+    guest["portal_chat"] = rows
+
+
+def _summarize_portal(rows):
+    lines = [("Guest" if row.get("role") == "guest" else "Ella") + ": " + str(row.get("text") or "") for row in rows]
+    from booking_system.llm_utils import haiku_text
+    try:
+        text = haiku_text(
+            "Summarize this Ella chat as one WhatsApp text for the guest. Keep the facts she saved. Do not greet and do not ask a question.",
+            "\n".join(lines),
+            max_tokens=400,
+            timeout=60,
+        )
+    except Exception:
+        return ""
+    return text.strip()[:4096]
+
+
+def share_portal_chat(hotel_id, phone, guest):
+    """Send one summary of the portal lines WhatsApp has not received, and file that text on the guest thread."""
+    rows = _portal_lines(guest)
+    pending = [row for row in rows if not row.get("sent") and _text(row.get("text"))]
+    if not pending:
+        return {}
+    text = _summarize_portal(pending)
+    if not text:
+        return {"whatsapp_error": "The chat summary was empty"}
+    from datetime import datetime, timezone
+    from booking_system.front_desk_manager import intelligent_front_desk
+    from booking_system.guest_manager import save_whatsapp_event, write_guest_document
+    sent = intelligent_front_desk.send_whatsapp_text(phone, text)
+    if sent.get("error"):
+        return {"whatsapp_error": sent["error"]}
+    for row in rows:
+        if not row.get("sent"):
+            row["sent"] = True
+    guest["portal_chat"] = rows
+    write_guest_document(hotel_id, phone, {"portal_chat": rows})
+    save_whatsapp_event(sent["message_id"], phone, hotel_id, datetime.now(timezone.utc).isoformat(), text, "out")
+    return {"whatsapp_summary": text, "message_id": sent["message_id"]}
+
+
+def whatsapp_thread(hotel_id, phone):
+    """WhatsApp rows for this guest, newest last, so the portal can show the same thread as the desk."""
+    from booking_system.guest_manager import list_guest_messages
+    rows = []
+    for message in list_guest_messages(hotel_id, phone):
+        if message.get("channel") != "whatsapp" or not str(message.get("body") or "").strip():
+            continue
+        rows.append({
+            "source_ref": message.get("source_ref") or "",
+            "direction": message.get("direction") or "",
+            "body": message.get("body") or "",
+            "sent_at": message.get("sent_at") or "",
+            "status": message.get("status") or "",
+        })
+    return rows
+
+
 def guest_open(token):
-    """The portal's first screen: who the guest is, what is already known, and Ella's greeting."""
+    """The portal's first screen: who the guest is, what is already known, Ella's greeting, and the WhatsApp thread."""
     hotel_id, guest, denied = _open_guest(token)
     if denied:
         return denied
     fields = _from_guest(guest)
     guide = _guide(fields)
+    phone = guest.get("guest_phone") or ""
     return {
         "greeting": _greeting(fields, guest["hotel_name"]),
         "guest_name": fields["guest_name"],
-        "guest_phone": guest.get("guest_phone") or "",
+        "guest_phone": phone,
         "hotel_name": guest["hotel_name"],
+        "whatsapp": whatsapp_thread(hotel_id, phone),
         **guide,
     }
 
@@ -284,15 +367,24 @@ def guest_turn(token, message, history):
     if denied:
         return denied
     before = _from_guest(guest)
+    phone = guest.get("guest_phone") or ""
     try:
         parsed = _extract(message, history, before, before["guest_name"], guest["hotel_name"])
     except Exception as error:
         return {"reply": "I could not read that. " + str(error), "error": str(error)}
-    line, stored = _save(hotel_id, guest["guest_phone"], before, parsed if isinstance(parsed, dict) else {})
+    line, stored = _save(hotel_id, phone, before, parsed if isinstance(parsed, dict) else {})
     reply = _speak(message, history, line, stored, stored.get("guest_name") or before["guest_name"], guest["hotel_name"])
+    _remember_line(hotel_id, phone, guest, "guest", message)
+    _remember_line(hotel_id, phone, guest, "ella", reply)
     guide = _guide(stored)
     body = {"reply": reply, "guest_name": stored.get("guest_name") or before["guest_name"], "hotel_name": guest["hotel_name"], **guide}
+    if guide["complete"] and _missing(before):
+        from booking_system.stay_notice import notify_confirmed_for_guest
+        body["confirmed_bookings"] = notify_confirmed_for_guest(hotel_id, guest.get("guest_id") or "")
     if guide["complete"]:
         from booking_system.front_desk_manager import intelligent_front_desk
         body["whatsapp_url"] = intelligent_front_desk.whatsapp_click_url(body["guest_name"])
+    shared = share_portal_chat(hotel_id, phone, guest)
+    body.update(shared)
+    body["whatsapp"] = whatsapp_thread(hotel_id, phone)
     return body

@@ -46,7 +46,7 @@ class LeonChatComponent {
         this.injectBaseStyles();
         this.renderChatButton();
         this.setupEventListeners();
-        setTimeout(() => this.loadChatHistory(), 0);
+        setTimeout(() => { this.loadChatHistory(); this.watchWhatsApp(); }, 0);
         this.loadQueue();
         if (this.chatOpen) this.refreshOpenChat();
     }
@@ -200,7 +200,10 @@ class LeonChatComponent {
                 chatMessages.innerHTML = '';
                 localStorage.removeItem('leon_chat_history');
                 // Re-render from backend history
-                items.forEach(msg => this.addChatMessage(String(msg.text || ''), String(msg.sender || 'leon'), true));
+                items.forEach(msg => {
+                    if (msg.source_ref) this.seenWhatsApp(msg.source_ref);
+                    this.addChatMessage(String(msg.text || ''), String(msg.sender || 'leon'), true);
+                });
                 this.restoreFunctionList();
                 return;
             }
@@ -211,6 +214,29 @@ class LeonChatComponent {
         history.forEach(msg => this.addChatMessage(msg.text, msg.sender, true));
         this.restoreFunctionList();
         } catch(_) {}
+    }
+
+    seenWhatsApp(sourceRef) {
+        this.waSeen = this.waSeen || {};
+        if (sourceRef) this.waSeen[sourceRef] = true;
+    }
+
+    watchWhatsApp() {
+        if (this.waTimer) return;
+        this.waTimer = setInterval(() => this.pullWhatsApp(), 3000);
+    }
+
+    async pullWhatsApp() {
+        try {
+            const resp = await fetch(`${this.leonChatUrl}/api/chat/history`, { credentials: 'include' });
+            if (!resp || !resp.ok) return;
+            const data = await resp.json();
+            ((data && data.items) || []).forEach(msg => {
+                if (msg.channel !== 'whatsapp' || !msg.source_ref || (this.waSeen || {})[msg.source_ref]) return;
+                this.seenWhatsApp(msg.source_ref);
+                this.addChatMessage(String(msg.text || ''), String(msg.sender || 'leon'), true);
+            });
+        } catch (_) {}
     }
 
     restoreFunctionList() {

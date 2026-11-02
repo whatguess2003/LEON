@@ -10,6 +10,7 @@
   var highlights = [];
   var suggestion = "";
   var whatsappUrl = "";
+  var whatsapp = [];
   var busy = false;
 
   function qs(id) { return document.getElementById(id); }
@@ -28,6 +29,7 @@
         highlights = data.highlights || [];
         suggestion = data.suggestion || "";
         whatsappUrl = data.whatsappUrl || "";
+        whatsapp = data.whatsapp || [];
       }
     } catch (error) {}
   }
@@ -37,6 +39,7 @@
       sessionStorage.setItem(storeKey, JSON.stringify({
         token: token, messages: messages, fields: fields, todos: todos,
         highlights: highlights, suggestion: suggestion, whatsappUrl: whatsappUrl,
+        whatsapp: whatsapp,
       }));
     } catch (error) {}
   }
@@ -48,6 +51,20 @@
     if (data.highlights) highlights = data.highlights;
     suggestion = data.suggestion || "";
     if (data.whatsapp_url) whatsappUrl = data.whatsapp_url;
+    mergeWhatsapp(data.whatsapp);
+  }
+
+  function mergeWhatsapp(rows) {
+    var seen = {};
+    whatsapp.forEach(function (row) { if (row.source_ref) seen[row.source_ref] = true; });
+    var added = 0;
+    (rows || []).forEach(function (row) {
+      if (!row || !row.source_ref || seen[row.source_ref] || !row.body) return;
+      seen[row.source_ref] = true;
+      whatsapp.push(row);
+      added += 1;
+    });
+    return added;
   }
 
   function progress() {
@@ -78,6 +95,20 @@
       var text = document.createElement("div");
       text.className = "rounded-lg px-3 py-2 text-sm max-w-lg " + (row.role === "guest" ? "bg-teal-600 text-white" : "bg-gray-100 text-gray-900");
       text.textContent = row.text;
+      wrap.appendChild(text);
+      box.appendChild(wrap);
+    });
+    whatsapp.forEach(function (row) {
+      var wrap = document.createElement("div");
+      var inbound = row.direction === "in";
+      wrap.className = "max-w-3xl mx-auto flex mb-4" + (inbound ? " justify-end" : "");
+      var text = document.createElement("div");
+      text.className = "rounded-lg px-3 py-2 text-sm max-w-lg " + (inbound ? "bg-white text-gray-900 border border-gray-200" : "bg-white text-gray-900 border border-teal-200");
+      var label = document.createElement("div");
+      label.className = "text-xs text-gray-500 mb-1";
+      label.textContent = "WhatsApp";
+      text.appendChild(label);
+      text.appendChild(document.createTextNode(row.body));
       wrap.appendChild(text);
       box.appendChild(wrap);
     });
@@ -176,10 +207,25 @@
     });
   }
 
+  function pullWhatsapp() {
+    if (!token || busy) return;
+    fetch(api + "/guest/onboard?token=" + encodeURIComponent(token)).then(function (response) {
+      return response.json();
+    }).then(function (data) {
+      if (!data || data.error) return;
+      if (mergeWhatsapp(data.whatsapp)) {
+        persist();
+        paint();
+      }
+    }).catch(function () {});
+  }
+
   document.getElementById("composer").addEventListener("submit", function (event) {
     event.preventDefault();
     sendText(qs("input").value);
   });
   load();
   open();
+  pullWhatsapp();
+  setInterval(pullWhatsapp, 3000);
 })();

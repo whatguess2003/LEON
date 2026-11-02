@@ -108,17 +108,23 @@ def _examples(component):
     return named, [str(value or "") for value in positional]
 
 
+# Named stay fields are filled only from the live context. An example must not go out as a room or a date.
+_LIVE = {"hotel_name", "room_number", "total_night", "check_in_date", "check_out_date"}
+
+
 def _fill(text, context, named_examples, positional):
     sentence = str(text or "")
     values = []
     names = []
     for index, marker in enumerate(_markers(sentence)):
-        if index == 0:
+        if marker in context and str(context.get(marker) or "").strip():
+            value = str(context.get(marker)).strip()
+        elif index == 0:
             value = str(context.get("guest_name") or "").strip()
+        elif marker in _LIVE:
+            value = ""
         else:
-            found = context.get(marker)
-            if found is None and marker in named_examples:
-                found = named_examples[marker]
+            found = named_examples.get(marker) if marker in named_examples else None
             if found is None and index < len(positional):
                 found = positional[index]
             value = str(found or "").strip()
@@ -207,6 +213,87 @@ def render_template(key, context):
         if _key(item) == str(key or ""):
             return _render(item, context)
     return {"error": "WhatsApp template is not approved"}
+
+
+def forget_templates():
+    """Drop the one-minute cache after a template is created."""
+    global _cached_at, _cached_rows
+    _cached_rows = None
+    _cached_at = 0.0
+
+
+def _post_graph(path, payload):
+    token = str(os.getenv("WHATSAPP_ACCESS_TOKEN") or "").strip()
+    if not token:
+        return {"error": "WhatsApp access token is not configured"}
+    request = urllib.request.Request(
+        "https://graph.facebook.com/v23.0/" + path,
+        data=json.dumps(payload).encode(),
+        headers={"Authorization": "Bearer " + token, "Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=25) as response:
+            return json.loads(response.read().decode())
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode()
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = {}
+        err = parsed.get("error") or {}
+        message = str(err.get("error_user_msg") or err.get("message") or "WhatsApp template was not created")
+        return {"error": message}
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+def template_item(name):
+    """The English template with this name, approved or still in review, or None."""
+    loaded = _fetch_templates()
+    if isinstance(loaded, dict):
+        return loaded
+    wanted = str(name or "").strip()
+    found = [item for item in loaded if str(item.get("name") or "") == wanted and str(item.get("language") or "").startswith("en")]
+    approved = [item for item in found if str(item.get("status") or "") == "APPROVED"]
+    return (approved or found or [None])[0]
+
+
+def ensure_named_template(name, text, examples, language="en"):
+    """Create one named utility template when this business account does not have it yet."""
+    current = template_item(name)
+    if isinstance(current, dict) and current.get("error"):
+        return current
+    if current:
+        return current
+    waba, failed = _waba_id()
+    if failed:
+        return failed
+    created = _post_graph(waba + "/message_templates", {
+        "name": name,
+        "language": language,
+        "category": "UTILITY",
+        "parameter_format": "NAMED",
+        "components": [{
+            "type": "BODY",
+            "text": text,
+            "example": {"body_text_named_params": [{"param_name": key, "example": value} for key, value in examples]},
+        }],
+    })
+    forget_templates()
+    if created.get("error"):
+        return created
+    return template_item(name) or created
+
+
+def render_named(name, context):
+    """One approved named template filled from context."""
+    item = template_item(name)
+    if isinstance(item, dict) and item.get("error"):
+        return item
+    if not item or str(item.get("status") or "") != "APPROVED":
+        return {"error": "WhatsApp template is not approved"}
+    return _render(item, context)
 
 
 def link_template_key():

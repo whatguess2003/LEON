@@ -547,7 +547,12 @@ async def chat_history(leon_jwt: str = Cookie(None)):
         for idx, entry in enumerate(history):
             try:
                 sender, text = leon_instance.dialog_line(entry, idx)
-                items.append({"sender": sender, "text": text})
+                items.append({
+                    "sender": sender,
+                    "text": text,
+                    "channel": str(entry.get("channel") or "") if isinstance(entry, dict) else "",
+                    "source_ref": str(entry.get("source_ref") or "") if isinstance(entry, dict) else "",
+                })
             except Exception:
                 continue
         return JSONResponse(content={"items": items})

@@ -210,7 +210,7 @@ async def api_bookings_create(payload: Dict[str, Any] = Body(...), s: dict = Dep
     channel_manager = await run_in_threadpool(_push_pms_booking, s["hotel_id"], made["booking_id"], guest["phone"], made["room_type_name"],
                                               made["stay_dates"], channel)
     return {"result": _summary(made), "booking_id": made["booking_id"], "assigned_rooms": [], "aiosell": aiosell,
-            "channel_manager": channel_manager}
+            "channel_manager": channel_manager, "guest_notice": made.get("guest_notice") or {}}
 
 
 @router.post("/api/bookings/group")

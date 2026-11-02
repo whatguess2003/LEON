@@ -409,7 +409,14 @@ class FrontDesk:
             nights = cur.rowcount
             _settle(cur, hotel_id, user_id, booking_id)
             return {"result": "Checked in " + booking_id + " to room " + label, "booking_id": booking_id, "room_number": label, "nights": nights}
-        return _run(run)
+        result = _run(run)
+        if result.get("room_number") and "assignments" not in result and not result.get("error"):
+            try:
+                from booking_system.stay_notice import notify_welcome
+                result["whatsapp"] = notify_welcome(hotel_id, booking_id, result["room_number"], result.get("nights"))
+            except Exception as exc:
+                result["whatsapp"] = {"error": str(exc)}
+        return result
 
     def undo_guest_check_in_internal(self, hotel_id: str, user_id: str, booking_id: str, room_number: str, mark_clean: bool = True) -> dict:
         """Return one checked-in room to booked; the room becomes clean or dirty. Other rooms stay as they are."""
@@ -450,8 +457,18 @@ class FrontDesk:
                 _set_readiness(cur, user_id, room_id, label, "dirty")
             _settle(cur, hotel_id, user_id, booking_id)
             return {"result": "Checked out " + booking_id + " from room " + ", ".join(label for label, _ in rooms),
-                    "booking_id": booking_id, "rooms": [label for label, _ in rooms]}
-        return _run(run)
+                    "booking_id": booking_id, "rooms": [label for label, _ in rooms], "nights": len(in_house)}
+        result = _run(run)
+        if result.get("rooms") and not result.get("error"):
+            notices = []
+            for label in result["rooms"]:
+                try:
+                    from booking_system.stay_notice import notify_checkout
+                    notices.append(notify_checkout(hotel_id, booking_id, label, result.get("nights")))
+                except Exception as exc:
+                    notices.append({"error": str(exc), "room_number": label})
+            result["whatsapp"] = notices
+        return result
 
     def reset_stay_state_for_date_internal(self, hotel_id: str, user_id: str, booking_id: str, stay_date: str) -> dict:
         """Return every checked-in or checked-out night of the booking to booked, keeping its room. Readiness is unchanged."""
