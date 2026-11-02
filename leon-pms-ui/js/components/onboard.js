@@ -26,6 +26,7 @@
   var screen = null;
   var templateKey = rootTemplate;
   var templateLoading = false;
+  var pending = false;
   var busy = false;
 
   function qs(id) { return document.getElementById(id); }
@@ -87,10 +88,6 @@
   function progress() {
     var line = qs("progress");
     if (!line) return;
-    if (screen && (screen.header || screen.body)) {
-      line.textContent = screen.header || screen.body;
-      return;
-    }
     var current = todos.filter(function (row) { return row.state === "now"; })[0];
     var open = todos.filter(function (row) { return row.state !== "done"; }).length === 0 && todos.length;
     line.textContent = current && current.detail ? current.detail : (open ? "The hotel is open" : "What's your WhatsApp number, with the country code?");
@@ -241,19 +238,24 @@
   function chooseRow(item) {
     var sheet = qs("onboard-sheet");
     if (sheet) sheet.classList.add("hidden");
-    if (!item || !item.id || templateLoading) return;
+    if (!item || !item.id || templateLoading || busy) return;
     if (item.title) messages.push({ role: "person", text: item.title, nav: true });
     templateLoading = true;
+    pending = true;
     paint();
-    loadTemplate(item.id, true).then(function () { templateLoading = false; });
+    loadTemplate(item.id, true).then(function () {
+      templateLoading = false;
+      pending = false;
+      paint();
+    });
   }
 
   function paint() {
     var box = qs("messages");
     box.innerHTML = "";
     messages.forEach(function (row) { box.appendChild(bubble(row)); });
+    if (busy || pending) box.appendChild(bubble({ role: "leon", text: "Writing..." }));
     mountList(box);
-    if (busy) box.appendChild(bubble({ role: "leon", text: "Writing..." }));
     paintGuide();
     box.scrollTop = box.scrollHeight;
   }
@@ -282,7 +284,10 @@
       }
       screen = result.data.screen;
       templateKey = key;
-      if (messages.length === 1 && messages[0].text === greeting) messages = [];
+      if (announce) {
+        var line = result.data.reply || "";
+        if (line) messages.push({ role: "leon", text: line });
+      }
       persist();
       paint();
     }).catch(function () {
@@ -309,7 +314,6 @@
     busy = true;
     paint();
     var history = prior().slice(0, -1);
-    if (screen && screen.body) history.push({ role: "leon", text: screen.body });
     fetch(api + "/onboard/turn", {
       method: "POST",
       headers: authHeaders(true),

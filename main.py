@@ -377,7 +377,7 @@ async def api_guide(req: Request):
 @app.get("/api/onboard/template")
 async def api_onboard_template(id: str = "read.onboarding", req: Request = None):
     """The interactive message for the onboard page, filled from this hotel. id is a template key or template_key/record_id."""
-    from booking_system.interactive.agent import complete
+    from booking_system.interactive.agent import complete, lead
     chosen = str(id or "").strip() or "read.onboarding"
     done = await run_in_threadpool(complete, req.state.session["hotel_id"], chosen)
     if not done:
@@ -385,6 +385,7 @@ async def api_onboard_template(id: str = "read.onboarding", req: Request = None)
     return {
         "screen": done["screen"], "interactive": done["interactive"], "message": done["message"],
         "template_key": done["template_key"], "purpose": done["purpose"], "text": done["text"],
+        "reply": lead(done),
     }
 
 

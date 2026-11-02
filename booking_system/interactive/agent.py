@@ -161,6 +161,22 @@ def complete(hotel_id, row_id):
     }
 
 
+def lead(done):
+    """The sentence Leon says before the interactive message. An input keeps its question. Anything else names the list."""
+    raw = " ".join(str((done or {}).get("text") or "").split())
+    head, sep, tail = raw.partition(". ")
+    date = head[-10:]
+    point = tail if sep and len(date) == 10 and date[4] == "-" and date[7] == "-" and date[:4].isdigit() and date[5:7].isdigit() and date[8:].isdigit() else raw
+    if not point:
+        return ""
+    if (done or {}).get("purpose") == "input":
+        return point
+    header = str(((done or {}).get("screen") or {}).get("header") or "").strip()
+    if header:
+        return "Here is " + header + "."
+    return point
+
+
 def deliver(hotel_name, done):
     """Send the completed interactive message to hotel users whose WhatsApp window is open."""
     from booking_system.front_desk_manager import intelligent_front_desk
