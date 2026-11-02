@@ -1058,10 +1058,92 @@ def _perform_check_out(hotel_id, user_id, params):
     return intelligent_front_desk.update_guest_check_out_status_internal(hotel_id, user_id, params["booking_id"], params["room_number"])
 
 
+def _flag(value):
+    return {"yes": True, "no": False}.get(str(value or "").strip().lower())
+
+
 def _perform_reassign(hotel_id, user_id, params):
     from booking_system.front_desk_manager import intelligent_front_desk
+    extra = {}
+    if "mark_old_clean" in params:
+        flag = _flag(params.get("mark_old_clean"))
+        if flag is None:
+            return {"error": "mark_old_clean is yes or no"}
+        extra["mark_old_clean"] = flag
     return intelligent_front_desk.reassign_room_for_date_internal(hotel_id, user_id, params["booking_id"], params["stay_date"],
-                                                                  params["old_room_number"], params["new_room_number"])
+                                                                  params["old_room_number"], params["new_room_number"], **extra)
+
+
+def _perform_no_show(hotel_id, user_id, params):
+    from booking_system import booking_manager
+    return booking_manager.mark_no_show(hotel_id, user_id, params["booking_id"], params.get("reason"))
+
+
+def _perform_notes(hotel_id, user_id, params):
+    from booking_system import booking_manager
+    return booking_manager.write_booking_notes(hotel_id, user_id, params["booking_id"], params["notes"])
+
+
+def _perform_assign(hotel_id, user_id, params):
+    from booking_system.front_desk_manager import assign_room_number
+    return assign_room_number(hotel_id, user_id, params["booking_id"], [params["room_number"]], False)
+
+
+def _perform_undo(hotel_id, user_id, params):
+    from booking_system.front_desk_manager import intelligent_front_desk
+    mark_clean = True
+    if "mark_clean" in params:
+        mark_clean = _flag(params.get("mark_clean"))
+        if mark_clean is None:
+            return {"error": "mark_clean is yes or no"}
+    return intelligent_front_desk.undo_guest_check_in_internal(hotel_id, user_id, params["booking_id"], params["room_number"], mark_clean)
+
+
+def _perform_reset(hotel_id, user_id, params):
+    from booking_system.front_desk_manager import intelligent_front_desk
+    return intelligent_front_desk.reset_stay_state_for_date_internal(hotel_id, user_id, params["booking_id"], params["stay_date"])
+
+
+def _perform_readiness(hotel_id, user_id, params):
+    from booking_system.front_desk_manager import intelligent_front_desk
+    return intelligent_front_desk.update_room_readiness_status_internal(hotel_id, user_id, params["room_number"], params["new_status"])
+
+
+def _perform_block(hotel_id, user_id, params):
+    from booking_system import maintenance_manager
+    return maintenance_manager.mark_out_of_order(hotel_id, user_id, params["room_number"], params["start_date"], params["end_date"],
+                                                 params["reason"], params.get("block_type") or "out_of_order")
+
+
+def _perform_release(hotel_id, user_id, params):
+    from booking_system import maintenance_manager
+    return maintenance_manager.mark_available(hotel_id, user_id, params["room_number"], params["start_date"], params["end_date"])
+
+
+def _perform_service(hotel_id, user_id, params):
+    from booking_system import guest_engagement_manager
+    return guest_engagement_manager.request_service(hotel_id, user_id, params["guest_phone"], params["request"],
+                                                    params.get("requested_for"), params.get("booking_id"))
+
+
+def _perform_close(hotel_id, user_id, params):
+    from booking_system.guest_manager import close_request
+    return close_request(hotel_id, user_id, params["guest_phone"], params["request"], "done")
+
+
+def _perform_preference(hotel_id, user_id, params):
+    from booking_system import guest_engagement_manager
+    return guest_engagement_manager.save_preference(hotel_id, user_id, params["guest_phone"], params["preference"], params["value"])
+
+
+def _perform_complaint(hotel_id, user_id, params):
+    from booking_system import guest_engagement_manager
+    return guest_engagement_manager.record_complaint(hotel_id, user_id, params["guest_phone"], params["complaint"], params.get("booking_id"))
+
+
+def _perform_deactivate(hotel_id, user_id, params):
+    from booking_system.guest_manager import deactivate_guest
+    return deactivate_guest(hotel_id, user_id, params["guest_phone"])
 
 
 def _perform_payment(hotel_id, user_id, params):
@@ -1101,6 +1183,19 @@ _PERFORM = {
     "record_payment": _perform_payment,
     "record_refund": _perform_refund,
     "update_guest_profile": _perform_profile,
+    "no_show": _perform_no_show,
+    "booking_notes": _perform_notes,
+    "assign_room": _perform_assign,
+    "undo_check_in": _perform_undo,
+    "reset_night": _perform_reset,
+    "set_readiness": _perform_readiness,
+    "block_room": _perform_block,
+    "release_room": _perform_release,
+    "service_request": _perform_service,
+    "close_request": _perform_close,
+    "save_preference": _perform_preference,
+    "record_complaint": _perform_complaint,
+    "deactivate_guest": _perform_deactivate,
 }
 
 

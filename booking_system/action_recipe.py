@@ -20,9 +20,25 @@ _REGISTRY = {
     "reservation.modify": {"perform": "modify_booking", "permission": ("reservations", "operate"), "parameters": ("booking_id", "new_stay_dates", "new_room_type", "new_rooms_booked")},
     "reservation.payment": {"perform": "record_payment", "permission": ("reservations", "operate"), "parameters": ("booking_id", "payment_amount", "payment_method")},
     "reservation.refund": {"perform": "record_refund", "permission": ("reservations", "operate"), "parameters": ("booking_id", "payment_seq")},
-    "reservation.reassign_room": {"perform": "reassign_room", "permission": ("reservations", "operate"), "parameters": ("booking_id", "stay_date", "old_room_number", "new_room_number")},
+    "reservation.reassign_room": {"perform": "reassign_room", "permission": ("reservations", "operate"), "parameters": ("booking_id", "stay_date", "old_room_number", "new_room_number", "mark_old_clean")},
+    "reservation.no_show": {"perform": "no_show", "permission": ("reservations", "operate"), "parameters": ("booking_id", "reason")},
+    "reservation.notes": {"perform": "booking_notes", "permission": ("reservations", "operate"), "parameters": ("booking_id", "notes")},
+    "reservation.assign_room": {"perform": "assign_room", "permission": ("reservations", "operate"), "parameters": ("booking_id", "room_number")},
+    "reservation.undo_check_in": {"perform": "undo_check_in", "permission": ("reservations", "operate"), "parameters": ("booking_id", "room_number", "mark_clean")},
+    "reservation.reset_night": {"perform": "reset_night", "permission": ("reservations", "operate"), "parameters": ("booking_id", "stay_date")},
+    "room.set_readiness": {"perform": "set_readiness", "permission": ("housekeeping", "view"), "parameters": ("room_number", "new_status")},
+    "room.block": {"perform": "block_room", "permission": ("maintenance", "operate"), "parameters": ("room_number", "start_date", "end_date", "reason", "block_type")},
+    "room.release": {"perform": "release_room", "permission": ("maintenance", "operate"), "parameters": ("room_number", "start_date", "end_date")},
+    "guest.service_request": {"perform": "service_request", "permission": ("front_desk", "operate"), "parameters": ("guest_phone", "request", "requested_for", "booking_id")},
+    "guest.close_request": {"perform": "close_request", "permission": ("front_desk", "operate"), "parameters": ("guest_phone", "request")},
+    "guest.preference": {"perform": "save_preference", "permission": ("front_desk", "operate"), "parameters": ("guest_phone", "preference", "value")},
+    "guest.complaint": {"perform": "record_complaint", "permission": ("front_desk", "operate"), "parameters": ("guest_phone", "complaint", "booking_id")},
+    "guest.deactivate": {"perform": "deactivate_guest", "permission": ("front_desk", "operate"), "parameters": ("guest_phone",)},
     "guest.update_profile": {"perform": "update_guest_profile", "permission": ("front_desk", "operate"), "parameters": ("guest_phone", "guest_name", "email", "country", "special_request")},
 }
+
+_YES = {"yes": "yes", "no": "no"}
+_BLOCK_TYPES = {"out_of_order": "out_of_order", "out_of_service": "out_of_service"}
 
 
 def _now():
@@ -121,7 +137,7 @@ def _parameters(body, given):
 
 def _booking(hotel_id, booking_id):
     return db.row(
-        """SELECT s.booking_id, s.booking_status, s.check_in_date, s.check_out_date, g.guest_name,
+        """SELECT s.booking_id, s.guest_id, s.booking_status, s.check_in_date, s.check_out_date, g.guest_name,
                   (SELECT t.room_type_name FROM booking_room_night n
                    JOIN room_type t ON t.room_type_id = n.room_type_id
                    WHERE n.hotel_id = s.hotel_id AND n.booking_id = s.booking_id
@@ -146,6 +162,26 @@ def _guest(hotel_id, phone):
     return read_guest(hotel_id, phone)
 
 
+def _readiness(hotel_id, room_number):
+    return db.row(
+        """SELECT s.readiness_status
+           FROM room_readiness_status s JOIN room r ON r.room_id = s.room_id
+           WHERE s.hotel_id = %s AND upper(r.room_number) = upper(%s)""",
+        (hotel_id, room_number),
+    )
+
+
+def _open_request(hotel_id, guest_id, request):
+    text = _text(request)
+    return db.row(
+        """SELECT request_id, request FROM guest_request
+           WHERE hotel_id = %s AND guest_id = %s AND status = 'open'
+             AND (request = %s OR request_id = %s)
+           LIMIT 1""",
+        (hotel_id, guest_id, text, text),
+    )
+
+
 def _iso(value):
     return value.isoformat() if hasattr(value, "isoformat") else str(value or "")
 
@@ -155,11 +191,13 @@ def _preview(hotel_id, action, values):
     from booking_system.hotel_registry import read_hotel_by_id
     hotel = read_hotel_by_id(hotel_id) or {}
     preview = {"hotel_name": hotel.get("hotel_name") or ""}
+    booking_guest = ""
     booking_id = str(values.get("booking_id") or "")
     if booking_id:
         row = _booking(hotel_id, booking_id)
         if not row:
             return None, "booking is not at this hotel"
+        booking_guest = str(row["guest_id"] or "")
         preview.update(
             guest_name=row["guest_name"] or "",
             booking_id=row["booking_id"],
@@ -215,15 +253,46 @@ def _preview(hotel_id, action, values):
             return None, stay["error"]
         preview["check_in_date"] = _iso(stay.get("check_in"))
         preview["check_out_date"] = _iso(stay.get("check_out"))
-    if action == "guest.update_profile":
+    guest = None
+    if values.get("guest_phone") and action != "reservation.create":
         guest = _guest(hotel_id, values.get("guest_phone"))
         if not guest:
             return None, "guest phone is not at this hotel"
         preview.update(guest_name=guest.get("guest_name") or "", guest_phone=guest.get("guest_phone") or "")
-        if values.get("guest_name"):
-            preview["updated_name"] = values["guest_name"]
-    for name in ("payment_amount", "payment_method", "payment_seq", "stay_date", "new_stay_dates", "new_room_type", "new_rooms_booked", "email", "country", "special_request"):
-        if name in values:
+        values["guest_phone"] = guest.get("guest_phone") or values["guest_phone"]
+        if booking_id and str(guest.get("guest_id") or "") != booking_guest:
+            return None, "booking is not this guest's"
+    if action == "guest.update_profile" and values.get("guest_name"):
+        preview["updated_name"] = values["guest_name"]
+    if action == "guest.close_request":
+        found = _open_request(hotel_id, guest.get("guest_id"), values.get("request"))
+        if not found:
+            return None, "Task not found"
+        values["request"] = found["request"]
+        preview["request"] = found["request"]
+    if action == "guest.preference":
+        values["preference"] = _text(values.get("preference")).lower()
+        preview["preference"] = values["preference"]
+    if action == "room.set_readiness":
+        current = _readiness(hotel_id, values.get("room_number"))
+        if not current:
+            return None, "Room " + str(values.get("room_number") or "") + " has no readiness status"
+        preview["current_readiness"] = current["readiness_status"] or ""
+        preview["new_status"] = values.get("new_status") or ""
+    if action == "room.block":
+        preview["block_type"] = values.get("block_type") or "out_of_order"
+    if action == "reservation.undo_check_in":
+        preview["mark_clean"] = values.get("mark_clean") or "yes"
+    if action == "reservation.reassign_room":
+        preview["mark_old_clean"] = values.get("mark_old_clean") or "unchanged"
+    if action in ("room.block", "room.release") and values.get("end_date") < values.get("start_date"):
+        return None, "end_date is before start_date"
+    for name in (
+        "payment_amount", "payment_method", "payment_seq", "stay_date", "new_stay_dates", "new_room_type", "new_rooms_booked",
+        "email", "country", "special_request", "reason", "notes", "mark_clean", "mark_old_clean", "new_status",
+        "start_date", "end_date", "block_type", "request", "requested_for", "preference", "value", "complaint",
+    ):
+        if name in values and name not in preview:
             preview[name] = values[name]
     if "room_number" not in preview and preview.get("booking_id"):
         preview["room_number"] = ""
@@ -281,15 +350,16 @@ def _public(row):
 
 
 def _supersede(cur, hotel_id, recipe_id, values, keep):
-    target = str(values.get("booking_id") or values.get("guest_phone") or "")
+    column = "guest_phone" if values.get("guest_phone") else "booking_id" if values.get("booking_id") else "room_number" if values.get("room_number") else ""
+    target = str(values.get(column) or "") if column else ""
     if not target:
         return
     cur.execute(
         """UPDATE leon_pending_action
            SET status = 'superseded', decided_at = now()
            WHERE hotel_id = %s AND recipe_id = %s AND status = 'pending' AND approval_id <> %s
-             AND (parameters->>'booking_id' = %s OR parameters->>'guest_phone' = %s)""",
-        (hotel_id, recipe_id, keep, target, target),
+             AND parameters->>%s = %s""",
+        (hotel_id, recipe_id, keep, column, target),
     )
 
 
@@ -316,6 +386,29 @@ def prepare_action(hotel_id, user_id, recipe_id, parameters):
         if method not in _METHODS:
             return {"error": "payment method is not one this hotel records"}
         values["payment_method"] = method
+    for name in ("mark_clean", "mark_old_clean"):
+        if name not in values:
+            continue
+        flag = _YES.get(str(values[name]).lower())
+        if not flag:
+            return {"error": name + " is yes or no"}
+        values[name] = flag
+    if "new_status" in values:
+        from booking_system.front_desk_manager import READINESS
+        status = str(values["new_status"]).lower()
+        if status not in READINESS:
+            return {"error": "readiness must be clean, dirty, cleaning, or inspected"}
+        values["new_status"] = status
+    if "block_type" in values:
+        kind = _BLOCK_TYPES.get(str(values["block_type"]).lower().replace(" ", "_"))
+        if not kind:
+            return {"error": "block type is out_of_order or out_of_service"}
+        values["block_type"] = kind
+    if "requested_for" in values:
+        try:
+            datetime.fromisoformat(values["requested_for"])
+        except ValueError:
+            return {"error": "requested_for must be an ISO date-time"}
     preview, problem = _preview(hotel_id, action, values)
     if problem:
         return {"error": problem}
