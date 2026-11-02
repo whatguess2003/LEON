@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <script src="js/session.js?v=hotel"></script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Operating Settings - LEON PMS</title>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+</head>
+<body class="bg-gray-50">
+  <main class="w-full px-4 sm:px-6 lg:px-8 py-4">
+    <div class="flex items-center justify-between mb-1">
+      <h1 class="text-3xl font-bold text-gray-900">Operating Settings</h1>
+      <button id="settings-refresh" type="button" class="px-3 py-1 text-sm bg-white border rounded hover:bg-gray-50">Refresh</button>
+    </div>
+    <p id="settings-hotel" class="text-sm text-gray-600 mb-1">Hotel: -</p>
+    <p class="text-sm text-gray-600 mb-4">These answers are what the hotel modules read. A change is recorded from the date below and does not rewrite earlier days.</p>
+    <div class="bg-white border rounded p-3 mb-4 flex flex-wrap items-end gap-3">
+      <div>
+        <label class="block text-xs text-gray-600 mb-1" for="settings-effective">Takes effect on</label>
+        <input id="settings-effective" type="date" class="border rounded px-2 py-1 text-sm">
+      </div>
+      <p id="settings-status" class="text-sm text-gray-500">Loading...</p>
+    </div>
+    <div id="settings-list" class="space-y-4"></div>
+  </main>
+  <script src="js/components/settings.js?v=settings"></script>
+  <script src="js/subpage-embed.js"></script>
+</body>
+</html>

@@ -142,6 +142,8 @@
       if (qs('kw-contact')) qs('kw-contact').value = kt.contact_phone || '';
       if (qs('kw-email')) qs('kw-email').value = kt.contact_email || '';
       if (qs('kw-tz')) qs('kw-tz').value = kt.timezone || '';
+      if (qs('kw-checkin')) qs('kw-checkin').value = kt.checkin_time || '';
+      if (qs('kw-checkout')) qs('kw-checkout').value = kt.checkout_time || '';
       if (qs('kw-address')) qs('kw-address').value = kt.address || '';
       if (qs('kw-city')) qs('kw-city').value = kt.city || '';
       if (qs('kw-state')) qs('kw-state').value = kt.state_region || '';
