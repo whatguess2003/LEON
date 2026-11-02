@@ -700,6 +700,124 @@ RECIPES = [
     ),
 ]
 
+def _field(kind, description, required=True):
+    return {"type": kind, "required": required, "description": description}
+
+
+def _action(catalog_id, problem, phrases, action, permission, parameters, approval, grain="reservation"):
+    """A published action recipe. It names the registered PMS operation and the approval text. It has no SQL."""
+    return {
+        "catalog_id": catalog_id,
+        "type": "action_recipe",
+        "parent": PARENT,
+        "title": problem,
+        "purpose": problem,
+        "problem": problem,
+        "preconditions": ["The session hotel is bound by the server. The person approves the card before the PMS operation runs."],
+        "inputs": {name: spec["description"] for name, spec in parameters.items()},
+        "output_grain": grain,
+        "outputs": ["booking_id"] if grain == "reservation" else ["guest_phone"],
+        "verification": "Prepared against a booking at the session hotel. Reject leaves the booking unchanged. Approve calls the existing PMS service.",
+        "keyphrases": list(phrases),
+        "aliases": list(phrases),
+        "permission": permission,
+        "request_approval": approval,
+        "solution": {"backend_action": action, "parameters": parameters, "method": SOURCE},
+        "validation": {"expected_value": ""},
+    }
+
+
+ACTION_RECIPES = [
+    _action(
+        "reservation_check_in", "Check in a guest reservation",
+        ["check in", "check-in", "check in guest", "check in reservation", "arrive guest"],
+        "reservation.check_in", "reservations.operate",
+        {"booking_id": _field("string", "The booking id at this hotel"), "room_number": _field("string", "The room number to give the guest")},
+        {"title": "Confirm guest check-in", "message": "Guest: {guest_name}\nReservation: {booking_id}\nRoom: {room_number}\nCheck-in: {check_in_date}\nCheck in this reservation now?", "approve_label": "Check in", "reject_label": "Cancel"},
+    ),
+    _action(
+        "reservation_check_out", "Check out a guest reservation",
+        ["check out", "check-out", "check out guest", "depart guest"],
+        "reservation.check_out", "reservations.operate",
+        {"booking_id": _field("string", "The booking id at this hotel"), "room_number": _field("string", "The room number the guest is leaving")},
+        {"title": "Confirm guest check-out", "message": "Guest: {guest_name}\nReservation: {booking_id}\nRoom: {room_number}\nCheck-out: {check_out_date}\nCheck out this reservation now?", "approve_label": "Check out", "reject_label": "Cancel"},
+    ),
+    _action(
+        "reservation_cancel", "Cancel a reservation",
+        ["cancel booking", "cancel reservation", "cancel stay"],
+        "reservation.cancel", "reservations.operate",
+        {"booking_id": _field("string", "The booking id at this hotel")},
+        {"title": "Cancel reservation", "message": "Guest: {guest_name}\nReservation: {booking_id}\n{check_in_date} to {check_out_date}\nCancel this reservation?", "approve_label": "Cancel reservation", "reject_label": "Keep it"},
+    ),
+    _action(
+        "reservation_create", "Create a reservation",
+        ["create booking", "new reservation", "book a room", "make a booking"],
+        "reservation.create", "reservations.operate",
+        {
+            "guest_phone": _field("string", "The guest phone already on file, with country code"),
+            "room_type": _field("string", "The room type name at this hotel"),
+            "stay_dates": _field("string", "Check-in and check-out as YYYY-MM-DD,YYYY-MM-DD"),
+        },
+        {"title": "Create reservation", "message": "Guest: {guest_name}\nPhone: {guest_phone}\nRoom type: {room_type}\n{check_in_date} to {check_out_date}\nCreate this reservation?", "approve_label": "Create", "reject_label": "Cancel"},
+    ),
+    _action(
+        "reservation_modify", "Modify a reservation",
+        ["modify booking", "change reservation", "change dates", "change room type"],
+        "reservation.modify", "reservations.operate",
+        {
+            "booking_id": _field("string", "The booking id at this hotel"),
+            "new_stay_dates": _field("string", "New check-in and check-out as YYYY-MM-DD,YYYY-MM-DD", False),
+            "new_room_type": _field("string", "The new room type name", False),
+            "new_rooms_booked": _field("number", "The new number of rooms", False),
+        },
+        {"title": "Modify reservation", "message": "Guest: {guest_name}\nReservation: {booking_id}\nDates: {new_stay_dates}\nRoom type: {new_room_type}\nRooms: {new_rooms_booked}\nApply this change?", "approve_label": "Modify", "reject_label": "Cancel"},
+    ),
+    _action(
+        "reservation_payment", "Record a payment",
+        ["record payment", "take payment", "post payment", "guest payment"],
+        "reservation.payment", "reservations.operate",
+        {
+            "booking_id": _field("string", "The booking id at this hotel"),
+            "payment_amount": _field("number", "The amount received, in the hotel currency"),
+            "payment_method": _field("string", "CASH, BANK TRANSFER, CARD, OTA, CHEQUE, or OTHERS"),
+        },
+        {"title": "Record payment", "message": "Guest: {guest_name}\nReservation: {booking_id}\nAmount: {payment_amount}\nMethod: {payment_method}\nRecord this payment?", "approve_label": "Record payment", "reject_label": "Cancel"},
+    ),
+    _action(
+        "reservation_refund", "Record a refund",
+        ["record refund", "refund payment", "give a refund"],
+        "reservation.refund", "reservations.operate",
+        {"booking_id": _field("string", "The booking id at this hotel"), "payment_seq": _field("number", "The payment sequence to refund")},
+        {"title": "Record refund", "message": "Guest: {guest_name}\nReservation: {booking_id}\nPayment: {payment_seq}\nRecord this refund?", "approve_label": "Record refund", "reject_label": "Cancel"},
+    ),
+    _action(
+        "reservation_reassign_room", "Reassign a room",
+        ["reassign room", "move room", "change room number"],
+        "reservation.reassign_room", "reservations.operate",
+        {
+            "booking_id": _field("string", "The booking id at this hotel"),
+            "stay_date": _field("date", "The night to move, YYYY-MM-DD"),
+            "old_room_number": _field("string", "The room number the guest has now"),
+            "new_room_number": _field("string", "The room number to move them to"),
+        },
+        {"title": "Reassign room", "message": "Guest: {guest_name}\nReservation: {booking_id}\nNight: {stay_date}\nFrom room {old_room_number} to room {new_room_number}\nMove this room?", "approve_label": "Reassign", "reject_label": "Cancel"},
+    ),
+    _action(
+        "guest_update_profile", "Update a guest profile",
+        ["update guest", "change guest name", "change guest email", "guest profile"],
+        "guest.update_profile", "front_desk.operate",
+        {
+            "guest_phone": _field("string", "The guest phone already on file, with country code"),
+            "guest_name": _field("string", "The new guest name", False),
+            "email": _field("string", "The new email", False),
+            "country": _field("string", "The new country", False),
+            "special_request": _field("string", "The new special request", False),
+        },
+        {"title": "Update guest", "message": "Guest: {guest_name}\nPhone: {guest_phone}\nNew name: {updated_name}\nEmail: {email}\nCountry: {country}\nRequest: {special_request}\nSave this profile?", "approve_label": "Save", "reject_label": "Cancel"},
+        grain="guest",
+    ),
+]
+
 RETIRED = ["daily_rooms_available"]
 
 UNSUPPORTED = {
@@ -759,7 +877,7 @@ def seed(keys=None):
     from booking_system.semantic.registry import catalog_scopes, retire_catalog
 
     results = []
-    for body in RECIPES:
+    for body in list(RECIPES) + list(ACTION_RECIPES):
         if keys and body["catalog_id"] not in keys:
             continue
         missing = recipe_contract(body)

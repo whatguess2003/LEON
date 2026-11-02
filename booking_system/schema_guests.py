@@ -61,6 +61,24 @@ GUEST_TABLES = (
         set_by_user_id  VARCHAR(48) REFERENCES user_account (user_id),
         set_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
         PRIMARY KEY (hotel_id, action_name)"""),
+    # One prepared Leon action. The row is the immutable operation; PMS data changes only after approve.
+    ("leon_pending_action", """
+        approval_id         VARCHAR(48)  PRIMARY KEY CHECK (left(approval_id, 4) = 'apr_'),
+        hotel_id            VARCHAR(48)  NOT NULL REFERENCES hotel (hotel_id),
+        requester_id        VARCHAR(48)  NOT NULL REFERENCES user_account (user_id),
+        recipe_id           VARCHAR      NOT NULL,
+        recipe_version      INTEGER      NOT NULL,
+        backend_action      VARCHAR(64)  NOT NULL,
+        parameters          JSONB        NOT NULL,
+        preview             JSONB        NOT NULL,
+        approval            JSONB        NOT NULL,
+        status              VARCHAR(16)  NOT NULL CHECK (status IN ('pending','running','approved','rejected','expired','failed','superseded')),
+        idempotency_key     VARCHAR(128) NOT NULL,
+        result              JSONB        NOT NULL DEFAULT '{}'::jsonb,
+        expires_at          TIMESTAMPTZ  NOT NULL,
+        created_at          TIMESTAMPTZ  NOT NULL DEFAULT now(),
+        decided_at          TIMESTAMPTZ,
+        decided_by_user_id  VARCHAR(48)  REFERENCES user_account (user_id)"""),
     # The hotel user's latest inbound WhatsApp: free text to them is open for 24 hours after it.
     ("user_whatsapp_window", """
         user_id         VARCHAR(48) PRIMARY KEY REFERENCES user_account (user_id) ON DELETE CASCADE,
@@ -154,6 +172,7 @@ GUEST_INDEXES = (
     ("guest_message_phone_idx", "guest_message (guest_phone, sent_at)"),
     ("guest_message_hotel_idx", "guest_message (hotel_id, guest_phone)"),
     ("guest_request_open_idx", "guest_request (hotel_id, status)"),
+    ("leon_pending_action_open_idx", "leon_pending_action (hotel_id, status, recipe_id)"),
     ("loyalty_points_member_idx", "loyalty_points (member_id)"),
     ("digital_key_booking_idx", "digital_key (booking_id)"),
     ("guest_referral_partner_idx", "guest_referral (partnership_id)"),

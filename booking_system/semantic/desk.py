@@ -9,9 +9,13 @@ from booking_system.llm_utils import HAIKU_MODEL
 
 _SYSTEM = (
     "You are LEON, a hotel operations assistant. "
-    "Look up a recipe, then run it. Pass start and end as MM/DD/YYYY. A single day uses the same start and end. "
+    "Look up a recipe, then use it. A query recipe is read with run_sql. "
+    "An action recipe changes the hotel: call prepare_action with the parameters that recipe lists. "
+    "Ask for a missing parameter before preparing. The hotel comes from the session. "
+    "prepare_action returns an approval card. Tell the person what the card says. You cannot approve it. "
+    "Pass start and end as MM/DD/YYYY on a query. A single day uses the same start and end. "
     "When the user flags, suspects, or claims that an answer is wrong, call audit_answer and tell them its result. "
-    "Do not call audit_answer on an ordinary question."
+    "Do not call audit_answer on an ordinary question. Do not write SQL that changes data."
 )
 _ROUNDS = 6
 _RECENT = 20
@@ -23,13 +27,30 @@ _TOOLS = (
         "name": "get_recipe",
         "description": (
             "Look up a short list of published recipes similar to this query. "
-            "Returns at most eight cards: id, problem, grain, columns, and parameter names. "
-            "Does not return SQL. Each recipe takes hotel_id, start, and end."
+            "Returns at most eight cards. A query recipe has grain, columns, and parameter names. "
+            "An action recipe has type action_recipe, the parameters to extract, and the backend action. "
+            "Does not return SQL. The server sets hotel_id."
         ),
         "input_schema": {
             "type": "object",
             "properties": {"query": {"type": "string"}},
             "required": ["query"],
+        },
+    },
+    {
+        "name": "prepare_action",
+        "description": (
+            "Prepare one published action recipe. parameters holds the fields that recipe lists. "
+            "The server checks the hotel, the records, and the person's permission, then stores a pending approval. "
+            "Nothing in the hotel changes until the person approves the card. You cannot approve it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "recipe_id": {"type": "string"},
+                "parameters": {"type": "object", "additionalProperties": True},
+            },
+            "required": ["recipe_id", "parameters"],
         },
     },
     {
@@ -68,9 +89,9 @@ _TOOLS = (
 
 
 def handle_user_message(hotel, manager, message, history, idempotency_key="", dates=None, catalog_followup=False):
-    """One desk turn. The model may call get_recipe, run_sql, and audit_answer. audit_answer runs only when the model calls it."""
-    reply = _converse(str(hotel or ""), str(manager or ""), str(message or ""), history)
-    return reply, False, None, {"shown": [], "count": 0, "search_ms": 0, "retrieval_status": "desk"}
+    """One desk turn. The model may call get_recipe, run_sql, prepare_action, and audit_answer."""
+    reply, approvals = _converse(str(hotel or ""), str(manager or ""), str(message or ""), history)
+    return reply, bool(approvals), None, {"shown": [], "count": 0, "search_ms": 0, "retrieval_status": "desk", "approvals": approvals}
 
 
 def answer_after_publication(trace_id):
@@ -111,13 +132,24 @@ def get_recipe(query, manager):
     recipes = []
     for page in pages or []:
         body = page.get("body") or {}
-        recipes.append({
+        kind = str(body.get("type") or "query_recipe")
+        card = {
             "id": str(page.get("catalog_id") or ""),
+            "type": kind,
             "problem": str(body.get("problem") or ""),
-            "grain": str(body.get("output_grain") or ""),
-            "columns": [str(name) for name in body.get("outputs") or []],
-            "parameters": parameter_names(body),
-        })
+        }
+        if kind == "action_recipe":
+            specs = ((body.get("solution") or {}).get("parameters")) or {}
+            card["backend_action"] = str((body.get("solution") or {}).get("backend_action") or "")
+            card["parameters"] = [
+                {"name": name, "type": str(spec.get("type") or ""), "required": bool(spec.get("required", True)), "description": str(spec.get("description") or "")}
+                for name, spec in specs.items()
+            ]
+        else:
+            card["grain"] = str(body.get("output_grain") or "")
+            card["columns"] = [str(name) for name in body.get("outputs") or []]
+            card["parameters"] = parameter_names(body)
+        recipes.append(card)
     return {"recipes": recipes}
 
 
@@ -136,6 +168,11 @@ def run_sql(sql, parameters, hotel_id, recipe_id="", manager=""):
     from booking_system.semantic.query import _statements, execute_reads, read_rejection
 
     chosen = str(recipe_id or "").strip()
+    if chosen:
+        from booking_system.semantic.registry import active_pages, visible_to
+        page = (active_pages([chosen]) or {}).get(chosen)
+        if page and visible_to(page, manager) and str((page.get("body") or {}).get("type") or "") == "action_recipe":
+            return {"rows": [], "error": "This is an action recipe. Call prepare_action."}
     statement = _template(chosen, manager) if chosen else str(sql or "").strip()
     if chosen and not statement:
         return {"rows": [], "error": "recipe not available"}
@@ -316,10 +353,23 @@ def _audit(ctx):
     return verdict
 
 
+def _prepare(arguments, ctx):
+    """Store one pending action. The card is returned to the desk and to the chat."""
+    from booking_system.action_recipe import prepare_action
+    recipe_id = str(arguments.get("recipe_id") or "").strip()
+    if recipe_id:
+        ctx["pending"].append(recipe_id)
+    prepared = prepare_action(ctx["hotel_id"], ctx["manager"], recipe_id, arguments.get("parameters") or {})
+    if prepared.get("approval_id"):
+        ctx["approvals"].append(prepared)
+    return prepared
+
+
 def _dispatch(name, arguments, ctx):
     arguments = arguments if isinstance(arguments, dict) else {}
     calls = {
         "get_recipe": lambda: get_recipe(arguments.get("query"), ctx["manager"]),
+        "prepare_action": lambda: _prepare(arguments, ctx),
         "run_sql": lambda: _run_and_note(arguments, ctx),
         "audit_answer": lambda: _audit(ctx),
     }
@@ -386,6 +436,7 @@ def _converse(hotel, manager, message, history):
         "message": message,
         "log": log,
         "pending": [],
+        "approvals": [],
     }
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"), timeout=90)
     spoken = ""
@@ -420,4 +471,4 @@ def _converse(hotel, manager, message, history):
     if not finished:
         spoken = spoken or "I could not finish that from the hotel data."
     _remember_turn(hotel, manager, history, ctx["pending"])
-    return spoken
+    return spoken, list(ctx["approvals"])

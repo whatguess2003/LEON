@@ -167,6 +167,14 @@ class LeonChatComponent {
             .wa-list-header { font-weight: 700; font-size: 16px; padding: 8px 10px 0; color: #111b21; }
             .wa-list-body { font-size: 15px; padding: 4px 10px 0; color: #111b21; }
             .wa-list-footer { display: flex; justify-content: space-between; font-size: 12px; color: #667781; padding: 6px 10px 8px; }
+            .leon-approval { background:#fff; border-radius:8px; border-bottom-left-radius:2px; box-shadow:0 1px 0.5px rgba(11,20,26,.13); max-width:92%; margin:0 0 8px 4px; overflow:hidden; }
+            .leon-approval h4 { font-size:14px; font-weight:600; margin:0; padding:10px 12px 0; color:#111b21; }
+            .leon-approval p { font-size:13px; margin:0; padding:6px 12px 10px; color:#111b21; white-space:pre-wrap; }
+            .leon-approval-actions { display:flex; border-top:1px solid #e9edef; }
+            .leon-approval-actions button { flex:1; background:transparent; border:0; color:#00a884; padding:10px 0; font-size:14px; cursor:pointer; }
+            .leon-approval-actions button + button { border-left:1px solid #e9edef; }
+            .leon-approval-actions button.reject { color:#667781; }
+            .leon-approval-status { font-size:12px; color:#667781; padding:8px 12px 10px; border-top:1px solid #e9edef; }
             .leon-toolbar button { font-size:12px; }
             .leon-copy-btn { opacity:0.7; }
             .leon-copy-btn:hover { opacity:1; }
@@ -1096,6 +1104,7 @@ class LeonChatComponent {
                 if (data.final_message) {
                     this.addChatMessage(data.final_message, 'leon');
                 }
+                (data.approvals || []).forEach(item => this.mountApproval(item));
                 if (data.screen && data.screen.button && (data.screen.card === 'function' || data.screen.card === 'menu')) {
                     this.mountWhatsAppList(data.screen);
                 }
@@ -1289,6 +1298,72 @@ class LeonChatComponent {
             if (sess) return JSON.parse(sess);
         } catch (_) {}
         return null;
+    }
+
+    mountApproval(item) {
+        const chatMessages = document.getElementById('chat-messages');
+        if (!chatMessages || !item || !item.approval_id) return;
+        const card = document.createElement('div');
+        card.className = 'leon-approval';
+        card.dataset.approvalId = item.approval_id;
+        const title = document.createElement('h4');
+        title.textContent = item.title || 'Approval';
+        const message = document.createElement('p');
+        message.textContent = item.message || '';
+        const note = document.createElement('div');
+        note.className = 'leon-approval-status';
+        note.hidden = true;
+        const actions = document.createElement('div');
+        actions.className = 'leon-approval-actions';
+        const approve = document.createElement('button');
+        approve.type = 'button';
+        approve.textContent = item.approve_label || 'Approve';
+        const reject = document.createElement('button');
+        reject.type = 'button';
+        reject.className = 'reject';
+        reject.textContent = item.reject_label || 'Cancel';
+        const settle = (label) => {
+            actions.remove();
+            note.hidden = false;
+            note.textContent = label;
+        };
+        const post = async (path) => {
+            approve.disabled = true;
+            reject.disabled = true;
+            note.hidden = true;
+            try {
+                const response = await fetch(this.leonChatUrl + path, { method: 'POST', credentials: 'include' });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok || data.error) {
+                    approve.disabled = false;
+                    reject.disabled = false;
+                    note.hidden = false;
+                    note.textContent = data.error || 'This approval could not be completed.';
+                    return;
+                }
+                const detail = (data.result && data.result.detail) || '';
+                if (data.status === 'approved') settle('Approved.');
+                else if (data.status === 'failed') settle(detail || 'The hotel did not complete this.');
+                else if (data.status === 'rejected') settle('Cancelled.');
+                else if (data.status === 'expired') settle('This approval expired.');
+                else settle(detail || data.status || 'Done.');
+            } catch (_) {
+                approve.disabled = false;
+                reject.disabled = false;
+                note.hidden = false;
+                note.textContent = 'This approval could not be completed.';
+            }
+        };
+        approve.addEventListener('click', () => post('/api/leon/actions/' + encodeURIComponent(item.approval_id) + '/approve'));
+        reject.addEventListener('click', () => post('/api/leon/actions/' + encodeURIComponent(item.approval_id) + '/reject'));
+        actions.appendChild(approve);
+        actions.appendChild(reject);
+        card.appendChild(title);
+        card.appendChild(message);
+        card.appendChild(actions);
+        card.appendChild(note);
+        chatMessages.appendChild(card);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
     }
 
     escapeHtml(str) {

@@ -30,9 +30,56 @@ def proposal_hash(body):
     return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _action_contract(body):
+    """An action recipe names a registered PMS operation. It carries no SQL."""
+    missing = []
+    if not str(body.get("catalog_id") or "").strip():
+        missing.append("catalog_id")
+    if not str(body.get("problem") or "").strip():
+        missing.append("problem")
+    if not isinstance(body.get("preconditions"), list) or not body.get("preconditions"):
+        missing.append("preconditions")
+    if str(body.get("output_grain") or "") not in GRAINS:
+        missing.append("output_grain")
+    outputs = body.get("outputs")
+    if not isinstance(outputs, list) or not outputs or not all(isinstance(item, str) and item.strip() for item in outputs):
+        missing.append("outputs")
+    if not body.get("verification"):
+        missing.append("verification")
+    solution = body.get("solution") or {}
+    if str(solution.get("sql_template") or "").strip():
+        missing.append("sql_template")
+    if not str(solution.get("backend_action") or "").strip():
+        missing.append("backend_action")
+    parameters = solution.get("parameters")
+    if not isinstance(parameters, dict) or not parameters:
+        missing.append("parameters")
+    else:
+        for name, spec in parameters.items():
+            if not str(name or "").strip() or str(name) == "hotel_id":
+                missing.append("parameters")
+                break
+            if not isinstance(spec, dict) or str(spec.get("type") or "") not in ("string", "date", "number"):
+                missing.append("parameters")
+                break
+            if not str(spec.get("description") or "").strip():
+                missing.append("parameters")
+                break
+    permission = str(body.get("permission") or "")
+    if permission.count(".") != 1 or not all(permission.split(".")):
+        missing.append("permission")
+    approval = body.get("request_approval") or {}
+    if not str(approval.get("title") or "").strip() or not str(approval.get("message") or "").strip():
+        missing.append("request_approval")
+    return missing
+
+
 def recipe_contract(body):
-    """Names still missing from a procedure. Empty means the body can be executed."""
+    """Names still missing from a procedure. Empty means the body can be executed.
+    A body with no type is a query recipe. An action recipe is checked on its own and cannot carry SQL."""
     body = body or {}
+    if str(body.get("type") or "query_recipe") == "action_recipe":
+        return _action_contract(body)
     missing = []
     if not str(body.get("catalog_id") or "").strip():
         missing.append("catalog_id")

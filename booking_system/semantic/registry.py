@@ -1362,6 +1362,16 @@ def workflow_ddl(cur):
         )
         """
     )
+    tables.append(
+        """
+        CREATE TABLE IF NOT EXISTS knowledge_tests (
+            catalog_id VARCHAR NOT NULL,
+            hotel_id VARCHAR(48) NOT NULL REFERENCES hotel (hotel_id),
+            expected_value TEXT NOT NULL,
+            PRIMARY KEY (catalog_id, hotel_id)
+        )
+        """
+    )
     cur.execute(";\n".join(tables))
     _owner_column(cur, "gap_candidates", seen)
     for table in ("events", "tasks", "evidence", "investigations", "problem_specs", "execution_runs", "composition_plans"):

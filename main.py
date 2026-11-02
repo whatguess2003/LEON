@@ -489,6 +489,22 @@ async def auth_active(req: Request):
 
 
 # --- Classic single-step chat endpoint using leon_meta_orchestrator ---
+@app.post("/api/leon/actions/{approval_id}/approve")
+async def leon_action_approve(approval_id: str, req: Request):
+    """The signed-in person runs the stored action. The model cannot call this."""
+    from booking_system.action_recipe import approve_action
+    session = req.state.session
+    return await run_in_threadpool(approve_action, session["hotel_id"], session["user_id"], approval_id)
+
+
+@app.post("/api/leon/actions/{approval_id}/reject")
+async def leon_action_reject(approval_id: str, req: Request):
+    """The signed-in person cancels the stored action. Nothing in the hotel changes."""
+    from booking_system.action_recipe import reject_action
+    session = req.state.session
+    return await run_in_threadpool(reject_action, session["hotel_id"], session["user_id"], approval_id)
+
+
 @app.post("/api/chat/start")
 async def chat_start(request: ChatRequest, leon_jwt: str = Cookie(None)):
  
@@ -502,6 +518,7 @@ async def chat_start(request: ChatRequest, leon_jwt: str = Cookie(None)):
             "screen": response.get("screen"),
             "pins": response.get("pins") or [],
             "pin_count": response.get("pin_count") or 0,
+            "approvals": response.get("approvals") or [],
         }
     except Exception as e:
         logger.error(f"Exception in /api/chat/start: {e}\n{traceback.format_exc()}")
@@ -520,6 +537,7 @@ async def chat_complete(payload: dict = Body(...), leon_jwt: str = Cookie(None))
             "screen": response.get("screen"),
             "pins": response.get("pins") or [],
             "pin_count": response.get("pin_count") or 0,
+            "approvals": response.get("approvals") or [],
         }
     except Exception as e:
         logger.error(f"Exception in /api/chat/complete: {e}\n{traceback.format_exc()}")
@@ -1069,6 +1087,8 @@ access.register([
     ("GET /api/guide", "front_desk", "view"),
     ("GET /api/onboard/template", "front_desk", "view"),
     ("POST /api/chat/start", "front_desk", "view"), ("POST /api/chat/complete", "front_desk", "view"),
+    ("POST /api/leon/actions/{approval_id}/approve", "front_desk", "operate"),
+    ("POST /api/leon/actions/{approval_id}/reject", "front_desk", "operate"),
     ("GET /api/chat/history", "front_desk", "view"), ("POST /api/chat/clear", "front_desk", "view"),
     ("POST /api/chat/menu", "front_desk", "view"), ("GET /api/chat/desk", "front_desk", "view"),
     ("POST /api/chat/card", "front_desk", "view"), ("POST /api/chat/pin", "front_desk", "view"),
