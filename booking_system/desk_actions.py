@@ -1146,6 +1146,108 @@ def _perform_deactivate(hotel_id, user_id, params):
     return deactivate_guest(hotel_id, user_id, params["guest_phone"])
 
 
+def _desk_ref(params):
+    import hashlib
+    import json
+    raw = json.dumps(params, sort_keys=True, default=str)
+    return "leon-" + hashlib.sha256(raw.encode()).hexdigest()[:32]
+
+
+def _perform_cleaning_task(hotel_id, user_id, params):
+    from booking_system import housekeeping_manager
+    return housekeeping_manager.create_cleaning_task(hotel_id, user_id, params["room_number"], params["staff_phone"],
+                                                     params.get("task_type") or "standard_cleaning", params.get("priority") or "normal",
+                                                     params.get("notes") or "")
+
+
+def _perform_start_cleaning(hotel_id, user_id, params):
+    from booking_system import housekeeping_manager
+    return housekeeping_manager.start_cleaning_for_room(hotel_id, user_id, params["room_number"], params["staff_phone"],
+                                                        params.get("task_type") or "standard_cleaning", params.get("priority") or "normal")
+
+
+def _perform_cleaning_progress(hotel_id, user_id, params):
+    from booking_system import housekeeping_manager
+    return housekeeping_manager.update_cleaning_progress(hotel_id, user_id, params["cleaning_id"], params["new_status"],
+                                                         params.get("staff_phone"), params.get("notes") or "")
+
+
+def _perform_clock_in(hotel_id, user_id, params):
+    from booking_system import housekeeping_manager
+    return housekeeping_manager.staff_clock_in(hotel_id, user_id, params["staff_phone"])
+
+
+def _perform_clock_out(hotel_id, user_id, params):
+    from booking_system import housekeeping_manager
+    return housekeeping_manager.staff_clock_out(hotel_id, user_id, params["staff_phone"])
+
+
+def _perform_maintenance(hotel_id, user_id, params):
+    from booking_system import maintenance_manager
+    return maintenance_manager.create_maintenance_request(hotel_id, user_id, params.get("room_number"), params.get("area"),
+                                                          params["issue"], params.get("urgency") or "normal")
+
+
+def _perform_maintenance_progress(hotel_id, user_id, params):
+    from booking_system import maintenance_manager
+    return maintenance_manager.update_maintenance_progress(hotel_id, user_id, params["request_id"], params["status"],
+                                                           params.get("staff_phone"), params.get("notes") or "")
+
+
+def _perform_price_override(hotel_id, user_id, params):
+    from booking_system.front_desk_manager import intelligent_front_desk
+    return intelligent_front_desk.override_pricing_internal(hotel_id, user_id, params["booking_id"], params["new_total_amount"])
+
+
+def _perform_set_prices(hotel_id, user_id, params):
+    from booking_system import inventory_manager
+    return inventory_manager.set_prices(hotel_id, user_id, params["room_type"], params["start_date"], params["end_date"], params["price"])
+
+
+def _perform_update_night(hotel_id, user_id, params):
+    from booking_system import inventory_manager
+    return inventory_manager.update_dates(hotel_id, user_id, params["room_type"], [params["stay_date"]], params["price"], int(params["quantity"]))
+
+
+def _perform_post_charge(hotel_id, user_id, params):
+    from booking_system.finance import service
+    extra = {"outlet_id": params["folio_ref"]} if params["folio_type"] == "outlet" else {}
+    return service.post_charge(hotel_id, params["folio_type"], params["folio_ref"], params["transaction_code"], params["amount"],
+                               "desk", _desk_ref(params), user_id=user_id, **extra)
+
+
+def _perform_post_payment(hotel_id, user_id, params):
+    from booking_system.finance import service
+    extra = {"outlet_id": params["folio_ref"]} if params["folio_type"] == "outlet" else {}
+    return service.post_payment(hotel_id, params["folio_type"], params["folio_ref"], params["transaction_code"], params["amount"],
+                                "desk", _desk_ref(params), user_id=user_id, **extra)
+
+
+def _perform_reverse(hotel_id, user_id, params):
+    from booking_system.finance import service
+    return service.reverse_posting(hotel_id, params["posting_id"], params["reason"], "desk", _desk_ref(params), user_id=user_id)
+
+
+def _perform_open_day(hotel_id, user_id, params):
+    from booking_system.finance import service
+    return service.open_business_day(hotel_id, params["business_date"], user_id)
+
+
+def _perform_close_day(hotel_id, user_id, params):
+    from booking_system.finance import service
+    return service.close_business_day(hotel_id, params["business_date"], user_id)
+
+
+def _perform_award(hotel_id, user_id, params):
+    from booking_system import loyalty_manager
+    return loyalty_manager.award(hotel_id, user_id, params["guest_phone"], params["points"], params["reason"], params.get("booking_id"))
+
+
+def _perform_redeem(hotel_id, user_id, params):
+    from booking_system import loyalty_manager
+    return loyalty_manager.redeem(hotel_id, user_id, params["guest_phone"], params["reward_name"])
+
+
 def _perform_payment(hotel_id, user_id, params):
     from booking_system import payment_manager
     amount = _amount(params.get("payment_amount"))
@@ -1196,6 +1298,23 @@ _PERFORM = {
     "save_preference": _perform_preference,
     "record_complaint": _perform_complaint,
     "deactivate_guest": _perform_deactivate,
+    "create_cleaning_task": _perform_cleaning_task,
+    "start_cleaning": _perform_start_cleaning,
+    "cleaning_progress": _perform_cleaning_progress,
+    "clock_in": _perform_clock_in,
+    "clock_out": _perform_clock_out,
+    "create_maintenance": _perform_maintenance,
+    "maintenance_progress": _perform_maintenance_progress,
+    "price_override": _perform_price_override,
+    "set_prices": _perform_set_prices,
+    "update_night": _perform_update_night,
+    "post_charge": _perform_post_charge,
+    "post_folio_payment": _perform_post_payment,
+    "reverse_posting": _perform_reverse,
+    "open_business_day": _perform_open_day,
+    "close_business_day": _perform_close_day,
+    "award_points": _perform_award,
+    "redeem_reward": _perform_redeem,
 }
 
 

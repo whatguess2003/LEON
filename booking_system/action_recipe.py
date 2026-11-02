@@ -35,7 +35,29 @@ _REGISTRY = {
     "guest.complaint": {"perform": "record_complaint", "permission": ("front_desk", "operate"), "parameters": ("guest_phone", "complaint", "booking_id")},
     "guest.deactivate": {"perform": "deactivate_guest", "permission": ("front_desk", "operate"), "parameters": ("guest_phone",)},
     "guest.update_profile": {"perform": "update_guest_profile", "permission": ("front_desk", "operate"), "parameters": ("guest_phone", "guest_name", "email", "country", "special_request")},
+    "housekeeping.create_task": {"perform": "create_cleaning_task", "permission": ("housekeeping", "operate"), "parameters": ("room_number", "staff_phone", "task_type", "priority", "notes")},
+    "housekeeping.start": {"perform": "start_cleaning", "permission": ("housekeeping", "operate"), "parameters": ("room_number", "staff_phone", "task_type", "priority")},
+    "housekeeping.progress": {"perform": "cleaning_progress", "permission": ("housekeeping", "operate"), "parameters": ("cleaning_id", "new_status", "staff_phone", "notes")},
+    "housekeeping.clock_in": {"perform": "clock_in", "permission": ("housekeeping", "operate"), "parameters": ("staff_phone",)},
+    "housekeeping.clock_out": {"perform": "clock_out", "permission": ("housekeeping", "operate"), "parameters": ("staff_phone",)},
+    "maintenance.create": {"perform": "create_maintenance", "permission": ("maintenance", "operate"), "parameters": ("room_number", "area", "issue", "urgency")},
+    "maintenance.progress": {"perform": "maintenance_progress", "permission": ("maintenance", "operate"), "parameters": ("request_id", "status", "staff_phone", "notes")},
+    "reservation.price_override": {"perform": "price_override", "permission": ("front_desk", "manage"), "parameters": ("booking_id", "new_total_amount")},
+    "inventory.set_prices": {"perform": "set_prices", "permission": ("reservations", "operate"), "parameters": ("room_type", "start_date", "end_date", "price")},
+    "inventory.update_night": {"perform": "update_night", "permission": ("reservations", "operate"), "parameters": ("room_type", "stay_date", "price", "quantity")},
+    "finance.post_charge": {"perform": "post_charge", "permission": ("finance", "operate"), "parameters": ("folio_type", "folio_ref", "transaction_code", "amount")},
+    "finance.folio_payment": {"perform": "post_folio_payment", "permission": ("finance", "operate"), "parameters": ("folio_type", "folio_ref", "transaction_code", "amount")},
+    "finance.reverse_posting": {"perform": "reverse_posting", "permission": ("finance", "operate"), "parameters": ("posting_id", "reason")},
+    "finance.open_day": {"perform": "open_business_day", "permission": ("finance", "manage"), "parameters": ("business_date",)},
+    "finance.close_day": {"perform": "close_business_day", "permission": ("finance", "manage"), "parameters": ("business_date",)},
+    "loyalty.award": {"perform": "award_points", "permission": ("front_desk", "operate"), "parameters": ("guest_phone", "points", "reason", "booking_id")},
+    "loyalty.redeem": {"perform": "redeem_reward", "permission": ("front_desk", "operate"), "parameters": ("guest_phone", "reward_name")},
 }
+
+_PRIORITY = {"low": "low", "normal": "normal", "high": "high", "urgent": "urgent"}
+_CLEANING_STATUS = {"pending": "pending", "assigned": "assigned", "in_progress": "in_progress", "completed": "completed", "inspected": "inspected", "cancelled": "cancelled", "quality_check": "inspected"}
+_MAINTENANCE_STATUS = {"reported": "reported", "assigned": "assigned", "in_progress": "in_progress", "completed": "completed", "cancelled": "cancelled"}
+_FOLIO = {"guest": "guest", "account": "account", "outlet": "outlet"}
 
 _YES = {"yes": "yes", "no": "no"}
 _BLOCK_TYPES = {"out_of_order": "out_of_order", "out_of_service": "out_of_service"}
@@ -285,18 +307,151 @@ def _preview(hotel_id, action, values):
         preview["mark_clean"] = values.get("mark_clean") or "yes"
     if action == "reservation.reassign_room":
         preview["mark_old_clean"] = values.get("mark_old_clean") or "unchanged"
-    if action in ("room.block", "room.release") and values.get("end_date") < values.get("start_date"):
+    if action in ("room.block", "room.release", "inventory.set_prices") and values.get("end_date") < values.get("start_date"):
         return None, "end_date is before start_date"
+    problem = _preview_floor(hotel_id, action, values, preview, guest)
+    if problem:
+        return None, problem
     for name in (
         "payment_amount", "payment_method", "payment_seq", "stay_date", "new_stay_dates", "new_room_type", "new_rooms_booked",
         "email", "country", "special_request", "reason", "notes", "mark_clean", "mark_old_clean", "new_status",
         "start_date", "end_date", "block_type", "request", "requested_for", "preference", "value", "complaint",
+        "staff_phone", "task_type", "priority", "cleaning_id", "area", "urgency", "issue", "request_id", "status",
+        "folio_type", "folio_ref", "transaction_code", "amount", "posting_id", "business_date", "points",
+        "reward_name", "quantity", "price", "new_total_amount",
     ):
         if name in values and name not in preview:
             preview[name] = values[name]
     if "room_number" not in preview and preview.get("booking_id"):
         preview["room_number"] = ""
     return preview, ""
+
+
+def _person(hotel_id, staff, department=""):
+    if department:
+        from booking_system.staff_manager import assignable_staff
+        person, reason = db.transaction(lambda cur: assignable_staff(cur, hotel_id, staff, department))
+    else:
+        from booking_system.staff_manager import one_staff
+        person, reason = db.transaction(lambda cur: one_staff(cur, hotel_id, staff))
+    return (dict(person) if person else None), reason
+
+
+def _show_staff(values, preview, person):
+    preview["staff_name"] = person.get("staff_name") or ""
+    preview["staff_phone"] = values.get("staff_phone") or ""
+    return ""
+
+
+def _preview_floor(hotel_id, action, values, preview, guest):
+    """Names, tasks, prices, and folios the later cards show. A missing record stops the card."""
+    if action in ("housekeeping.create_task", "housekeeping.start"):
+        person, reason = _person(hotel_id, values.get("staff_phone"), "HOUSEKEEPING")
+        if not person:
+            return reason
+        _show_staff(values, preview, person)
+        preview["task_type"] = values.get("task_type") or "standard_cleaning"
+        preview["priority"] = values.get("priority") or "normal"
+    if action in ("housekeeping.clock_in", "housekeeping.clock_out"):
+        person, reason = _person(hotel_id, values.get("staff_phone"))
+        if not person:
+            return reason
+        _show_staff(values, preview, person)
+    if action == "housekeeping.progress":
+        row = db.row(
+            """SELECT t.cleaning_task_id, t.task_status, r.room_number
+               FROM cleaning_task t JOIN room r ON r.room_id = t.room_id
+               WHERE t.hotel_id = %s AND t.cleaning_task_id = %s""",
+            (hotel_id, values.get("cleaning_id")),
+        )
+        if not row:
+            return "cleaning task " + str(values.get("cleaning_id") or "") + " not found"
+        preview.update(cleaning_id=row["cleaning_task_id"], room_number=row["room_number"], current_status=row["task_status"] or "")
+        if values.get("staff_phone"):
+            person, reason = _person(hotel_id, values.get("staff_phone"), "HOUSEKEEPING")
+            if not person:
+                return reason
+            _show_staff(values, preview, person)
+    if action == "maintenance.create":
+        has_room = bool(values.get("room_number"))
+        has_area = bool(_text(values.get("area")))
+        if has_room == has_area:
+            return "give exactly one of room_number or area"
+        if has_area:
+            values["area"] = _text(values.get("area")).upper()
+            preview["area"] = values["area"]
+        preview["urgency"] = values.get("urgency") or "normal"
+        preview["issue"] = values.get("issue") or ""
+    if action == "maintenance.progress":
+        row = db.row(
+            """SELECT m.request_id, m.request_status, m.issue, r.room_number, m.area
+               FROM maintenance_request m LEFT JOIN room r ON r.room_id = m.room_id
+               WHERE m.hotel_id = %s AND m.request_id = %s""",
+            (hotel_id, values.get("request_id")),
+        )
+        if not row:
+            return "maintenance request " + str(values.get("request_id") or "") + " not found"
+        preview.update(request_id=row["request_id"], current_status=row["request_status"] or "", issue=row["issue"] or "",
+                       room_number=row["room_number"] or "", area=row["area"] or "")
+        if values.get("staff_phone"):
+            person, reason = _person(hotel_id, values.get("staff_phone"), "MAINTENANCE")
+            if not person:
+                return reason
+            _show_staff(values, preview, person)
+    if action == "reservation.price_override":
+        row = db.row("SELECT gross_amount, currency FROM booking WHERE hotel_id = %s AND booking_id = %s", (hotel_id, values.get("booking_id")))
+        preview["current_total"] = "" if not row or row["gross_amount"] is None else str(row["gross_amount"])
+        preview["new_total_amount"] = values.get("new_total_amount")
+    if values.get("room_type") and action != "reservation.create":
+        known = db.row(
+            "SELECT room_type_name FROM room_type WHERE hotel_id = %s AND room_type_name = %s AND status = 'active'",
+            (hotel_id, str(values.get("room_type") or "").upper()),
+        )
+        if not known:
+            return "room type is not at this hotel"
+        values["room_type"] = known["room_type_name"]
+        preview["room_type"] = known["room_type_name"]
+    if action in ("finance.post_charge", "finance.folio_payment"):
+        code = db.row(
+            "SELECT transaction_code, transaction_type FROM transaction_code WHERE hotel_id = %s AND transaction_code = %s",
+            (hotel_id, values.get("transaction_code")),
+        )
+        if not code:
+            return "transaction code " + str(values.get("transaction_code") or "") + " not found"
+        expected = ("charge",) if action == "finance.post_charge" else ("payment", "refund")
+        if code["transaction_type"] not in expected:
+            return "code " + code["transaction_code"] + " is a " + code["transaction_type"] + " code"
+        preview["transaction_code"] = code["transaction_code"]
+        preview["transaction_type"] = code["transaction_type"]
+    if action == "finance.reverse_posting":
+        row = db.row(
+            "SELECT posting_id, folio_type, folio_ref, amount FROM finance_posting WHERE hotel_id = %s AND posting_id = %s",
+            (hotel_id, values.get("posting_id")),
+        )
+        if not row:
+            return "posting not found"
+        preview.update(posting_id=row["posting_id"], folio_type=row["folio_type"], folio_ref=row["folio_ref"], amount=str(row["amount"]))
+    if action in ("finance.open_day", "finance.close_day"):
+        opened = db.row("SELECT business_date FROM business_day WHERE hotel_id = %s AND status = 'open'", (hotel_id,))
+        latest = db.row("SELECT business_date FROM business_day WHERE hotel_id = %s ORDER BY business_date DESC LIMIT 1", (hotel_id,))
+        preview["open_business_date"] = _iso(opened["business_date"]) if opened else "none"
+        preview["latest_business_date"] = _iso(latest["business_date"]) if latest else "none"
+    if action in ("loyalty.award", "loyalty.redeem"):
+        member = db.row("SELECT status FROM loyalty_member WHERE hotel_id = %s AND guest_id = %s", (hotel_id, (guest or {}).get("guest_id")))
+        if not member or member["status"] != "active":
+            return "Guest is not a loyalty member"
+    if action == "loyalty.redeem":
+        name = _text(values.get("reward_name")).upper()
+        reward = db.row(
+            "SELECT reward_name, points_cost FROM loyalty_reward WHERE hotel_id = %s AND reward_name = %s AND status = 'active'",
+            (hotel_id, name),
+        )
+        if not reward:
+            return "Reward " + str(values.get("reward_name") or "") + " not found"
+        values["reward_name"] = reward["reward_name"]
+        preview["reward_name"] = reward["reward_name"]
+        preview["points_cost"] = reward["points_cost"]
+    return ""
 
 
 def _fill(template, preview):
@@ -350,8 +505,17 @@ def _public(row):
 
 
 def _supersede(cur, hotel_id, recipe_id, values, keep):
-    column = "guest_phone" if values.get("guest_phone") else "booking_id" if values.get("booking_id") else "room_number" if values.get("room_number") else ""
+    column = next((name for name in ("guest_phone", "booking_id", "room_number", "staff_phone", "cleaning_id", "request_id", "posting_id", "folio_ref", "room_type", "business_date") if values.get(name)), "")
     target = str(values.get(column) or "") if column else ""
+    # A business date is the proposal itself. A later open or close replaces every earlier card for that recipe.
+    if column == "business_date":
+        cur.execute(
+            """UPDATE leon_pending_action
+               SET status = 'superseded', decided_at = now()
+               WHERE hotel_id = %s AND recipe_id = %s AND status = 'pending' AND approval_id <> %s""",
+            (hotel_id, recipe_id, keep),
+        )
+        return
     if not target:
         return
     cur.execute(
@@ -393,12 +557,40 @@ def prepare_action(hotel_id, user_id, recipe_id, parameters):
         if not flag:
             return {"error": name + " is yes or no"}
         values[name] = flag
-    if "new_status" in values:
+    if action == "room.set_readiness" and "new_status" in values:
         from booking_system.front_desk_manager import READINESS
         status = str(values["new_status"]).lower()
         if status not in READINESS:
             return {"error": "readiness must be clean, dirty, cleaning, or inspected"}
         values["new_status"] = status
+    if action == "housekeeping.progress" and "new_status" in values:
+        status = _CLEANING_STATUS.get(str(values["new_status"]).lower().replace(" ", "_"))
+        if not status:
+            return {"error": "cleaning status is pending, assigned, in_progress, completed, inspected, or cancelled"}
+        values["new_status"] = status
+    if action == "maintenance.progress" and "status" in values:
+        status = _MAINTENANCE_STATUS.get(str(values["status"]).lower().replace(" ", "_"))
+        if not status:
+            return {"error": "maintenance status is reported, assigned, in_progress, completed, or cancelled"}
+        values["status"] = status
+    for name in ("priority", "urgency"):
+        if name not in values:
+            continue
+        flag = _PRIORITY.get(str(values[name]).lower())
+        if not flag:
+            return {"error": name + " is low, normal, high, or urgent"}
+        values[name] = flag
+    if "task_type" in values:
+        values["task_type"] = str(values["task_type"]).strip().lower()
+    if "folio_type" in values:
+        folio = _FOLIO.get(str(values["folio_type"]).lower())
+        if not folio:
+            return {"error": "folio type is guest, account, or outlet"}
+        values["folio_type"] = folio
+    if "transaction_code" in values:
+        values["transaction_code"] = str(values["transaction_code"]).strip().upper()
+    if "quantity" in values and not str(values["quantity"]).isdigit():
+        return {"error": "quantity is a whole number, and 0 stops sale"}
     if "block_type" in values:
         kind = _BLOCK_TYPES.get(str(values["block_type"]).lower().replace(" ", "_"))
         if not kind:

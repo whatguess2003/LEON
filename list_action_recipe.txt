@@ -1,0 +1,289 @@
+Published action recipes: 39
+
+Leon prepares one of these, shows an approval card, and calls the named PMS service only after approval.
+Hotel identity comes from the session. Recipes do not contain SQL.
+
+reservation_check_in
+  problem: Check in a guest reservation
+  backend_action: reservation.check_in
+  permission: reservations.operate
+  version: 1
+  parameters: booking_id (string), room_number (string)
+
+reservation_check_out
+  problem: Check out a guest reservation
+  backend_action: reservation.check_out
+  permission: reservations.operate
+  version: 1
+  parameters: booking_id (string), room_number (string)
+
+reservation_cancel
+  problem: Cancel a reservation
+  backend_action: reservation.cancel
+  permission: reservations.operate
+  version: 1
+  parameters: booking_id (string)
+
+reservation_create
+  problem: Create a reservation
+  backend_action: reservation.create
+  permission: reservations.operate
+  version: 1
+  parameters: guest_phone (string), room_type (string), stay_dates (string)
+
+reservation_modify
+  problem: Modify a reservation
+  backend_action: reservation.modify
+  permission: reservations.operate
+  version: 1
+  parameters: booking_id (string), new_stay_dates (string, optional), new_room_type (string, optional), new_rooms_booked (number, optional)
+
+reservation_payment
+  problem: Record a payment
+  backend_action: reservation.payment
+  permission: reservations.operate
+  version: 1
+  parameters: booking_id (string), payment_amount (number), payment_method (string)
+
+reservation_refund
+  problem: Record a refund
+  backend_action: reservation.refund
+  permission: reservations.operate
+  version: 1
+  parameters: booking_id (string), payment_seq (number)
+
+reservation_reassign_room
+  problem: Reassign a room
+  backend_action: reservation.reassign_room
+  permission: reservations.operate
+  version: 2
+  parameters: booking_id (string), stay_date (date), old_room_number (string), new_room_number (string), mark_old_clean (string, optional)
+
+reservation_no_show
+  problem: Mark a reservation as a no-show
+  backend_action: reservation.no_show
+  permission: reservations.operate
+  version: 1
+  parameters: booking_id (string), reason (string, optional)
+
+reservation_notes
+  problem: Write reservation notes
+  backend_action: reservation.notes
+  permission: reservations.operate
+  version: 1
+  parameters: booking_id (string), notes (string)
+
+reservation_assign_room
+  problem: Assign a room to a reservation
+  backend_action: reservation.assign_room
+  permission: reservations.operate
+  version: 1
+  parameters: booking_id (string), room_number (string)
+
+reservation_undo_check_in
+  problem: Undo a check-in
+  backend_action: reservation.undo_check_in
+  permission: reservations.operate
+  version: 1
+  parameters: booking_id (string), room_number (string), mark_clean (string, optional)
+
+reservation_reset_night
+  problem: Reset a stay night
+  backend_action: reservation.reset_night
+  permission: reservations.operate
+  version: 1
+  parameters: booking_id (string), stay_date (date)
+
+room_set_readiness
+  problem: Set a room's readiness
+  backend_action: room.set_readiness
+  permission: housekeeping.view
+  version: 1
+  parameters: room_number (string), new_status (string)
+
+room_block
+  problem: Block a room
+  backend_action: room.block
+  permission: maintenance.operate
+  version: 1
+  parameters: room_number (string), start_date (date), end_date (date), reason (string), block_type (string, optional)
+
+room_release
+  problem: Release a room block
+  backend_action: room.release
+  permission: maintenance.operate
+  version: 1
+  parameters: room_number (string), start_date (date), end_date (date)
+
+guest_service_request
+  problem: Open a guest service request
+  backend_action: guest.service_request
+  permission: front_desk.operate
+  version: 1
+  parameters: guest_phone (string), request (string), requested_for (string, optional), booking_id (string, optional)
+
+guest_close_request
+  problem: Close a guest service request
+  backend_action: guest.close_request
+  permission: front_desk.operate
+  version: 1
+  parameters: guest_phone (string), request (string)
+
+guest_preference
+  problem: Save a guest preference
+  backend_action: guest.preference
+  permission: front_desk.operate
+  version: 1
+  parameters: guest_phone (string), preference (string), value (string)
+
+guest_complaint
+  problem: Record a guest complaint
+  backend_action: guest.complaint
+  permission: front_desk.operate
+  version: 1
+  parameters: guest_phone (string), complaint (string), booking_id (string, optional)
+
+guest_deactivate
+  problem: Deactivate a guest
+  backend_action: guest.deactivate
+  permission: front_desk.operate
+  version: 1
+  parameters: guest_phone (string)
+
+guest_update_profile
+  problem: Update a guest profile
+  backend_action: guest.update_profile
+  permission: front_desk.operate
+  version: 2
+  parameters: guest_phone (string), guest_name (string, optional), email (string, optional), country (string, optional), special_request (string, optional)
+
+housekeeping_create_task
+  problem: Create a cleaning task
+  backend_action: housekeeping.create_task
+  permission: housekeeping.operate
+  version: 1
+  parameters: room_number (string), staff_phone (string), task_type (string, optional), priority (string, optional), notes (string, optional)
+
+housekeeping_start
+  problem: Start cleaning a room
+  backend_action: housekeeping.start
+  permission: housekeeping.operate
+  version: 1
+  parameters: room_number (string), staff_phone (string), task_type (string, optional), priority (string, optional)
+
+housekeeping_progress
+  problem: Update cleaning progress
+  backend_action: housekeeping.progress
+  permission: housekeeping.operate
+  version: 1
+  parameters: cleaning_id (string), new_status (string), staff_phone (string, optional), notes (string, optional)
+
+housekeeping_clock_in
+  problem: Clock in housekeeping staff
+  backend_action: housekeeping.clock_in
+  permission: housekeeping.operate
+  version: 1
+  parameters: staff_phone (string)
+
+housekeeping_clock_out
+  problem: Clock out housekeeping staff
+  backend_action: housekeeping.clock_out
+  permission: housekeeping.operate
+  version: 1
+  parameters: staff_phone (string)
+
+maintenance_create
+  problem: Create a maintenance request
+  backend_action: maintenance.create
+  permission: maintenance.operate
+  version: 1
+  parameters: room_number (string, optional), area (string, optional), issue (string), urgency (string, optional)
+
+maintenance_progress
+  problem: Update a maintenance request
+  backend_action: maintenance.progress
+  permission: maintenance.operate
+  version: 1
+  parameters: request_id (string), status (string), staff_phone (string, optional), notes (string, optional)
+
+reservation_price_override
+  problem: Override a reservation total
+  backend_action: reservation.price_override
+  permission: front_desk.manage
+  version: 1
+  parameters: booking_id (string), new_total_amount (number)
+
+inventory_set_prices
+  problem: Set room prices for a date range
+  backend_action: inventory.set_prices
+  permission: reservations.operate
+  version: 1
+  parameters: room_type (string), start_date (date), end_date (date), price (number)
+
+inventory_update_night
+  problem: Update one night's price and inventory
+  backend_action: inventory.update_night
+  permission: reservations.operate
+  version: 1
+  parameters: room_type (string), stay_date (date), price (number), quantity (string)
+
+finance_post_charge
+  problem: Post a folio charge
+  backend_action: finance.post_charge
+  permission: finance.operate
+  version: 1
+  parameters: folio_type (string), folio_ref (string), transaction_code (string), amount (number)
+
+finance_folio_payment
+  problem: Post a folio payment
+  backend_action: finance.folio_payment
+  permission: finance.operate
+  version: 1
+  parameters: folio_type (string), folio_ref (string), transaction_code (string), amount (number)
+
+finance_reverse_posting
+  problem: Reverse a folio posting
+  backend_action: finance.reverse_posting
+  permission: finance.operate
+  version: 1
+  parameters: posting_id (string), reason (string)
+
+finance_open_day
+  problem: Open the first business day
+  backend_action: finance.open_day
+  permission: finance.manage
+  version: 1
+  parameters: business_date (date)
+
+finance_close_day
+  problem: Close the business day
+  backend_action: finance.close_day
+  permission: finance.manage
+  version: 1
+  parameters: business_date (date)
+
+loyalty_award
+  problem: Award loyalty points
+  backend_action: loyalty.award
+  permission: front_desk.operate
+  version: 1
+  parameters: guest_phone (string), points (number), reason (string), booking_id (string, optional)
+
+loyalty_redeem
+  problem: Redeem a loyalty reward
+  backend_action: loyalty.redeem
+  permission: front_desk.operate
+  version: 1
+  parameters: guest_phone (string), reward_name (string)
+
+Held. These writes already exist and are not recipes yet.
+They take a list, a nested object, or a setup catalog, so one flat card does not fit.
+
+- Bulk checkout. bulk_checkout_past_internal and bulk_checkout_selected_internal.
+- Group booking. booking_manager.create_group_booking.
+- Booking detail edit. update_booking_detail_internal.
+- F&B checks.
+- Staff, roster, and leave.
+- Finance master data: departments, tax codes, transaction codes, and accounts-receivable setup.
+- Room type and rate plan admin.
+- WhatsApp send.
