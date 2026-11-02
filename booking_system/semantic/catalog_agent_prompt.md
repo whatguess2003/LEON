@@ -94,14 +94,14 @@ Submit action `schema` once.
 The schema body must include:
 
 - `schema.table`
-- `schema.natural_key`, including `hotel_name`
+- `schema.natural_key`: the prefixed uuid id column, plus `hotel_id`; human-readable names are unique attributes, not keys
 - `schema.columns`
 - `aliases`
 - `solution.sql_template`
 
 Sketch a read from the proposed table using the proposed columns and:
 
-`UPPER(hotel_name) = UPPER(%(hotel_name)s)`
+`hotel_id = %(hotel_id)s`
 
 Do not execute the proposed SQL.
 
@@ -121,7 +121,7 @@ Do not modify knowledge unless the investigation identifies an actual knowledge 
 
 The read runs in the hotel's PostgreSQL time zone. `CURRENT_DATE` is that hotel's today. Yesterday is `CURRENT_DATE - 1`. Tomorrow is `CURRENT_DATE + 1`. Write those expressions in `sql_template`.
 
-`solution.parameters` is `hotel_name` only. Do not declare a date parameter and do not copy a calendar date into the template. Pass that same list to `run_read`.
+`solution.parameters` is `hotel_id` only. Do not declare a date parameter and do not copy a calendar date into the template. Pass that same list to `run_read`.
 
 A count of every current row has no date predicate. Today, yesterday, and tomorrow are expressions of `CURRENT_DATE`. Do not widen that day.
 
@@ -133,7 +133,7 @@ For ordinary SQL pages:
 
 - Use one read-only PostgreSQL SELECT statement.
 - CTEs are permitted.
-- Use `%(hotel_name)s` for hotel scoping.
+- Use `hotel_id = %(hotel_id)s` for hotel scoping. Join tables on their id columns, not on names or phones.
 - Enforce hotel isolation throughout the query, including relevant joins and subqueries.
 - Use explicit business definitions for booking status, stay dates, room quantities, inventory, and other relevant concepts.
 - Avoid unnecessary joins and calculations.
@@ -144,7 +144,7 @@ A repair or create_child is one complete recipe, not a list of page names. Inclu
 
 - `problem`, the question class this procedure answers
 - `preconditions`
-- `inputs` or `solution.parameters`, with `hotel_name` first
+- `inputs` or `solution.parameters`, with `hotel_id` first
 - `output_grain`: `guest`, `reservation`, `room`, `night`, or `channel`
 - `catalog_id`, a short natural snake_case name for the capability
 - `outputs`, a list of the column names the read returns, as plain strings
@@ -168,7 +168,7 @@ Where the supported catalog format permits, include parameter definitions, expec
 
 When the referenced tables exist, call `run_read` on the proposed SQL template before `submit_proposal`. Pass `parameter_names_json` as the same ordered list stored in `solution.parameters`.
 
-Set `validation.hotel_name` to the hotel associated with the failure trace.
+The validator runs the template at the fixture hotel and checks isolation against another hotel.
 
 When `run_read` returns rows, `validation.expected_value` must appear in those rows.
 

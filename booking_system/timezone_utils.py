@@ -1,4 +1,3 @@
-import os
 import re
 from datetime import datetime, timedelta, timezone
 try:
@@ -6,184 +5,13 @@ try:
 except Exception:
     ZoneInfo = None  # type: ignore
 
-try:
-    from pymongo import MongoClient
-except Exception:
-    MongoClient = None  # type: ignore
-
-
-_memory_client = None
-_tz_cache = {}
-
-
-def _shared_client():
-    global _memory_client
-    if _memory_client is not None:
-        return _memory_client
-    try:
-        from booking_system.dynamic_pricing import dynamic_pricing
-        if getattr(dynamic_pricing, "client", None) is not None:
-            _memory_client = dynamic_pricing.client
-            return _memory_client
-    except Exception:
-        pass
-    if MongoClient is None:
-        return None
-    url = os.getenv('MONGO_URL')
-    if not url:
-        return None
-    _memory_client = MongoClient(url)
-    return _memory_client
-
-
-def _get_mongo_db():
-    client = _shared_client()
-    if client is None:
-        return None
-    return client.get_database('leon_hotel_memory')
-
-
-def _get_manager_db():
-    client = _shared_client()
-    if client is None:
-        return None
-    return client.get_database('leon_manager_system')
-
 
 def get_hotel_timezone_str(hotel_name: str) -> str:
+    """hotel.timezone; '' when the hotel is not registered."""
     if not hotel_name:
         return ""
-    env_tz = os.getenv('HOTEL_TIMEZONE')
-    if env_tz:
-        return env_tz
-    name_upper = str(hotel_name).upper()
-    if name_upper in _tz_cache:
-        return _tz_cache[name_upper]
-    found = _lookup_hotel_timezone(hotel_name)
-    if found:
-        _tz_cache[name_upper] = found
-    return found
-
-
-def _lookup_hotel_timezone(hotel_name: str) -> str:
-    """
-    Return IANA timezone string for a given hotel.
-    Looks up MongoDB `leon_hotel_memory` for common collections.
-    No guessing: if not found, return empty string.
-    """
-    if not hotel_name:
-        return ""
-    # 0) Environment override
-    env_tz = os.getenv('HOTEL_TIMEZONE')
-    if env_tz:
-        return env_tz
-    name = str(hotel_name or "")
-    name_upper = name.upper()
-    try:
-        mdb = _get_manager_db()
-        if mdb is not None:
-            doc = mdb.get_collection("manager_collection").find_one(
-                {"hotel_name": name_upper},
-                {"hotel_timezone": 1},
-            )
-            if doc and doc.get("hotel_timezone"):
-                return str(doc.get("hotel_timezone"))
-    except Exception:
-        pass
-    db = _get_mongo_db()
-    candidates = (
-        ('hotel_info', 'timezone'),
-        ('hotels', 'timezone'),
-        ('hotel_policies', 'timezone'),
-    )
-    key = 'hotel_name'
-    name = str(hotel_name or "")
-    name_upper = name.upper()
-    name_lower = name.lower()
-    if db is not None:
-        for coll_name, tz_field in candidates:
-            try:
-                coll = db.get_collection(coll_name)
-                # 1) Exact
-                doc = coll.find_one({key: name}, {tz_field: 1})
-                if doc and doc.get(tz_field):
-                    return str(doc.get(tz_field))
-                # 2) Exact UPPER/LOWER variants
-                if name_upper != name:
-                    doc = coll.find_one({key: name_upper}, {tz_field: 1})
-                    if doc and doc.get(tz_field):
-                        return str(doc.get(tz_field))
-                if name_lower != name:
-                    doc = coll.find_one({key: name_lower}, {tz_field: 1})
-                    if doc and doc.get(tz_field):
-                        return str(doc.get(tz_field))
-                # 3) Case-insensitive anchored regex
-                rx = re.compile(r'^' + re.escape(name) + r'$', re.IGNORECASE)
-                doc = coll.find_one({key: rx}, {tz_field: 1})
-                if doc and doc.get(tz_field):
-                    return str(doc.get(tz_field))
-            except Exception:
-                continue
-
-    # 3. Manager system profile (signup stores hotel_timezone)
-    try:
-        mdb = _get_manager_db()
-        if mdb is not None:
-            coll = mdb.get_collection('manager_collection')
-            # exact
-            doc = coll.find_one({'hotel_name': name}, {'hotel_timezone': 1})
-            if doc and doc.get('hotel_timezone'):
-                return str(doc.get('hotel_timezone'))
-            # upper/lower
-            if name_upper != name:
-                doc = coll.find_one({'hotel_name': name_upper}, {'hotel_timezone': 1})
-                if doc and doc.get('hotel_timezone'):
-                    return str(doc.get('hotel_timezone'))
-            if name_lower != name:
-                doc = coll.find_one({'hotel_name': name_lower}, {'hotel_timezone': 1})
-                if doc and doc.get('hotel_timezone'):
-                    return str(doc.get('hotel_timezone'))
-            # case-insensitive regex
-            rx = re.compile(r'^' + re.escape(name) + r'$', re.IGNORECASE)
-            doc = coll.find_one({'hotel_name': rx}, {'hotel_timezone': 1})
-            if doc and doc.get('hotel_timezone'):
-                return str(doc.get('hotel_timezone'))
-    except Exception:
-        pass
-
-    # 4) Fallback: read booking_system/manager_context.json (legacy)
-    try:
-        import json
-        here = os.path.dirname(__file__)
-        ctx_path = os.path.join(here, 'manager_context.json')
-        if os.path.exists(ctx_path):
-            with open(ctx_path, 'r', encoding='utf-8') as f:
-                ctx = json.load(f)
-            # Possible shapes:
-            # a) {"hotel_name": "...", "timezone": "..."}
-            hn = str(ctx.get('hotel_name') or ctx.get('name') or '')
-            tz = ctx.get('timezone')
-            if hn and tz and hn.upper() == name_upper:
-                return str(tz)
-            # b) {"hotels": [{"hotel_name": "...", "timezone": "..."}, ...]}
-            hotels = ctx.get('hotels') or []
-            if isinstance(hotels, list):
-                for h in hotels:
-                    try:
-                        hn2 = str((h or {}).get('hotel_name') or (h or {}).get('name') or '')
-                        tz2 = (h or {}).get('timezone')
-                        if hn2 and tz2 and hn2.upper() == name_upper:
-                            return str(tz2)
-                    except Exception:
-                        continue
-            # c) Mapping {"LANG HOTEL": {"timezone":"..."}}
-            if isinstance(ctx, dict):
-                node = ctx.get(name) or ctx.get(name_upper) or ctx.get(name_lower)
-                if isinstance(node, dict) and node.get('timezone'):
-                    return str(node.get('timezone'))
-    except Exception:
-        pass
-    return ""
+    from booking_system.hotel_registry import hotel_timezone
+    return hotel_timezone(hotel_name) or ""
 
 
 def hotel_now_local(hotel_name: str) -> datetime:
@@ -243,5 +71,3 @@ def _resolve_tzinfo(tz_str: str):
         except Exception:
             pass
     return None
-
-

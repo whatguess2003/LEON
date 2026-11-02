@@ -4,7 +4,7 @@ import json
 import os
 
 _REVIEW_MODEL = "gpt-6.1-sol"
-_REVIEW_EFFORT = "max"
+_REVIEW_EFFORT = "high"
 
 
 def accept_verdict(raw):
@@ -50,8 +50,8 @@ def accept_verdict(raw):
     }
 
 
-def review_once(package, trace=None):
-    """Ask the reviewer for one verdict. The model has no tools. Tokens are metered against the trace's hotel."""
+def _review_call(package, trace):
+    """The reviewer model call. It runs only as the review node."""
     from openai import OpenAI
     from booking_system.semantic.gate import record_usage
 
@@ -113,3 +113,30 @@ def review_once(package, trace=None):
             "unresolved_questions": [],
         }
     return accept_verdict(raw)
+
+
+def _review_graph():
+    """The reviewer is one node. It judges a proposal and does not execute SQL."""
+    from typing import TypedDict
+
+    from langgraph.graph import END, START, StateGraph
+
+    class State(TypedDict, total=False):
+        package: dict
+        trace: dict
+        verdict: dict
+
+    def review(state: State):
+        return {"verdict": _review_call(state.get("package") or {}, state.get("trace"))}
+
+    builder = StateGraph(State)
+    builder.add_node("review", review)
+    builder.add_edge(START, "review")
+    builder.add_edge("review", END)
+    return builder.compile()
+
+
+def review_once(package, trace=None):
+    """Ask the reviewer for one verdict. The model call is the review node."""
+    found = _review_graph().invoke({"package": package or {}, "trace": trace})
+    return found.get("verdict") or accept_verdict({})

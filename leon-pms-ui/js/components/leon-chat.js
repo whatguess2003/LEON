@@ -36,34 +36,19 @@ class LeonChatComponent {
             if (openFlag) {
                 this.chatOpen = true;
                 const widget = document.getElementById('leon-chat-widget');
-                if (widget) {
-                    widget.style.display = 'block';
-                    widget.style.transform = 'translateY(0)';
-                    widget.classList.add('open');
-                }
+                if (widget) widget.classList.add('open');
             }
         } catch(_) {}
         this.initialize();
     }
     
     initialize() {
-        this.ensureDependencies().then(() => {
-            this._depsLoaded = true;
+        this.injectBaseStyles();
         this.renderChatButton();
         this.setupEventListeners();
-        this.loadProfileForChat().then(()=>{ try{ this.updateHeaderAvatar(); }catch(_){} });
-        // Load chat history after rendering chat button
         setTimeout(() => this.loadChatHistory(), 0);
-        // Start suggestion cycle
-        this.startSuggestionCycle();
-        }).catch(() => {
-            // Even if deps fail, render basic chat
-            this.renderChatButton();
-            this.setupEventListeners();
-            this.loadProfileForChat().then(()=>{ try{ this.updateHeaderAvatar(); }catch(_){} });
-            setTimeout(() => this.loadChatHistory(), 0);
-            this.startSuggestionCycle();
-        });
+        this.loadQueue();
+        if (this.chatOpen) this.refreshOpenChat();
     }
 
     // Dynamically load Markdown and Mermaid for rich message rendering
@@ -148,56 +133,56 @@ class LeonChatComponent {
         style.id = 'leon-chat-base-styles';
         style.textContent = `
             /* Size the widget itself so width/height are guaranteed */
-            #leon-chat-widget { width: 25vw !important; min-width: 360px !important; height: 75vh !important; max-height: 90vh !important; display:none; transform: translateY(100%); transition: transform .25s ease; }
-            #leon-chat-widget.open { display:block; transform: translateY(0); }
+            #leon-chat-widget { width: 420px !important; max-width: 92vw !important; height: 90vh !important; max-height: 94vh !important; display:none; flex-direction: column; position: relative; transform: translateY(100%); transition: transform .25s ease; font-size: 14px; background: #efeae2; }
+            #leon-chat-widget.open { display:flex; transform: translateY(0); }
+            #queue-widget { display:none; width: 320px; max-height: 70vh; overflow:auto; background:#fff; border-radius:12px; box-shadow:0 12px 24px rgba(0,0,0,.15); margin-bottom:12px; }
+            #queue-widget.open { display:block; }
             #leon-chat-widget.leon-chat-fullscreen { width: min(900px, 95vw) !important; height: min(85vh, 900px) !important; }
             .chat-widget { max-width: 95vw; }
             /* Floating position and stacking above iframe */
             .floating-chat { position: fixed; bottom: 20px; right: 20px; z-index: 99999; }
             .floating-chat, .floating-chat * { pointer-events: auto; }
-            /* Ensure inner container fills the widget */
-            #leon-chat-widget > .flex { width: 100%; height: 100%; }
-            #leon-chat-widget .flex.flex-col.h-full { width: 100%; height: 100%; }
-            .leon-msg { max-width: 85%; font-size: 12px; line-height: 1.5; }
+            #leon-chat-widget > div { min-height: 0; }
+            #leon-chat-widget, #leon-chat-widget p, #leon-chat-widget button, #leon-chat-widget textarea, #leon-chat-widget h3, #leon-pins, #leon-screen, #leon-guide { font-size: 14px; }
+            .leon-msg { max-width: 85%; font-size: 14px; line-height: 1.35; }
             /* Markdown normalization inside assistant bubbles */
             .leon-msg h1, .leon-msg h2, .leon-msg h3, .leon-msg h4, .leon-msg h5, .leon-msg h6 { margin: 0.25rem 0; font-weight: 600; }
             .leon-msg h1 { font-size: 1rem; }
             .leon-msg h2 { font-size: 0.95rem; }
             .leon-msg h3 { font-size: 0.92rem; }
             .leon-msg h4, .leon-msg h5, .leon-msg h6 { font-size: 0.9rem; }
-            .leon-msg p, .leon-msg li { font-size: 0.8rem; margin: 0.25rem 0; }
+            .leon-msg p, .leon-msg li { font-size: 12px; margin: 0.25rem 0; }
             .leon-msg pre { background:#0b1020; color:#e5e7eb; padding:10px; border-radius:8px; overflow:auto; font-size: 10px; }
             .leon-msg code { background:#f3f4f6; padding:2px 4px; border-radius:4px; font-size: 10px; }
             .leon-msg table { border-collapse: collapse; width: 100%; font-size: 12px; }
             .leon-msg table th, .leon-msg table td { border: 1px solid #e5e7eb; padding: 6px; }
             .leon-msg ul, .leon-msg ol { padding-left: 1rem; }
             /* Chat bubbles */
-            .leon-user .leon-bubble { background:#bbf7d0; color:#0b0b0b; }
-            .leon-assistant .leon-bubble { background:#2563eb; color:#ffffff; border:1px solid rgba(255,255,255,0.08); }
+            .leon-user .leon-bubble { background:#d9fdd3; color:#111b21; border-radius: 8px; border-bottom-right-radius: 2px; box-shadow: 0 1px 0.5px rgba(11,20,26,.13); }
+            .leon-assistant .leon-bubble { background:#ffffff; color:#111b21; border:0; border-radius: 8px; border-bottom-left-radius: 2px; box-shadow: 0 1px 0.5px rgba(11,20,26,.13); }
+            .leon-time { float: right; margin: 4px 0 0 8px; font-size: 11px; color: #667781; }
+            .leon-bubble .flex { clear: both; }
+            .wa-action { display: block; width: 100%; background: transparent; border: 0; border-top: 1px solid #e9edef; color: #00a884; padding: 10px 0; font-size: 15px; text-align: center; }
+            .wa-list { background: #fff; border-radius: 8px; border-bottom-left-radius: 2px; box-shadow: 0 1px 0.5px rgba(11,20,26,.13); max-width: 92%; }
+            .wa-list-header { font-weight: 700; font-size: 16px; padding: 8px 10px 0; color: #111b21; }
+            .wa-list-body { font-size: 15px; padding: 4px 10px 0; color: #111b21; }
+            .wa-list-footer { display: flex; justify-content: space-between; font-size: 12px; color: #667781; padding: 6px 10px 8px; }
             .leon-toolbar button { font-size:12px; }
             .leon-copy-btn { opacity:0.7; }
             .leon-copy-btn:hover { opacity:1; }
             /* Mermaid sizing */
             .leon-msg .mermaid { font-size: 12px; }
             /* Chat input textarea font normalization */
-            .leon-input-row { display: grid; grid-template-columns: 1fr auto; column-gap: 8px; align-items: end; }
-            #chat-input { font-size: 12px; width: 100%; max-width: 100%; box-sizing: border-box; }
-            #leon-chat-widget .leon-input-row button { height: 36px; }
+            .leon-input-row { display: grid; grid-template-columns: 1fr auto; column-gap: 8px; align-items: center; }
+            #chat-input { font-size: 14px; width: 100%; max-width: 100%; box-sizing: border-box; background: #fff; border-radius: 24px; }
+            #leon-chat-widget .leon-input-row button { width: 42px; height: 42px; border-radius: 9999px; background: #00a884; border: 0; color: #fff; }
             .leon-textarea { min-height: 36px; max-height: 200px; resize: vertical; }
             /* Suggestion bubble */
             .leon-suggest { position:absolute; bottom: calc(100% + 10px); right: 0; background:#2563eb; color:#ffffff; border:0; box-shadow:0 8px 18px rgba(37,99,235,0.35); border-radius:9999px; padding:8px 12px; font-size:12px; white-space:nowrap; z-index:100000; opacity:0; transform: translateY(4px); transition: opacity .15s ease, transform .15s ease; }
             .leon-suggest.show { opacity:1; transform: translateY(0); }
             .leon-suggest::after { content:''; position:absolute; top:100%; right:14px; border-width:6px; border-style:solid; border-color:#2563eb transparent transparent transparent; }
 
-            /* WhatsApp-style background for chat area */
-            #chat-messages { 
-                background-color: #eef1f4 !important;
-                background-image:
-                  radial-gradient(#e2e8f0 1.5px, transparent 1.5px),
-                  radial-gradient(#e2e8f0 1.5px, transparent 1.5px);
-                background-position: 0 0, 10px 10px;
-                background-size: 20px 20px;
-            }
+            #leon-thread, #chat-messages { background-color: #efeae2 !important; background-image: radial-gradient(#e4dcd0 1.2px, transparent 1.2px) !important; background-size: 16px 16px !important; }
         `;
         document.head.appendChild(style);
     }
@@ -216,6 +201,7 @@ class LeonChatComponent {
                 localStorage.removeItem('leon_chat_history');
                 // Re-render from backend history
                 items.forEach(msg => this.addChatMessage(String(msg.text || ''), String(msg.sender || 'leon'), true));
+                this.restoreFunctionList();
                 return;
             }
         } catch(_) {}
@@ -223,7 +209,15 @@ class LeonChatComponent {
         try {
         const history = JSON.parse(localStorage.getItem('leon_chat_history') || '[]');
         history.forEach(msg => this.addChatMessage(msg.text, msg.sender, true));
+        this.restoreFunctionList();
         } catch(_) {}
+    }
+
+    restoreFunctionList() {
+        try {
+            const saved = sessionStorage.getItem('leon_function_list');
+            if (saved) this.mountWhatsAppList(JSON.parse(saved));
+        } catch (_) {}
     }
 
     saveChatMessage(message, sender) {
@@ -241,95 +235,598 @@ class LeonChatComponent {
             await fetch(`${this.leonChatUrl}/api/chat/clear`, { method: 'POST', credentials: 'include' });
         } catch(_) {}
         localStorage.removeItem('leon_chat_history');
+        sessionStorage.removeItem('leon_function_list');
         const chatMessages = document.getElementById('chat-messages');
         if (chatMessages) chatMessages.innerHTML = '';
     }
 
     renderChatButton() {
+        if (document.getElementById('leon-chat-toggle')) return;
         const chatButton = document.createElement('div');
         chatButton.className = 'floating-chat';
         chatButton.innerHTML = `
-            <button id="leon-chat-toggle" class="w-20 h-20 rounded-full shadow-lg overflow-hidden border border-white/50 bg-white transition-all duration-300 flex items-center justify-center">
-                <img id="leon-chat-toggle-avatar" src="${this.leonAvatar}" alt="LEON" class="w-full h-full object-cover"/>
-            </button>
+            <div id="queue-widget" class="p-3">
+                <h3 class="text-sm font-semibold">Require approval</h3>
+                <div id="queue-approvals" class="mt-2 space-y-2"></div>
+                <h3 class="text-sm font-semibold mt-4">Require action</h3>
+                <div id="queue-tasks" class="mt-2 space-y-2"></div>
+            </div>
+            <div class="flex items-end justify-end">
+                <button id="queue-toggle" type="button" aria-label="Require approval and require action" class="relative w-14 h-14 mr-3 rounded-full shadow-lg bg-gray-800 text-white flex items-center justify-center">
+                    <i class="fas fa-clipboard-list"></i>
+                    <span id="queue-count" class="absolute top-0 right-0 bg-red-600 text-white text-xs rounded-full px-1">0</span>
+                </button>
+                <button id="leon-chat-toggle" type="button" class="w-20 h-20 rounded-full shadow-lg overflow-hidden border border-white bg-white flex items-center justify-center">
+                    <img id="leon-chat-toggle-avatar" src="${this.leonAvatar}" alt="LEON" class="w-full h-full object-cover"/>
+                </button>
+            </div>
             <div class="chat-widget mt-4" id="leon-chat-widget">
-                <div class="flex flex-col h-full leon-chat-wide">
-                    <div class="bg-blue-600 text-white p-3 flex items-center justify-between">
-                        <div class="flex items-center">
-                            <img id="leon-chat-header-avatar" src="${this.leonAvatar}" alt="LEON" class="w-16 h-16 rounded-full mr-3"/>
-                            <div>
-                                <h3 class="font-semibold">LEON</h3>
-                                <p class="text-xs opacity-75"><span class="inline-block w-2 h-2 bg-green-500 rounded-full mr-1"></span>Online</p>
-                            </div>
+                <header class="px-3 py-2 flex items-center flex-shrink-0" style="background:#f0f2f5">
+                    <button id="leon-info-open" type="button" class="flex items-center flex-1 text-left">
+                        <div class="w-10 h-10 rounded-full text-white flex items-center justify-center text-sm font-semibold flex-shrink-0" style="background:#00a884">L</div>
+                        <div class="ml-3">
+                            <div class="text-sm font-semibold" style="color:#111b21">Leon</div>
+                            <div id="leon-progress" class="text-xs" style="color:#667781">online</div>
                         </div>
-                        <div class="flex items-center gap-2 leon-toolbar">
-                            <button onclick="leonChat.toggleSize()" class="px-2 py-1 bg-white/20 hover:bg-white/30 rounded text-xs">Resize</button>
-                            <button onclick="leonChat.toggleChat()" class="text-white hover:text-gray-200"><i class="fas fa-times"></i></button>
+                    </button>
+                    <button id="leon-chat-close" type="button" class="text-sm flex-shrink-0" style="color:#54656f">Close</button>
+                </header>
+                <div id="leon-pins" class="hidden px-3 py-2 text-sm flex-shrink-0" style="background:#fff;border-bottom:1px solid #e9edef"></div>
+                <div id="leon-thread" class="flex-1 flex flex-col min-h-0 relative">
+                    <div id="leon-screen" class="hidden px-3 pt-3"></div>
+                    <div class="flex-1 overflow-y-auto px-2 py-3" id="chat-messages"></div>
+                    <div id="leon-sheet" class="hidden absolute inset-0 flex flex-col justify-end" style="background:rgba(11,20,26,.45);z-index:6">
+                        <div class="bg-white flex flex-col" style="max-height:78%;border-top-left-radius:16px;border-top-right-radius:16px">
+                            <div class="relative py-3 border-b flex-shrink-0">
+                                <div id="leon-sheet-title" class="text-center text-sm font-semibold"></div>
+                                <button id="leon-sheet-close" type="button" class="absolute right-3 top-2 w-8 h-8 rounded-full" style="background:#f0f2f5;color:#54656f">×</button>
+                            </div>
+                            <div id="leon-sheet-rows" class="overflow-y-auto"></div>
+                            <div class="text-center text-xs py-3 flex-shrink-0" style="color:#8696a0">Tap an item to select it</div>
                         </div>
                     </div>
-                    
-                    <div class="flex-1 overflow-y-auto p-4 space-y-4 bg-white" id="chat-messages">
-                        <div class="flex items-start space-x-3">
-                            <div class="w-16 h-16 rounded-full flex items-center justify-center overflow-hidden">
-                                <img class="leon-assistant-avatar w-16 h-16 object-cover" src="${this.leonAvatar}" alt="LEON"/>
-                            </div>
-                            <div class="flex-1">
-                                <div class="leon-msg leon-assistant">
-                                    <div class="leon-bubble rounded-lg p-3">
-                                        <div class="text-sm text-gray-800">Hello! I'm LEON, your hotel management assistant. How can I help you today?</div>
-                                    </div>
-                                    <p class="text-xs text-gray-500 mt-1">Just now</p>
-                                </div>
-                            </div>
+                    <div id="leon-info" class="hidden absolute inset-0 bg-white overflow-y-auto">
+                        <div class="px-3 py-3 flex items-center" style="background:#f0f2f5">
+                            <button id="leon-info-back" type="button" class="text-sm mr-3" style="color:#54656f">Back</button>
+                            <div class="text-sm font-semibold">Leon</div>
+                        </div>
+                        <div class="p-4">
+                            <h2 class="text-xs font-semibold text-gray-700">To-do</h2>
+                            <div id="leon-todos" class="mt-2"></div>
+                            <h2 class="text-xs font-semibold text-gray-700 mt-4">Highlights</h2>
+                            <div id="leon-highlights" class="mt-2"></div>
                         </div>
                     </div>
-                    
-                    <div class="border-t p-3 bg-white">
-                        <div class="leon-input-row">
-                            <textarea 
-                                   id="chat-input"
-                                   placeholder="Type a message... (Enter to send, Shift+Enter for newline)"
-                                   class="flex-1 border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 leon-textarea"
-                                   onkeydown="leonChat.handleInputKeydown(event)"></textarea>
-                            <button onclick="leonChat.sendMessage()" 
-                                    class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors">
-                                <i class="fas fa-paper-plane"></i>
-                            </button>
-                        </div>
-                        
-                        
+                </div>
+                <div class="px-2 py-2 flex-shrink-0" style="background:#f0f2f5">
+                    <div class="leon-input-row">
+                        <textarea id="chat-input" rows="1" placeholder="Type a message" class="flex-1 border-0 px-4 py-2 text-sm resize-none leon-textarea"></textarea>
+                        <button id="leon-chat-send" type="button" aria-label="Send"><i class="fas fa-paper-plane"></i></button>
                     </div>
                 </div>
             </div>
-            <div id="leon-chat-suggest" class="leon-suggest" style="display:none;"></div>
         `;
-        
         document.body.appendChild(chatButton);
-        // Hover to open/close
-        try {
-            chatButton.addEventListener('mouseenter', () => { this.openChat(); });
-            chatButton.addEventListener('mouseleave', (e) => {
-                // Close only when truly leaving the floating container
-                const rel = e.relatedTarget;
-                if (!chatButton.contains(rel)) { this.closeChat(); }
-            });
-            chatButton.addEventListener('mouseenter', ()=> this.hideSuggestion());
-        } catch(_) {}
+        document.getElementById('leon-chat-toggle').addEventListener('click', () => this.toggleChat());
+        document.getElementById('leon-chat-close').addEventListener('click', () => this.closeChat());
+        document.getElementById('leon-chat-send').addEventListener('click', () => this.sendMessage());
+        document.getElementById('chat-input').addEventListener('keydown', (event) => this.handleInputKeydown(event));
+        document.getElementById('queue-toggle').addEventListener('click', () => this.toggleQueue());
+        document.getElementById('leon-info-open').addEventListener('click', () => {
+            document.getElementById('leon-info').classList.remove('hidden');
+        });
+        document.getElementById('leon-info-back').addEventListener('click', () => {
+            document.getElementById('leon-info').classList.add('hidden');
+        });
+        document.getElementById('leon-sheet-close').addEventListener('click', () => {
+            document.getElementById('leon-sheet').classList.add('hidden');
+        });
+        this.queueState = { hotel: '', approvals: [], tasks: [] };
     }
-    
+
     toggleChat() {
-        // Legacy click toggle (no longer used)
         this.chatOpen = !this.chatOpen;
         const widget = document.getElementById('leon-chat-widget');
-        const appFrame = document.getElementById('app-frame');
+        if (widget) {
+            widget.style.display = '';
+            widget.style.transform = '';
+            widget.classList.toggle('open', this.chatOpen);
+        }
         if (this.chatOpen) {
-            widget.classList.add('open');
-            if (appFrame) appFrame.style.pointerEvents = 'none';
-        } else {
-            widget.classList.remove('open');
-            if (appFrame) appFrame.style.pointerEvents = 'auto';
+            this.closeQueue();
+            this.refreshOpenChat();
         }
         try { sessionStorage.setItem('LEON_CHAT_OPEN', this.chatOpen ? '1' : '0'); } catch(_) {}
+    }
+
+    toggleQueue() {
+        const widget = document.getElementById('queue-widget');
+        if (!widget) return;
+        const open = !widget.classList.contains('open');
+        widget.classList.toggle('open', open);
+        if (open) {
+            this.closeChat();
+            this.loadQueue();
+        }
+    }
+
+    closeQueue() {
+        const widget = document.getElementById('queue-widget');
+        if (widget) widget.classList.remove('open');
+    }
+
+    queuePost(path, body) {
+        return fetch(this.leonChatUrl + '/api' + path, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify(body),
+        });
+    }
+
+    async loadGuide() {
+        try {
+            const response = await fetch(this.leonChatUrl + '/api/guide', { credentials: 'include' });
+            const data = await response.json();
+            if (!response.ok) return;
+            this.renderGuide(data || {});
+        } catch (_) {}
+    }
+
+    renderGuide(data) {
+        const todosBox = document.getElementById('leon-todos');
+        const factsBox = document.getElementById('leon-highlights');
+        const progress = document.getElementById('leon-progress');
+        if (!todosBox || !factsBox) return;
+        const todos = (data && data.todos) || [];
+        const highlights = (data && data.highlights) || [];
+        todosBox.innerHTML = '';
+        factsBox.innerHTML = '';
+        todos.forEach((row) => {
+            const line = document.createElement('div');
+            line.className = 'text-sm mt-2 ' + (row.state === 'later' ? 'text-gray-400' : row.state === 'now' ? 'text-gray-900 font-semibold' : 'text-green-700');
+            line.textContent = (row.label || '') + (row.detail ? ' — ' + row.detail : '');
+            todosBox.appendChild(line);
+        });
+        highlights.forEach((row) => {
+            const chip = document.createElement('span');
+            chip.className = 'inline-block bg-blue-50 text-blue-800 rounded-full px-2 py-1 mr-1 mb-1 text-xs';
+            chip.textContent = (row.label || '') + ': ' + (row.value || '');
+            factsBox.appendChild(chip);
+        });
+        if (progress && !progress.textContent) progress.textContent = 'online';
+    }
+
+    async loadQueue() {
+        try {
+            const response = await fetch(this.leonChatUrl + '/api/desk/queue', { credentials: 'include' });
+            const data = await response.json();
+            if (!response.ok) return;
+            this.queueState = {
+                hotel: data.hotel_name || '',
+                approvals: data.approvals || [],
+                tasks: data.tasks || [],
+            };
+            this.renderQueue();
+        } catch (_) {}
+    }
+
+    renderQueue() {
+        const state = this.queueState || { approvals: [], tasks: [] };
+        const count = document.getElementById('queue-count');
+        if (count) count.textContent = String(state.approvals.length + state.tasks.length);
+        const approvals = document.getElementById('queue-approvals');
+        const tasks = document.getElementById('queue-tasks');
+        if (!approvals || !tasks) return;
+        const esc = (value) => String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        approvals.innerHTML = state.approvals.map((action, index) => `
+            <div class="border rounded p-2">
+                <p class="text-sm">${esc(action.guest_name)} ${esc(action.guest_phone)}</p>
+                <p class="text-sm">${esc(action.label || '')}</p>
+                <button type="button" data-index="${index}" class="queue-approve mt-2 bg-blue-600 text-white px-3 py-1 rounded text-sm">Approve</button>
+            </div>
+        `).join('');
+        tasks.innerHTML = state.tasks.map((item, index) => `
+            <div class="border rounded p-2">
+                <p class="text-sm">${esc(item.guest_name)} ${esc(item.guest_phone)}</p>
+                <p class="text-sm">${esc(item.task || '')}</p>
+                <button type="button" data-index="${index}" class="queue-done mt-2 bg-gray-700 text-white px-3 py-1 rounded text-sm">Done</button>
+            </div>
+        `).join('');
+        approvals.querySelectorAll('.queue-approve').forEach(button => {
+            button.addEventListener('click', () => this.approveQueue(state.approvals[Number(button.dataset.index)], button));
+        });
+        tasks.querySelectorAll('.queue-done').forEach(button => {
+            const item = state.tasks[Number(button.dataset.index)];
+            button.addEventListener('click', () => this.doneQueue(item, button));
+        });
+    }
+
+    async doneQueue(item, button) {
+        button.disabled = true;
+        const response = await this.queuePost('/guests/tasks/done', {
+            hotel_name: this.queueState.hotel,
+            guest_phone: item.guest_phone,
+            task: item.task,
+        });
+        if (!response.ok) {
+            button.disabled = false;
+            return false;
+        }
+        await this.loadQueue();
+        return true;
+    }
+
+    async approveQueue(action, button) {
+        const nights = (value) => String(value || '').split(',').map(part => part.trim()).filter(Boolean);
+        const hotel = this.queueState.hotel;
+        const runners = {
+            cancel_booking: () => this.queuePost('/bookings/cancel', { booking_id: action.booking_id }),
+            create_booking: () => this.queuePost('/bookings/create', {
+                guest_phone: action.guest_phone,
+                room_type: action.room_type,
+                stay_dates: nights(action.stay_dates),
+                rooms_booked: Number(action.rooms_booked || 1),
+            }),
+            modify_booking: () => {
+                const body = { booking_id: action.booking_id };
+                if (action.new_stay_dates) body.new_stay_dates = nights(action.new_stay_dates);
+                if (action.new_room_type) body.new_room_type = action.new_room_type;
+                if (action.new_rooms_booked) body.new_rooms_booked = Number(action.new_rooms_booked);
+                return this.queuePost('/bookings/modify', body);
+            },
+            check_in: () => this.queuePost('/assignments/check_in', { hotel_name: hotel, booking_id: action.booking_id, room_number: action.room_number }),
+            check_out: () => this.queuePost('/assignments/check_out', { hotel_name: hotel, booking_id: action.booking_id, room_number: action.room_number }),
+            reassign_room: () => this.queuePost('/assignments/reassign', {
+                hotel_name: hotel,
+                booking_id: action.booking_id,
+                stay_date: action.stay_date,
+                old_room_number: action.old_room_number,
+                new_room_number: action.new_room_number,
+            }),
+            record_payment: () => this.queuePost('/payments/update', {
+                hotel_name: hotel,
+                booking_id: action.booking_id,
+                payment_amount: Number(action.payment_amount),
+                payment_method: action.payment_method,
+            }),
+            record_refund: () => this.queuePost('/payments/refund', {
+                hotel_name: hotel,
+                booking_id: action.booking_id,
+                payment_seq: Number(action.payment_seq),
+            }),
+            update_guest_profile: () => {
+                const body = { guest_phone: action.guest_phone };
+                ['guest_name', 'email', 'country', 'special_request'].forEach(key => {
+                    if (action[key]) body[key] = action[key];
+                });
+                return this.queuePost('/guest_profile/update', body);
+            },
+        };
+        const run = runners[action.action];
+        if (!run) return false;
+        button.disabled = true;
+        const response = await run();
+        const data = await response.json();
+        if (!response.ok || data.error) {
+            button.disabled = false;
+            return false;
+        }
+        await this.queuePost('/guests/approval/clear', {
+            hotel_name: hotel,
+            guest_phone: action.guest_phone,
+            label: action.label,
+        });
+        await this.loadQueue();
+        return true;
+    }
+
+    refreshOpenChat() {
+        this.loadGuide();
+        this.loadDesk(true);
+    }
+
+    async loadDesk(build) {
+        try {
+            const response = await fetch(this.leonChatUrl + '/api/chat/desk' + (build ? '?build=1' : ''), { credentials: 'include' });
+            const data = await response.json();
+            if (!response.ok) return;
+            this.pinStore = data.stored || [];
+            this.renderPins(data.pins || [], data.pin_count || 0);
+            const next = JSON.stringify(data.screen || null);
+            if (next !== this.screenKey) {
+                this.screenKey = next;
+                this.renderScreen(data.screen);
+            }
+        } catch (_) {}
+    }
+
+    renderPins(pins, count) {
+        const box = document.getElementById('leon-pins');
+        if (!box) return;
+        box.innerHTML = '';
+        const rows = this.pinsOpen ? (this.pinStore || []) : (pins || []);
+        if (!rows.length) {
+            box.classList.add('hidden');
+            return;
+        }
+        box.classList.remove('hidden');
+        rows.forEach((row) => {
+            const line = document.createElement('div');
+            line.className = 'flex items-start justify-between text-xs mt-1';
+            const label = document.createElement('span');
+            label.textContent = (row.category || '') + ' — ' + (row.text || '');
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'text-gray-500 ml-2 flex-shrink-0';
+            button.textContent = 'Unpin';
+            button.addEventListener('click', () => this.unpinMessage(row.text));
+            line.appendChild(label);
+            line.appendChild(button);
+            box.appendChild(line);
+        });
+        const extra = (count || 0) - (pins || []).length;
+        if (extra > 0) {
+            const more = document.createElement('button');
+            more.type = 'button';
+            more.className = 'text-xs text-gray-500 mt-1';
+            more.textContent = this.pinsOpen ? 'Show three' : (extra + ' more');
+            more.addEventListener('click', () => {
+                this.pinsOpen = !this.pinsOpen;
+                this.renderPins(pins, count);
+            });
+            box.appendChild(more);
+        }
+    }
+
+    mountWhatsAppList(screen) {
+        const thread = document.getElementById('chat-messages');
+        if (!thread || !screen) return;
+        const previous = thread.querySelector('[data-leon-list]');
+        if (previous) previous.remove();
+        const bubble = document.createElement('div');
+        bubble.className = 'wa-list';
+        bubble.dataset.leonList = '1';
+        if (screen.header) {
+            const header = document.createElement('div');
+            header.className = 'wa-list-header';
+            header.textContent = screen.header;
+            bubble.appendChild(header);
+        }
+        if (screen.body) {
+            const body = document.createElement('div');
+            body.className = 'wa-list-body';
+            body.textContent = screen.body;
+            bubble.appendChild(body);
+        }
+        const footer = document.createElement('div');
+        footer.className = 'wa-list-footer';
+        const foot = document.createElement('span');
+        foot.textContent = screen.footer || '';
+        const time = document.createElement('span');
+        const clock = new Date();
+        time.textContent = String(clock.getHours()).padStart(2, '0') + ':' + String(clock.getMinutes()).padStart(2, '0');
+        footer.appendChild(foot);
+        footer.appendChild(time);
+        bubble.appendChild(footer);
+        const open = document.createElement('button');
+        open.type = 'button';
+        open.className = 'wa-action';
+        open.innerHTML = '<i class="fas fa-list"></i> ' + (screen.button || 'Open');
+        open.addEventListener('click', () => this.openListSheet(screen));
+        bubble.appendChild(open);
+        const row = document.createElement('div');
+        row.className = 'flex mb-2 px-1';
+        row.appendChild(bubble);
+        thread.appendChild(row);
+        thread.scrollTop = thread.scrollHeight;
+        try { sessionStorage.setItem('leon_function_list', JSON.stringify(screen)); } catch (_) {}
+    }
+
+    openListSheet(screen) {
+        const sheet = document.getElementById('leon-sheet');
+        const title = document.getElementById('leon-sheet-title');
+        const rows = document.getElementById('leon-sheet-rows');
+        if (!sheet || !rows) return;
+        if (title) title.textContent = screen.button || '';
+        rows.innerHTML = '';
+        (screen.sections || []).forEach((section) => {
+            if (section.title) {
+                const name = document.createElement('div');
+                name.className = 'px-4 pt-4 pb-1 text-sm font-semibold';
+                name.style.color = '#111b21';
+                name.textContent = section.title;
+                rows.appendChild(name);
+            }
+            (section.rows || []).forEach((item) => {
+                const choice = document.createElement('button');
+                choice.type = 'button';
+                choice.className = 'block w-full text-left px-4 py-3';
+                choice.style.borderTop = '1px solid #e9edef';
+                choice.style.background = '#fff';
+                const name = document.createElement('div');
+                name.className = 'text-sm';
+                name.style.color = '#111b21';
+                name.textContent = item.title || '';
+                choice.appendChild(name);
+                if (item.description) {
+                    const detail = document.createElement('div');
+                    detail.className = 'text-xs mt-1';
+                    detail.style.color = '#667781';
+                    detail.textContent = item.description;
+                    choice.appendChild(detail);
+                }
+                choice.addEventListener('click', () => this.chooseListRow(screen, item));
+                rows.appendChild(choice);
+            });
+        });
+        sheet.classList.remove('hidden');
+    }
+
+    async openMenuAction(action) {
+        try {
+            const response = await fetch(this.leonChatUrl + '/api/chat/menu', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: action }),
+            });
+            const data = await response.json();
+            if (response.ok && data.screen && data.screen.button) this.mountWhatsAppList(data.screen);
+        } catch (_) {}
+    }
+
+    chooseListRow(screen, item) {
+        const sheet = document.getElementById('leon-sheet');
+        if (sheet) sheet.classList.add('hidden');
+        const quote = [item.title || '', item.description || ''].filter(Boolean).join('\n');
+        if (quote) this.addChatMessage(quote, 'user');
+        if (item.kind === 'menu') {
+            this.openMenuAction(item.id);
+            return;
+        }
+        if (item.kind === 'approval' || item.kind === 'task') this.chooseScreenRow(screen, item, { disabled: false });
+    }
+
+    renderScreen(screen) {
+        const box = document.getElementById('leon-screen');
+        if (!box) return;
+        if (screen && screen.button && screen.card !== 'sales') {
+            box.classList.add('hidden');
+            this.mountWhatsAppList(screen);
+            return;
+        }
+        box.innerHTML = '';
+        const sections = (screen && screen.sections) || [];
+        if (!sections.length) {
+            box.classList.add('hidden');
+            return;
+        }
+        box.classList.remove('hidden');
+        const card = document.createElement('div');
+        card.className = 'bg-white rounded-lg px-3 pt-2 shadow';
+        if (screen.header) {
+            const header = document.createElement('div');
+            header.className = 'font-semibold text-sm';
+            header.textContent = screen.header;
+            card.appendChild(header);
+        }
+        if (screen.body) {
+            const body = document.createElement('div');
+            body.className = 'text-sm mt-1';
+            body.textContent = screen.body;
+            card.appendChild(body);
+        }
+        if (screen.footer) {
+            const footer = document.createElement('div');
+            footer.className = 'text-xs text-gray-500 mt-2';
+            footer.textContent = screen.footer;
+            card.appendChild(footer);
+        }
+        const rows = sections.reduce((all, section) => all.concat(section.rows || []), []);
+        const notice = rows.length && rows.every((item) => item.kind === 'pin' || item.kind === 'read' || item.kind === 'dismiss');
+        if (notice) {
+            const choices = document.createElement('div');
+            choices.className = 'mt-2';
+            rows.forEach((item) => {
+                const choice = document.createElement('button');
+                choice.type = 'button';
+                choice.className = 'wa-action';
+                choice.textContent = item.title || '';
+                choice.addEventListener('click', () => this.chooseScreenRow(screen, item, choice));
+                choices.appendChild(choice);
+            });
+            card.appendChild(choices);
+            box.appendChild(card);
+            return;
+        }
+        const list = document.createElement('div');
+        list.className = screen.button ? 'hidden mt-2' : 'mt-2';
+        sections.forEach((section) => {
+            if (section.title) {
+                const title = document.createElement('div');
+                title.className = 'text-xs text-gray-500 mt-2';
+                title.textContent = section.title;
+                list.appendChild(title);
+            }
+            (section.rows || []).forEach((item) => {
+                const choice = document.createElement('button');
+                choice.type = 'button';
+                choice.className = 'block w-full text-left border-t py-2';
+                const name = document.createElement('div');
+                name.className = 'text-sm';
+                name.textContent = item.title || '';
+                const detail = document.createElement('div');
+                detail.className = 'text-xs text-gray-500';
+                detail.textContent = item.description || '';
+                choice.appendChild(name);
+                choice.appendChild(detail);
+                choice.addEventListener('click', () => this.chooseScreenRow(screen, item, choice));
+                list.appendChild(choice);
+            });
+        });
+        if (screen.button) {
+            const open = document.createElement('button');
+            open.type = 'button';
+            open.className = 'mt-2 w-full border-t pt-2 text-green-600 text-sm';
+            open.textContent = screen.button;
+            open.addEventListener('click', () => list.classList.toggle('hidden'));
+            card.appendChild(open);
+        }
+        card.appendChild(list);
+        box.appendChild(card);
+    }
+
+    async chooseScreenRow(screen, item, button) {
+        this.queueState = this.queueState || { approvals: [], tasks: [] };
+        this.queueState.hotel = screen.hotel_name || this.queueState.hotel || '';
+        if (item.kind === 'pin' || item.kind === 'read' || item.kind === 'dismiss') {
+            const response = await this.queuePost('/chat/card', { card: screen.card || 'sales', id: item.id });
+            if (!response.ok) return;
+            await this.loadDesk();
+            return;
+        }
+        const record = item.record || {};
+        let ok = false;
+        if (item.kind === 'task') ok = await this.doneQueue(record, button);
+        if (item.kind === 'approval') ok = await this.approveQueue(record, button);
+        if (!ok) return;
+        const response = await this.queuePost('/chat/screen/drop', { id: item.id });
+        if (!response.ok) return;
+        const data = await response.json();
+        this.screenKey = JSON.stringify(data.screen || null);
+        this.renderScreen(data.screen);
+    }
+
+    showPinChoices(text, tools) {
+        const existing = tools.querySelector('.pin-choices');
+        if (existing) {
+            existing.remove();
+            return;
+        }
+        const row = document.createElement('div');
+        row.className = 'pin-choices mt-1';
+        ['urgent', 'to-do', 'follow-up', 'insights'].forEach((category) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'text-xs border rounded px-2 py-1 mr-1';
+            button.textContent = category;
+            button.addEventListener('click', () => this.pinMessage(text, category));
+            row.appendChild(button);
+        });
+        tools.appendChild(row);
+    }
+
+    async pinMessage(text, category) {
+        const response = await this.queuePost('/chat/pin', { text: text, category: category });
+        if (!response.ok) return;
+        await this.loadDesk();
+    }
+
+    async unpinMessage(text) {
+        const response = await this.queuePost('/chat/unpin', { text: text });
+        if (!response.ok) return;
+        await this.loadDesk();
     }
 
     openChat() {
@@ -344,7 +841,11 @@ class LeonChatComponent {
         this.chatOpen = false;
         const widget = document.getElementById('leon-chat-widget');
         const appFrame = document.getElementById('app-frame');
-        if (widget) widget.classList.remove('open');
+        if (widget) {
+            widget.style.display = '';
+            widget.style.transform = '';
+            widget.classList.remove('open');
+        }
         if (appFrame) appFrame.style.pointerEvents = 'auto';
     }
 
@@ -569,6 +1070,10 @@ class LeonChatComponent {
                 if (data.final_message) {
                     this.addChatMessage(data.final_message, 'leon');
                 }
+                if (data.screen && data.screen.button && (data.screen.card === 'function' || data.screen.card === 'menu')) {
+                    this.mountWhatsAppList(data.screen);
+                }
+                await this.loadDesk();
                 // If backend hints a refresh (tools executed), reload current page in SPA frame
                 try {
                     if (data.refresh) {
@@ -601,23 +1106,12 @@ class LeonChatComponent {
         const chatMessages = document.getElementById('chat-messages');
         const isUser = sender === 'user';
         const row = document.createElement('div');
-        // Align LEON (assistant) left, USER right
-        row.className = isUser ? 'flex items-start gap-3 justify-end' : 'flex items-start gap-3';
-        const avatar = document.createElement('div');
-        if (isUser) {
-            avatar.className = 'w-12 h-12 rounded-full flex items-center justify-center overflow-hidden';
-            avatar.innerHTML = '<i class="fas fa-user text-blue-600 text-lg"></i>';
-        } else {
-            avatar.className = 'w-8 h-8 rounded-full flex items-center justify-center overflow-hidden';
-            avatar.innerHTML = '<img src="'+this.leonAvatar+'" alt="LEON" class="w-8 h-8 object-cover"/>';
-        }
-
+        row.className = 'flex mb-2 px-1' + (isUser ? ' justify-end' : '');
         const container = document.createElement('div');
-        // Remove flex-1 so the bubble aligns starting right next to its own avatar
         container.className = 'leon-msg ' + (isUser ? 'leon-user' : 'leon-assistant');
 
         const bubble = document.createElement('div');
-        bubble.className = 'leon-bubble rounded-lg p-3';
+        bubble.className = 'leon-bubble px-2 py-1 text-sm';
         bubble.dataset.raw = message;
 
         // Detect inline LEON report payload and strip it from display text
@@ -647,30 +1141,34 @@ class LeonChatComponent {
             bubble.innerHTML = `<p class="text-sm">${this.escapeHtml(displayText).replace(/\n/g, '<br>')}</p>`;
         }
 
-        // Copy button for assistant messages
+        let tools = null;
         if (!isUser) {
-            const tools = document.createElement('div');
+            tools = document.createElement('div');
             tools.className = 'flex justify-end mt-1';
-            tools.innerHTML = `<button class="text-xs text-gray-500 leon-copy-btn" onclick="navigator.clipboard.writeText(this.closest('.leon-msg').querySelector('.leon-bubble').dataset.raw)">Copy</button>`;
-            container.appendChild(tools);
+            const copy = document.createElement('button');
+            copy.type = 'button';
+            copy.className = 'text-xs text-gray-500 leon-copy-btn';
+            copy.textContent = 'Copy';
+            copy.addEventListener('click', () => navigator.clipboard.writeText(bubble.dataset.raw || ''));
+            const pin = document.createElement('button');
+            pin.type = 'button';
+            pin.className = 'text-xs text-gray-500 ml-2';
+            pin.textContent = 'Pin';
+            pin.addEventListener('click', () => this.showPinChoices(message, tools));
+            tools.appendChild(copy);
+            tools.appendChild(pin);
         }
 
-        const time = document.createElement('p');
-        time.className = 'text-xs text-gray-500 mt-1';
-        time.textContent = 'Just now';
-
+        const time = document.createElement('span');
+        time.className = 'leon-time';
+        const clock = new Date();
+        const hour = String(clock.getHours()).padStart(2, '0');
+        const minute = String(clock.getMinutes()).padStart(2, '0');
+        time.textContent = hour + ':' + minute;
+        bubble.appendChild(time);
+        if (!isUser && tools) bubble.appendChild(tools);
         container.appendChild(bubble);
-        container.appendChild(time);
-
-        if (isUser) {
-            // For user messages: message bubble before avatar, aligned to the right
-            row.appendChild(container);
-            row.appendChild(avatar);
-        } else {
-            // For LEON messages: avatar on the left, message on the right
-            row.appendChild(avatar);
-            row.appendChild(container);
-        }
+        row.appendChild(container);
 
         chatMessages.appendChild(row);
         chatMessages.scrollTop = chatMessages.scrollHeight;

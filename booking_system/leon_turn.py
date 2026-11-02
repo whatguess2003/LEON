@@ -1,10 +1,25 @@
-"""One turn for a guest or the front desk. The hotel is chosen here, then keep and settle run."""
+"""One turn for a guest or the front desk. The hotel is chosen here, then keep and settle run. Callers name the desk hotel by
+hotel_name (the workflow contract); pins, screens, seen cards and WhatsApp sync documents are keyed by hotel_id. A hotel user on
+WhatsApp is found by their phone identity, and their turns share the web desk's chat (hotel_name, user_id)."""
+import logging
 import os
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 
 def _client():
     from openai import OpenAI
     return OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+def _hotel_id(hotel):
+    from booking_system.hotel_registry import hotel_id
+    return hotel_id(hotel)
+
+
+def _today(hotel):
+    from booking_system.desk_actions import hotel_today
+    return hotel_today(_hotel_id(hotel)).isoformat()
 
 
 def prepare_guest(phone):
@@ -21,34 +36,22 @@ def prepare_guest(phone):
 
 
 def finish_guest(client, phone, brief):
-    """Resolve the hotel, then read or write only when that hotel is known."""
-    from booking_system.desk_actions import hotel_names, keep, read_information, resolve_hotel, settle, stage_for_phone
+    """Resolve the hotel, then read or write only when that hotel is known. Leon acts for the guest (no user)."""
+    from booking_system.desk_actions import hotel_names, keep, resolve_hotel, save_settled, settle, stage_for_phone
     from booking_system.guest_manager import guest_manager
     from booking_system.guest_summary import rewrite_reply
-    from booking_system.timezone_utils import hotel_local_today
-    stage = stage_for_phone(phone)
-    resolved = resolve_hotel(stage, brief.get("hotel_specific"), brief.get("hotel_name"), hotel_names())
+    resolved = resolve_hotel(stage_for_phone(phone), brief.get("hotel_specific"), brief.get("hotel_name"), hotel_names())
     if resolved.get("ask"):
         brief["guest_reply"] = resolved["ask"]
-        return {"brief": brief, "lists": None, "acted": False}
-    hotel = str(resolved.get("hotel") or "").upper()
-    today = hotel_local_today(hotel).isoformat()
+        return {"brief": brief, "acted": False}
+    hotel_id = _hotel_id(resolved["hotel"])
     proposed = list(brief.get("executional_actions") or [])
-    brief["executional_actions"] = keep(proposed, hotel, phone, today)
-    guest = guest_manager.records["guests"].find_one({"guest_phone": str(phone or ""), "status": "active"})
-    profile_hotel = str((guest or {}).get("hotel_name") or "").upper()
-    if guest and profile_hotel == hotel:
-        settled = settle(brief, hotel, phone, guest)
-        lists = {
-            "approval_actions": settled["approval_actions"],
-            "desk_tasks": settled["desk_tasks"],
-            "carried_actions": settled["carried_actions"],
-            "executable_actions": [],
-        }
-    else:
-        notes = read_information(brief.get("informational_actions"), hotel)
-        settled = {"lines": ["Read " + note for note in notes], "completed": []}
-        lists = None
+    brief["executional_actions"] = keep(proposed, hotel_id, phone, _today(resolved["hotel"]))
+    guest = guest_manager.read_guest(hotel_id, phone)
+    settled = {"lines": [], "completed": []}
+    if guest and guest["status"] == "active":
+        settled = settle(brief, hotel_id, None, guest)
+        save_settled(hotel_id, None, guest, settled)
     if proposed and not brief["executional_actions"]:
         settled["lines"] = list(settled["lines"]) + ["Not done"]
     if settled["lines"]:
@@ -56,12 +59,12 @@ def finish_guest(client, phone, brief):
             brief["guest_reply"] = rewrite_reply(client, brief.get("guest_reply"), settled["lines"])
         except Exception:
             pass
-    return {"brief": brief, "lists": lists, "acted": bool(settled.get("completed"))}
+    return {"brief": brief, "acted": bool(settled.get("completed"))}
 
 
 def _queue_text(hotel):
     from booking_system.guest_manager import guest_manager
-    approvals, tasks = guest_manager.desk_queue(hotel)
+    approvals, tasks = guest_manager.desk_queue(_hotel_id(hotel))
     lines = []
     for row in approvals:
         lines.append("Approval id: " + str(row.get("label") or ""))
@@ -90,9 +93,9 @@ def _chat_collections():
     screen = guest_manager.records["hotel_screen"]
     seen = guest_manager.records["hotel_card_seen"]
     if not _chat_indexes:
-        pins.create_index("hotel_name", name="hotel_name_pins")
-        screen.create_index("hotel_name", unique=True, name="hotel_name_screen")
-        seen.create_index("hotel_name", name="hotel_name_seen")
+        pins.create_index("hotel_id", name="hotel_id_pins")
+        screen.create_index("hotel_id", unique=True, name="hotel_id_screen")
+        seen.create_index("hotel_id", name="hotel_id_seen")
         _chat_indexes = True
     return pins, screen, seen
 
@@ -107,16 +110,21 @@ def _screen_collection():
     return screen
 
 
+def _seen_collection():
+    _pins, _screen, seen = _chat_collections()
+    return seen
+
+
 def pin_message(hotel, text, category, who):
     """Read the pin. Update it when this hotel and text already exist, otherwise create it."""
-    hotel_name = str(hotel or "").upper()
+    hotel_id = _hotel_id(hotel)
     body = str(text or "").strip()
     kind = str(category or "").strip()
-    if not hotel_name or not body or kind not in _PIN_CATEGORIES:
+    if not hotel_id or not body or kind not in _PIN_CATEGORIES:
         return "missing"
     from datetime import datetime, timezone
     coll = _pin_collection()
-    key = {"hotel_name": hotel_name, "text": body}
+    key = {"hotel_id": hotel_id, "text": body}
     fields = {"category": kind, "who": str(who or ""), "pinned_at": datetime.now(timezone.utc).isoformat()}
     if coll.find_one(key):
         coll.update_one(key, {"$set": fields})
@@ -127,10 +135,8 @@ def pin_message(hotel, text, category, who):
 
 def unpin_message(hotel, text):
     """Read the pin. Delete it when this hotel and text exist."""
-    hotel_name = str(hotel or "").upper()
-    body = str(text or "").strip()
     coll = _pin_collection()
-    key = {"hotel_name": hotel_name, "text": body}
+    key = {"hotel_id": _hotel_id(hotel), "text": str(text or "").strip()}
     if not coll.find_one(key):
         return "missing"
     coll.delete_one(key)
@@ -139,8 +145,7 @@ def unpin_message(hotel, text):
 
 def list_pins(hotel):
     """Every pin for this hotel, in screen order."""
-    hotel_name = str(hotel or "").upper()
-    rows = list(_pin_collection().find({"hotel_name": hotel_name}, {"_id": 0}))
+    rows = list(_pin_collection().find({"hotel_id": _hotel_id(hotel)}, {"_id": 0}))
     rows.sort(key=lambda row: (_PIN_RANK.get(str(row.get("category") or ""), 4), 0 if str(row.get("who") or "") == "user" else 1, str(row.get("pinned_at") or "")))
     return rows
 
@@ -153,44 +158,34 @@ def shown_pins(hotel):
 
 def _pin_text(hotel):
     shown, _count = shown_pins(hotel)
-    lines = []
-    for row in shown:
-        lines.append(str(row.get("category") or "") + " " + str(row.get("text") or ""))
-    return "\n".join(lines)
+    return "\n".join(str(row.get("category") or "") + " " + str(row.get("text") or "") for row in shown)
 
 
 def _kept_screen(hotel, brief):
     """Keep list rows whose id is an open approval label or task. The agent wrote the words."""
     from booking_system.guest_manager import guest_manager
     raw = (brief or {}).get("screen") or {}
-    approvals, tasks = guest_manager.desk_queue(hotel)
+    approvals, tasks = guest_manager.desk_queue(_hotel_id(hotel))
     known = {}
     for row in approvals:
-        label = str(row.get("label") or "")
-        if label:
-            known[label] = {"kind": "approval", "record": row}
+        if row.get("label"):
+            known[str(row["label"])] = {"kind": "approval", "record": row}
     for row in tasks:
-        task = str(row.get("task") or "")
-        if task:
-            known[task] = {"kind": "task", "record": row}
+        if row.get("task"):
+            known[str(row["task"])] = {"kind": "task", "record": row}
     rows = []
     for item in raw.get("rows") or []:
         ident = str((item or {}).get("id") or "").strip()
         match = known.get(ident)
         if not match or len(rows) >= 10:
             continue
-        record = {}
-        for key, value in (match["record"] or {}).items():
-            if key != "_id":
-                record[key] = value
-        section = _clip((item or {}).get("section"), 24)
         rows.append({
-            "section": section,
+            "section": _clip((item or {}).get("section"), 24),
             "id": ident[:200],
             "title": _clip((item or {}).get("title"), 24),
             "description": _clip((item or {}).get("description"), 72),
             "kind": match["kind"],
-            "record": record,
+            "record": {key: value for key, value in (match["record"] or {}).items() if key != "_id"},
         })
     if not rows:
         return None
@@ -198,13 +193,7 @@ def _kept_screen(hotel, brief):
     for row in rows:
         if not sections or sections[-1]["title"] != row["section"]:
             sections.append({"title": row["section"], "rows": []})
-        sections[-1]["rows"].append({
-            "id": row["id"],
-            "title": row["title"],
-            "description": row["description"],
-            "kind": row["kind"],
-            "record": row["record"],
-        })
+        sections[-1]["rows"].append({key: row[key] for key in ("id", "title", "description", "kind", "record")})
     body = _clip(raw.get("body"), 1024) or _clip((brief or {}).get("guest_reply"), 1024)
     return {
         "hotel_name": str(hotel or "").upper(),
@@ -218,9 +207,8 @@ def _kept_screen(hotel, brief):
 
 def store_screen(hotel, screen):
     """Read the hotel's list. Update it, or delete it when this turn has no rows."""
-    hotel_name = str(hotel or "").upper()
     coll = _screen_collection()
-    key = {"hotel_name": hotel_name}
+    key = {"hotel_id": _hotel_id(hotel)}
     existing = coll.find_one(key)
     if not screen:
         if existing:
@@ -231,19 +219,16 @@ def store_screen(hotel, screen):
 
 
 def read_screen(hotel):
-    hotel_name = str(hotel or "").upper()
-    doc = _screen_collection().find_one({"hotel_name": hotel_name}, {"_id": 0})
-    if not doc:
-        return None
-    return doc.get("screen")
+    doc = _screen_collection().find_one({"hotel_id": _hotel_id(hotel)}, {"_id": 0})
+    return doc.get("screen") if doc else None
 
 
 def drop_screen_row(hotel, row_id):
     """Read the stored list and remove the chosen row."""
-    hotel_name = str(hotel or "").upper()
     ident = str(row_id or "")
     coll = _screen_collection()
-    doc = coll.find_one({"hotel_name": hotel_name})
+    key = {"hotel_id": _hotel_id(hotel)}
+    doc = coll.find_one(key)
     if not doc:
         return "missing"
     screen = dict(doc.get("screen") or {})
@@ -253,72 +238,51 @@ def drop_screen_row(hotel, row_id):
         if kept:
             sections.append({"title": section.get("title") or "", "rows": kept})
     if not sections:
-        coll.delete_one({"hotel_name": hotel_name})
+        coll.delete_one(key)
         return "deleted"
     screen["sections"] = sections
-    coll.update_one({"hotel_name": hotel_name}, {"$set": {"screen": screen}})
+    coll.update_one(key, {"$set": {"screen": screen}})
     return "updated"
 
 
-def _subject_phone(hotel, brief):
+def _subject_phone(hotel_id, brief):
     from booking_system.desk_actions import booking_phone
     phone = str(brief.get("subject_phone") or "").strip()
     if phone:
         return phone
     found = []
     for row in brief.get("executional_actions") or []:
-        one = str((row or {}).get("guest_phone") or "").strip()
-        if not one:
-            one = booking_phone(hotel, (row or {}).get("booking_id"))
+        one = str((row or {}).get("guest_phone") or "").strip() or booking_phone(hotel_id, (row or {}).get("booking_id"))
         if one and one not in found:
             found.append(one)
-    if len(found) == 1:
-        return found[0]
-    return ""
+    return found[0] if len(found) == 1 else ""
 
 
-def apply_desk(hotel, brief):
-    """Run the desk's actions at the JWT hotel. A different named hotel is not written."""
-    from booking_system.desk_actions import hotel_names, keep, read_information, settle
+def apply_desk(hotel, brief, user_id=None):
+    """Run the desk's actions at the session hotel as user_id. A different named hotel is not written."""
+    from booking_system.desk_actions import hotel_names, keep, save_settled, settle
     from booking_system.guest_manager import guest_manager
     from booking_system.guest_summary import rewrite_reply
-    from booking_system.timezone_utils import hotel_local_today
     hotel_name = str(hotel or "").upper()
+    hotel_id = _hotel_id(hotel_name)
     named = str(brief.get("hotel_name") or "").upper()
-    known = hotel_names()
     if brief.get("hotel_specific") and named and named != hotel_name:
-        if named not in known:
-            brief["guest_reply"] = "Which hotel? " + ", ".join(known)
-        else:
-            brief["guest_reply"] = "This desk is " + hotel_name + ". This turn is about " + named + "."
+        known = hotel_names()
+        brief["guest_reply"] = ("Which hotel? " + ", ".join(known) if named not in known
+                                else "This desk is " + hotel_name + ". This turn is about " + named + ".")
         brief["listed_actions"] = []
         return brief, False
     brief["listed_actions"] = list(brief.get("executional_actions") or [])
-    phone = _subject_phone(hotel_name, brief)
-    today = hotel_local_today(hotel_name).isoformat()
-    guest = guest_manager.records["guests"].find_one({"guest_phone": phone, "status": "active"}) if phone else None
-    same_hotel = guest and str(guest.get("hotel_name") or "").upper() == hotel_name
-    if same_hotel:
+    phone = _subject_phone(hotel_id, brief)
+    guest = guest_manager.read_guest(hotel_id, phone) if phone else None
+    lines, acted = [], False
+    if guest and guest["status"] == "active":
         proposed = list(brief.get("executional_actions") or [])
-        brief["executional_actions"] = keep(proposed, hotel_name, phone, today)
-        settled = settle(brief, hotel_name, phone, guest)
-        if proposed and not brief["executional_actions"]:
-            settled["lines"] = list(settled["lines"]) + ["Not done"]
-        guest_manager.records["guests"].update_one(
-            {"guest_phone": guest["guest_phone"]},
-            {"$set": {
-                "approval_actions": settled["approval_actions"],
-                "desk_tasks": settled["desk_tasks"],
-                "carried_actions": settled["carried_actions"],
-                "executable_actions": [],
-            }},
-        )
-        lines = settled["lines"]
+        brief["executional_actions"] = keep(proposed, hotel_id, phone, _today(hotel_name))
+        settled = settle(brief, hotel_id, user_id, guest)
+        save_settled(hotel_id, user_id, guest, settled)
+        lines = list(settled["lines"]) + (["Not done"] if proposed and not brief["executional_actions"] else [])
         acted = bool(settled.get("completed"))
-    else:
-        notes = read_information(brief.get("informational_actions"), hotel_name)
-        lines = ["Read " + note for note in notes]
-        acted = False
     brief["result_lines"] = lines
     if lines:
         try:
@@ -328,60 +292,60 @@ def apply_desk(hotel, brief):
     return brief, acted
 
 
-def _managers():
-    from booking_system.guest_manager import guest_manager
-    return guest_manager.store["leon_manager_system"]["manager_collection"]
+# ---------- the hotel user on WhatsApp ----------
+
+def manager_account(phone):
+    """The active hotel user holding this phone identity: {'user_id', 'user_name', 'phone', 'hotel_id', 'hotel_name'} at their last
+    hotel when that membership is active, else at their only active hotel. None for a guest or an unclear hotel."""
+    from booking_system import db
+    rows = db.rows(
+        """SELECT u.user_id, u.user_name, i.identity_value AS phone, h.hotel_id, h.hotel_name, h.hotel_id = u.last_hotel_id AS last_hotel
+           FROM user_identity i JOIN user_account u ON u.user_id = i.user_id
+           JOIN hotel_user hu ON hu.user_id = u.user_id AND hu.status = 'active' JOIN hotel h ON h.hotel_id = hu.hotel_id
+           WHERE i.identity_type = 'phone' AND i.identity_value = %s AND u.status = 'active'""",
+        (str(phone or "").strip(),))
+    chosen = [row for row in rows if row["last_hotel"]] or rows
+    return {key: chosen[0][key] for key in ("user_id", "user_name", "phone", "hotel_id", "hotel_name")} if len(chosen) == 1 else None
 
 
-def _seen_collection():
-    _pins, _screen, seen = _chat_collections()
-    return seen
-
-
-def manager_hotel(phone):
-    """The hotel whose manager_phone is this number. Empty when the phone is a guest."""
-    wanted = str(phone or "").strip()
-    if not wanted:
-        return ""
-    doc = _managers().find_one({"manager_phone": wanted}, {"hotel_name": 1, "_id": 0})
-    if not doc:
-        return ""
-    return str(doc.get("hotel_name") or "").upper()
-
-
-def note_manager_inbound(hotel, sent_at):
-    """Record the hotel user's latest WhatsApp so the 24-hour window can open."""
-    hotel_name = str(hotel or "").upper()
+def note_manager_inbound(user_id, sent_at):
+    """READ the user's WhatsApp window; move it to this inbound moment when later, or create it."""
+    from booking_system import db
     moment = str(sent_at or "").strip()
-    if not hotel_name or not moment:
+    if not user_id or not moment:
         return "missing"
-    _managers().update_one({"hotel_name": hotel_name}, {"$set": {"whatsapp_in_at": moment}})
-    return "updated"
+
+    def write(cur):
+        cur.execute("SELECT last_inbound_at FROM user_whatsapp_window WHERE user_id = %s FOR UPDATE", (user_id,))
+        if cur.fetchone():
+            cur.execute("UPDATE user_whatsapp_window SET last_inbound_at = GREATEST(last_inbound_at, %s::timestamptz) WHERE user_id = %s",
+                        (moment, user_id))
+            return "updated"
+        cur.execute("INSERT INTO user_whatsapp_window (user_id, last_inbound_at) VALUES (%s, %s::timestamptz)", (user_id, moment))
+        return "created"
+    return db.transaction(write)
 
 
-def _window_open(sent_at):
-    from datetime import datetime, timedelta, timezone
-    text = str(sent_at or "").strip()
-    if not text:
-        return False
-    try:
-        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return False
-    if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=timezone.utc)
-    return datetime.now(timezone.utc) - moment <= timedelta(hours=24)
+def _open_phones(hotel):
+    """Phones of the hotel's active users whose WhatsApp window is open (an inbound in the last 24 hours)."""
+    from booking_system import db
+    rows = db.rows(
+        """SELECT DISTINCT i.identity_value FROM hotel_user hu JOIN user_account u ON u.user_id = hu.user_id AND u.status = 'active'
+           JOIN user_identity i ON i.user_id = u.user_id AND i.identity_type = 'phone'
+           JOIN user_whatsapp_window w ON w.user_id = u.user_id
+           WHERE hu.hotel_id = %s AND hu.status = 'active' AND w.last_inbound_at > now() - interval '24 hours'""",
+        (_hotel_id(hotel),))
+    return [row["identity_value"] for row in rows]
 
 
 def _card_seen(hotel, card, day):
-    return _seen_collection().find_one({"hotel_name": hotel, "card": card, "day": day}) is not None
+    return _seen_collection().find_one({"hotel_id": _hotel_id(hotel), "card": card, "day": day}) is not None
 
 
 def _mark_seen(hotel, card, day, how):
     coll = _seen_collection()
-    key = {"hotel_name": hotel, "card": card, "day": day}
-    existing = coll.find_one(key)
-    if existing:
+    key = {"hotel_id": _hotel_id(hotel), "card": card, "day": day}
+    if coll.find_one(key):
         coll.update_one(key, {"$set": {"how": how}})
         return "updated"
     coll.insert_one({**key, "how": how})
@@ -389,66 +353,21 @@ def _mark_seen(hotel, card, day, how):
 
 
 def sales_facts(hotel):
-    """Today's new bookings, rooms in house against rooms on the books, and the rate of occupied rooms."""
-    from booking_system.desk_actions import _with_pg
-    from booking_system.guest_manager import guest_manager
-    from booking_system.timezone_utils import hotel_local_today
-    hotel_name = str(hotel or "").upper()
-    today = hotel_local_today(hotel_name)
-    day = today.isoformat() if hasattr(today, "isoformat") else str(today)[:10]
-
-    def stays(cur):
-        cur.execute(
-            """
-            SELECT rb.booking_id, MIN(bs.stay_date), MAX(bs.stay_date)
-            FROM room_bookings rb
-            JOIN booking_stays bs
-              ON bs.booking_id = rb.booking_id AND bs.hotel_name = rb.hotel_name
-            WHERE UPPER(rb.hotel_name) = %s
-              AND LOWER(COALESCE(rb.booking_status, '')) = 'confirmed'
-            GROUP BY rb.booking_id
-            """,
-            (hotel_name,),
-        )
-        return cur.fetchall()
-
-    def priced(cur):
-        cur.execute(
-            """
-            SELECT COALESCE(SUM(bs.rooms_booked * dp.base_price), 0),
-                   COALESCE(SUM(bs.rooms_booked), 0)
-            FROM booking_stays bs
-            JOIN room_bookings rb
-              ON rb.booking_id = bs.booking_id AND rb.hotel_name = bs.hotel_name
-            JOIN daily_pricing dp
-              ON UPPER(dp.hotel_name) = UPPER(rb.hotel_name)
-             AND dp.room_type = rb.room_type
-             AND dp.stay_date = bs.stay_date
-            WHERE UPPER(rb.hotel_name) = %s
-              AND bs.stay_date = %s
-              AND LOWER(COALESCE(rb.booking_status, '')) = 'confirmed'
-              AND dp.base_price > 0
-            """,
-            (hotel_name, day),
-        )
-        return cur.fetchone()
-
-    arrivals = 0
-    in_house = 0
-    for _booking_id, first, last in _with_pg(stays) or []:
-        first_day = first.isoformat() if hasattr(first, "isoformat") else str(first)[:10]
-        last_day = last.isoformat() if hasattr(last, "isoformat") else str(last)[:10]
-        if first_day == day:
-            arrivals += 1
-        if first_day <= day <= last_day:
-            in_house += 1
-    rooms = guest_manager.records["room_encyclopedia"].count_documents({
-        "hotel_name": hotel_name,
-        "room_number": {"$gt": ""},
-    })
-    total, sold = _with_pg(priced) or (0, 0)
-    rate = int(total / sold) if sold else 0
-    return {"day": day, "bookings": arrivals, "in_house": in_house, "rooms": rooms, "rate": rate}
+    """Today's arrivals, bookings in house against active rooms, and the average sell rate of tonight's sold nights."""
+    from booking_system import db
+    hotel_id = _hotel_id(hotel)
+    day = _today(hotel)
+    found = db.row(
+        """SELECT (SELECT COUNT(*) FROM booking_summary s WHERE s.hotel_id = %(h)s AND s.booking_status IN ('confirmed','checked_in')
+                     AND s.check_in_date = %(d)s) AS bookings,
+                  (SELECT COUNT(*) FROM booking_summary s WHERE s.hotel_id = %(h)s AND s.booking_status IN ('confirmed','checked_in')
+                     AND s.check_in_date <= %(d)s AND s.check_out_date > %(d)s) AS in_house,
+                  (SELECT COUNT(*) FROM room r WHERE r.hotel_id = %(h)s AND r.status = 'active') AS rooms,
+                  (SELECT AVG(n.sell_rate) FROM booking_room_night n WHERE n.hotel_id = %(h)s AND n.stay_date = %(d)s
+                     AND n.night_status IN ('booked','checked_in') AND n.sell_rate > 0) AS rate""",
+        {"h": hotel_id, "d": day})
+    return {"day": day, "bookings": found["bookings"], "in_house": found["in_house"], "rooms": found["rooms"],
+            "rate": int(found["rate"] or 0)}
 
 
 def _sales_body(facts):
@@ -509,7 +428,7 @@ def _sync_collection():
     return coll
 
 
-def remember_outbound(message_id, hotel, screen):
+def remember_outbound(message_id, hotel_id, screen):
     """Remember a list this desk sent, so a webhook echo of that id is not copied back."""
     ref = str(message_id or "").strip()
     if not ref:
@@ -520,7 +439,7 @@ def remember_outbound(message_id, hotel, screen):
     try:
         coll.insert_one({
             "source_ref": ref,
-            "hotel_name": str(hotel or "").upper(),
+            "hotel_id": hotel_id,
             "direction": "out",
             "message_type": "list",
             "applied": True,
@@ -531,17 +450,6 @@ def remember_outbound(message_id, hotel, screen):
             raise
         return "duplicate"
     return "created"
-
-
-def _desk_dialog(hotel):
-    """The hotel user's last 20 Leon chat turns."""
-    from booking_system.runtime_state import read_turns
-    hotel_name = str(hotel or "").upper()
-    doc = _managers().find_one({"hotel_name": hotel_name}, {"manager_name": 1, "manager_phone": 1, "_id": 0})
-    manager = str((doc or {}).get("manager_name") or "").upper()
-    phone = str((doc or {}).get("manager_phone") or "")
-    history = read_turns(hotel_name, manager) if manager else []
-    return history, manager, phone
 
 
 def _pending_summary(history):
@@ -556,8 +464,7 @@ def _pending_summary(history):
         text = str(text or "").strip()
         if not text:
             continue
-        speaker = "Desk" if sender == "user" else "Leon"
-        lines.append(speaker + ": " + text)
+        lines.append(("Desk" if sender == "user" else "Leon") + ": " + text)
         indexes.append(index)
     return lines, indexes
 
@@ -580,13 +487,11 @@ def _one_summary(lines):
     return text.strip()[:4096]
 
 
-def _send_chat_summary(hotel, phone):
-    """Send one summary of the Leon chat that WhatsApp has not received yet."""
+def _send_chat_summary(account):
+    """Send one summary of the user's web desk chat that WhatsApp has not received yet."""
     from booking_system.leon_meta_orchestrator import LEONMetaOrchestrator
-    from booking_system.runtime_state import write_turns
-    history, manager, stored_phone = _desk_dialog(hotel)
-    if not manager:
-        return "missing"
+    from booking_system.runtime_state import read_turns, write_turns
+    history = read_turns(account["hotel_name"], account["user_id"])
     lines, indexes = _pending_summary(history)
     if not lines:
         return "empty"
@@ -594,76 +499,15 @@ def _send_chat_summary(hotel, phone):
     if not text:
         return "failed"
     from booking_system.front_desk_manager import intelligent_front_desk
-    result = intelligent_front_desk.send_whatsapp_text(phone or stored_phone, text)
+    result = intelligent_front_desk.send_whatsapp_text(account["phone"], text)
     if result.get("error"):
         return "closed"
-    remember_outbound(result.get("message_id"), hotel, {})
+    remember_outbound(result.get("message_id"), account["hotel_id"], {})
     for index in indexes:
         sender, turn = LEONMetaOrchestrator.dialog_line(None, history[index], index)
         history[index] = {"sender": sender, "text": turn, "summarized": True}
-    write_turns(hotel, manager, history)
+    write_turns(account["hotel_name"], account["user_id"], history)
     return "sent"
-
-
-def _append_user_turn(hotel, text, source_ref):
-    from booking_system.runtime_state import write_turns
-    history, manager, _phone = _desk_dialog(hotel)
-    if not manager:
-        return "missing"
-    for entry in history:
-        if isinstance(entry, dict) and str(entry.get("source_ref") or "") == source_ref:
-            return "present"
-    history.append({
-        "sender": "user",
-        "text": text,
-        "source_ref": source_ref,
-        "channel": "whatsapp",
-        "summarized": True,
-    })
-    write_turns(hotel, manager, history)
-    return "added"
-
-
-def take_list_reply(hotel, source_ref, selection):
-    """Copy one WhatsApp list selection into the Leon thread. The same message id is kept once."""
-    ref = str(source_ref or "").strip()
-    row_id = str((selection or {}).get("id") or "").strip()
-    if not ref or not row_id:
-        return "missing"
-    coll = _sync_collection()
-    existing = coll.find_one({"source_ref": ref})
-    if existing and existing.get("direction") == "out":
-        return "duplicate"
-    if existing and existing.get("applied"):
-        return "duplicate"
-    if not existing:
-        try:
-            coll.insert_one({
-                "source_ref": ref,
-                "hotel_name": str(hotel or "").upper(),
-                "direction": "in",
-                "message_type": "list_reply",
-                "row_id": row_id,
-                "title": str((selection or {}).get("title") or ""),
-                "description": str((selection or {}).get("description") or ""),
-                "context_id": str((selection or {}).get("context_id") or ""),
-                "applied": False,
-            })
-        except Exception as error:
-            if error.__class__.__name__ != "DuplicateKeyError":
-                raise
-            existing = coll.find_one({"source_ref": ref})
-            if existing and existing.get("applied"):
-                return "duplicate"
-    title = str((selection or {}).get("title") or "").strip()
-    detail = str((selection or {}).get("description") or "").strip()
-    quote = title + ("\n" + detail if detail else "")
-    if quote:
-        _append_user_turn(hotel, quote, ref)
-    coll.update_one({"source_ref": ref}, {"$set": {"applied": True}})
-    if row_id in ("pin", "read", "dismiss"):
-        card_click(hotel, "sales", row_id)
-    return "created"
 
 
 def _deliver_list(hotel, phone, screen):
@@ -679,34 +523,32 @@ def _deliver_list(hotel, phone, screen):
         (screen or {}).get("sections"),
     )
     if not result.get("error"):
-        remember_outbound(result.get("message_id"), hotel, screen)
+        remember_outbound(result.get("message_id"), _hotel_id(hotel), screen)
     return result
 
 
+def _send_to_open(hotel, screen):
+    """Send the list to each hotel user whose WhatsApp window is open. 'sent' when at least one took it."""
+    sent = [phone for phone in _open_phones(hotel) if not _deliver_list(hotel, phone, screen).get("error")]
+    return "sent" if sent else "closed"
+
+
 def _copy_sales(hotel, screen):
-    """Send the same list to the hotel user once, only while their WhatsApp window is open."""
+    """Send the sales list once, only to hotel users whose WhatsApp window is open."""
     if not screen or screen.get("whatsapp_sent"):
         return "sent"
-    hotel_name = str(hotel or "").upper()
-    doc = _managers().find_one({"hotel_name": hotel_name}, {"manager_phone": 1, "whatsapp_in_at": 1, "_id": 0})
-    phone = str((doc or {}).get("manager_phone") or "")
-    if not phone or not _window_open((doc or {}).get("whatsapp_in_at")):
-        return "closed"
-    result = _deliver_list(hotel_name, phone, screen)
-    if result.get("error"):
+    if _send_to_open(hotel, screen) != "sent":
         return "closed"
     screen["whatsapp_sent"] = True
-    store_screen(hotel_name, screen)
+    store_screen(hotel, screen)
     return "sent"
 
 
 def ensure_sales_card(hotel):
     """Show today's sales card unless the hotel user already read or dismissed it."""
-    from booking_system.timezone_utils import hotel_local_today
     hotel_name = str(hotel or "").upper()
     current = read_screen(hotel_name)
-    today = hotel_local_today(hotel_name)
-    day = today.isoformat() if hasattr(today, "isoformat") else str(today)[:10]
+    day = _today(hotel_name)
     if current and current.get("card") == "sales" and current.get("day") == day:
         if _card_seen(hotel_name, "sales", day):
             store_screen(hotel_name, None)
@@ -744,18 +586,10 @@ def card_click(hotel, card, row_id):
 
 
 def _copy_function(hotel, screen):
-    """Send the function list to the hotel user while their WhatsApp window is open."""
+    """Send the function list to hotel users whose WhatsApp window is open."""
     if not screen or screen.get("card") not in ("function", "menu"):
         return "closed"
-    hotel_name = str(hotel or "").upper()
-    doc = _managers().find_one({"hotel_name": hotel_name}, {"manager_phone": 1, "whatsapp_in_at": 1, "_id": 0})
-    phone = str((doc or {}).get("manager_phone") or "")
-    if not phone or not _window_open((doc or {}).get("whatsapp_in_at")):
-        return "closed"
-    result = _deliver_list(hotel_name, phone, screen)
-    if result.get("error"):
-        return "closed"
-    return "sent"
+    return _send_to_open(hotel, screen)
 
 
 def read_topic(hotel, manager):
@@ -773,7 +607,13 @@ def remember_topic(hotel, manager, topic):
 
 
 _READ_TOPICS = ("availability", "occupancy", "guest", "reservation")
-_STICKY_READ = {"availability": "B03a", "occupancy": "B03b", "guest": "B02a", "reservation": "B01b"}
+# topic -> general recipe key (the catalog id of the published recipe)
+_STICKY_READ = {
+    "availability": "daily_rooms_left_by_room_type",
+    "occupancy": "daily_in_house_counts",
+    "guest": "daily_in_house_counts",
+    "reservation": "daily_arrival_counts",
+}
 
 
 def kept_topic(stored, named):
@@ -812,7 +652,7 @@ def _read_ids(topic, brief):
         if name in known and name not in ids:
             ids.append(name)
     ready = [name for name in ready_ids(ids) if name not in ("F01", "F02")]
-    sticky = _STICKY_READ.get(topic, "")
+    sticky = _STICKY_READ.get(topic, "") if _STICKY_READ.get(topic, "") in known else ""
     if ready and sticky and sticky not in ready:
         return ids, ""
     if sticky and sticky not in ids:
@@ -827,7 +667,7 @@ def _apply_read(brief, found):
     brief["query_stall"] = found.get("stall_reason") or ""
 
 
-def compile_desk_sentence(question, rows, error="", stall="", definitions=None):
+def compile_desk_sentence(question, rows, error="", stall="", definitions=None, dates=None):
     """One short desk sentence from the question and the returned rows."""
     import json
     from booking_system.llm_utils import haiku_text
@@ -845,21 +685,23 @@ def compile_desk_sentence(question, rows, error="", stall="", definitions=None):
             "error": str(error or ""),
             "stall": str(stall or ""),
             "definitions": list(definitions or []),
+            "dates": dates or {"resolutions": []},
         },
         default=str,
     )
     try:
         parsed = json.loads(haiku_text(
             (
-                "Write one short sentence a front-desk manager can say aloud. "
-                "Use only the question and the rows. "
-                "A count question states the number. "
-                "A who question names the people, or says nobody. "
-                "When the rows are empty and error and stall are empty, say that nothing matched, in plain language. "
+                "Write one short sentence the front-desk manager can say aloud. "
+                "Use only the question, the rows, and dates. Do not invent guests, dates, or numbers. "
+                "Name each resolved date as MM/DD/YYYY from dates. Do not choose a different day. "
+                "When a resolution has a correction, include it, and do not repeat stated_date as the day the figure is for. "
+                "Skip a resolution whose unresolved is true. "
+                "A count states the number. A who question names the people, or says nobody. "
+                "When the rows are empty and error and stall are empty, say that nothing matched. "
                 "When error or stall is set, say the lookup did not finish and include that reason. "
                 "Do not mention column names, SQL, or that no rows were returned. "
-                "Do not invent guests, dates, or numbers that are not in the rows. "
-                "When the rows hold several readings of the same count, state the one the manager's definitions name."
+                "When several rows are readings of the same count, state the one the definitions name."
             ),
             body,
             schema=schema,
@@ -874,55 +716,8 @@ def compile_desk_sentence(question, rows, error="", stall="", definitions=None):
         return "The sentence could not be written. " + str(exc)
 
 
-def _phrase_read(hotel, message, ids):
-    """A matched keyphrase goes straight to the SQL agent and the read screen."""
-    from booking_system.desk_actions import read_screen
-    from booking_system.semantic.catalog import catalog_row, ready_ids
-    from booking_system.semantic.sql_agent import answer_question
-
-    brief = {
-        "guest_reply": "",
-        "hotel_specific": False,
-        "hotel_name": "",
-        "subject_phone": "",
-        "informational_actions": [],
-        "executional_actions": [],
-        "desk_tasks": [],
-        "guide_actions": False,
-        "pin_category": "",
-        "catalog_ids": list(ids),
-        "read_parameters": [],
-        "screen": {"header": "", "body": "", "footer": "", "button": "", "rows": []},
-    }
-    readable = ready_ids(ids)
-    _apply_read(brief, answer_question(hotel, message, readable, [], None))
-    brief, acted = apply_desk(hotel, brief)
-    brief["guest_reply"] = compile_desk_sentence(
-        message,
-        brief.get("query_rows") or [],
-        brief.get("query_error") or "",
-        brief.get("query_stall") or "",
-    )
-    reply = str(brief.get("guest_reply") or "").strip() or "No action is needed."
-    header = "Read"
-    for map_id in ids:
-        entry = catalog_row(map_id) or {}
-        if entry.get("concepts"):
-            header = entry.get("title") or map_id
-            break
-    screen = read_screen(hotel, brief, header) if readable else None
-    if screen:
-        _copy_function(hotel, screen)
-    shown, count = shown_pins(hotel)
-    return reply, acted, screen, {"shown": shown, "count": count}
-
-
-def present_read(hotel, found, page_ids, question="", definitions=None):
-    """Turn a query result into the desk reply and the read screen."""
-    from booking_system.desk_actions import read_screen
-    from booking_system.semantic.catalog import catalog_row
-
-    brief = {
+def _read_brief(page_ids):
+    return {
         "guest_reply": "",
         "hotel_specific": False,
         "hotel_name": "",
@@ -936,44 +731,84 @@ def present_read(hotel, found, page_ids, question="", definitions=None):
         "read_parameters": [],
         "screen": {"header": "", "body": "", "footer": "", "button": "", "rows": []},
     }
+
+
+# page ids -> (monotonic expiry, card title). A catalog title is a label; a republished title shows within HEADER_SECONDS.
+HEADER_SECONDS = 300
+_HEADERS = {}
+_PRESENT = ThreadPoolExecutor(max_workers=8, thread_name_prefix="present_read")
+
+
+def _read_header(page_ids):
+    key = tuple(page_ids or ())
+    kept = _HEADERS.get(key)
+    if kept and kept[0] > time.monotonic():
+        return kept[1]
+    from booking_system.semantic.catalog import catalog_row
+    title = "Read"
+    for map_id in key:
+        entry = catalog_row(map_id) or {}
+        if entry.get("concepts"):
+            title = entry.get("title") or map_id
+            break
+    _HEADERS[key] = (time.monotonic() + HEADER_SECONDS, title)
+    return title
+
+
+def _copy_function_logged(hotel, screen):
+    try:
+        return _copy_function(hotel, screen)
+    except Exception:
+        logging.exception("WhatsApp copy of the read screen failed")
+        return "failed"
+
+
+def present_read(hotel, found, page_ids, question="", definitions=None, dates=None):
+    """Turn a query result into the desk reply and the read screen. The card title and pins are read while the sentence is
+    written; the WhatsApp copy to open windows is sent after the reply, off the turn."""
+    from booking_system.desk_actions import read_screen as read_card
+    brief = _read_brief(page_ids)
     _apply_read(brief, found)
     brief, acted = apply_desk(hotel, brief)
+    header = _PRESENT.submit(_read_header, page_ids)
+    pins = _PRESENT.submit(shown_pins, hotel)
     brief["guest_reply"] = compile_desk_sentence(
         question,
         brief.get("query_rows") or [],
         brief.get("query_error") or "",
         brief.get("query_stall") or "",
         definitions,
+        dates,
     )
     reply = str(brief.get("guest_reply") or "").strip() or "No action is needed."
-    header = "Read"
-    for map_id in page_ids or []:
-        entry = catalog_row(map_id) or {}
-        if entry.get("concepts"):
-            header = entry.get("title") or map_id
-            break
-    screen = read_screen(hotel, brief, header)
+    screen = read_card(_hotel_id(hotel), brief, header.result())
     if screen:
-        _copy_function(hotel, screen)
-    shown, count = shown_pins(hotel)
+        _PRESENT.submit(_copy_function_logged, hotel, screen)
+    shown, count = pins.result()
     return reply, acted, screen, {"shown": shown, "count": count}
 
 
 def desk_turn(hotel, manager, message, history):
     """Front-desk chat. The controller chooses a read or a desk action."""
-    from booking_system.semantic.workflow import handle_user_message
+    from booking_system.semantic.desk import handle_user_message
     return handle_user_message(hotel, manager, message, history)
 
 
-def desk_action_turn(hotel, manager, message, history):
-    """A greeting or a change to a booking, a payment, a message, or a task."""
+def prepare_desk_action(hotel, manager, message, history, dates=None):
+    """The desk-action model. A read is left for the live SQL node; this step does not choose a day or run SQL."""
     from booking_system.guest_summary import desk_reply
-    from booking_system.semantic.catalog import catalog_row, ready_ids
+    from booking_system.semantic.catalog import ready_ids
+
+    hotel_id = _hotel_id(hotel)
     stored = read_topic(hotel, manager)
     brief = desk_reply(
         _client(), hotel, manager, message, history,
-        _queue_text(hotel), _pin_text(hotel), stored,
+        _queue_text(hotel), _pin_text(hotel), stored, dates=dates,
     )
+    from booking_system.semantic.dates import pass_stay_dates
+    if not isinstance(brief.get("dates"), dict):
+        brief["dates"] = {"resolutions": []}
+    pass_stay_dates(brief)
     topic = kept_topic(stored, brief.get("topic"))
     ids, topic = _read_ids(topic, brief)
     brief["catalog_ids"] = ids
@@ -986,15 +821,7 @@ def desk_action_turn(hotel, manager, message, history):
         from booking_system.desk_actions import _availability_item
         ask = str((_availability_item(brief) or {}).get("ask") or "rooms_left")
         read_now = ask not in ("set_price", "block", "open") and bool(readable)
-    elif topic == "occupancy":
-        brief["informational_actions"] = []
-        brief["executional_actions"] = []
-        read_now = bool(readable)
-    elif topic == "guest":
-        brief["informational_actions"] = []
-        brief["executional_actions"] = []
-        read_now = bool(readable)
-    elif topic == "reservation":
+    elif topic in ("occupancy", "guest", "reservation"):
         brief["informational_actions"] = []
         brief["executional_actions"] = []
         read_now = bool(readable)
@@ -1004,35 +831,42 @@ def desk_action_turn(hotel, manager, message, history):
         read_now = True
     elif ids:
         brief["guest_reply"] = "That catalog is not an operational SQL read."
-    if read_now:
-        from booking_system.semantic.sql_agent import answer_question
-        _apply_read(brief, answer_question(hotel, message, readable, brief.get("read_parameters")))
-    brief, acted = apply_desk(hotel, brief)
-    from booking_system.desk_actions import availability_screen, function_screen, menu_screen, occupancy_screen, read_screen
+    return {
+        "read_now": read_now,
+        "brief": brief,
+        "topic": topic,
+        "ids": ids,
+        "readable": readable,
+        "hotel_id": hotel_id,
+    }
+
+
+def finish_desk_action(hotel, manager, message, brief, dates, topic, ids, readable, read_now):
+    """Screens and, when a read ran, the reply sentence. The sentence model runs in the reply node."""
+    from booking_system.desk_actions import availability_screen, function_screen, menu_screen, occupancy_screen
+    from booking_system.desk_actions import read_screen as read_card
+
+    brief, acted = apply_desk(hotel, brief, manager)
     if read_now:
         brief["guest_reply"] = compile_desk_sentence(
             message,
             brief.get("query_rows") or [],
             brief.get("query_error") or "",
             brief.get("query_stall") or "",
+            dates=dates,
         )
     reply = str(brief.get("guest_reply") or "").strip() or "No action is needed."
+    hotel_id = _hotel_id(hotel)
     if topic == "availability":
-        screen = availability_screen(hotel, brief)
+        screen = availability_screen(hotel_id, brief, manager)
     elif topic == "occupancy":
-        screen = occupancy_screen(hotel, brief)
+        screen = occupancy_screen(hotel_id, brief)
     elif brief.get("query_rows") is not None and readable:
-        header = "Read"
-        for map_id in ids:
-            entry = catalog_row(map_id) or {}
-            if entry.get("concepts"):
-                header = entry.get("title") or map_id
-                break
-        screen = read_screen(hotel, brief, header)
+        screen = read_card(hotel_id, brief, _read_header(ids))
     else:
-        screen = function_screen(hotel, brief, brief.get("result_lines"))
+        screen = function_screen(hotel_id, brief, brief.get("result_lines"))
         if not screen and brief.get("guide_actions"):
-            screen = menu_screen(hotel)
+            screen = menu_screen(hotel_id)
     if screen:
         _copy_function(hotel, screen)
     else:
@@ -1046,13 +880,15 @@ def desk_action_turn(hotel, manager, message, history):
     return reply, acted, screen, {"shown": shown, "count": count}
 
 
-def receive_manager_whatsapp(hotel, source_ref, text, row_id=""):
-    """A WhatsApp message from the hotel user. Summarize the Leon chat, send that one text, then reply."""
-    import json
+def receive_manager_whatsapp(account, source_ref, text, row_id=""):
+    """A WhatsApp message from a hotel user (manager_account). Summarize their web chat, send that one text, then reply. The turn
+    is written to the same chat as the web desk."""
+    from booking_system.runtime_state import read_turns, write_turns
     ref = str(source_ref or "").strip()
     body = str(text or "").strip()
     if not ref or not body:
         return "missing"
+    hotel = account["hotel_name"]
     coll = _sync_collection()
     existing = coll.find_one({"source_ref": ref})
     if existing and (existing.get("applied") or existing.get("direction") == "out"):
@@ -1061,7 +897,8 @@ def receive_manager_whatsapp(hotel, source_ref, text, row_id=""):
         try:
             coll.insert_one({
                 "source_ref": ref,
-                "hotel_name": str(hotel or "").upper(),
+                "hotel_id": account["hotel_id"],
+                "user_id": account["user_id"],
                 "direction": "in",
                 "message_type": "text",
                 "row_id": str(row_id or ""),
@@ -1076,10 +913,8 @@ def receive_manager_whatsapp(hotel, source_ref, text, row_id=""):
             if existing and existing.get("applied"):
                 return "duplicate"
     existing = coll.find_one({"source_ref": ref}) or {}
-    _history, _manager, phone = _desk_dialog(hotel)
     if not existing.get("summary_sent"):
-        summary = _send_chat_summary(hotel, phone)
-        if summary in ("sent", "empty"):
+        if _send_chat_summary(account) in ("sent", "empty"):
             coll.update_one({"source_ref": ref}, {"$set": {"summary_sent": True}})
     if str(row_id or "") in ("pin", "read", "dismiss") and not existing.get("clicked"):
         card_click(hotel, "sales", row_id)
@@ -1087,36 +922,22 @@ def receive_manager_whatsapp(hotel, source_ref, text, row_id=""):
     existing = coll.find_one({"source_ref": ref}) or {}
     reply = str(existing.get("reply") or "")
     if not reply:
-        history, manager, phone = _desk_dialog(hotel)
-        reply, _acted, _screen, _pins = desk_turn(hotel, manager, body, history)
+        reply, _acted, _screen, _pins = desk_turn(hotel, account["user_id"], body, read_turns(hotel, account["user_id"]))
         coll.update_one({"source_ref": ref}, {"$set": {"reply": reply}})
     if not existing.get("reply_sent"):
         from booking_system.front_desk_manager import intelligent_front_desk
-        result = intelligent_front_desk.send_whatsapp_text(phone, reply)
+        result = intelligent_front_desk.send_whatsapp_text(account["phone"], reply)
         if not result.get("error"):
-            remember_outbound(result.get("message_id"), hotel, {})
+            remember_outbound(result.get("message_id"), account["hotel_id"], {})
             coll.update_one({"source_ref": ref}, {"$set": {"reply_sent": True}})
             existing["reply_sent"] = True
-    from booking_system.runtime_state import write_turns
-    history, manager, _phone = _desk_dialog(hotel)
-    if manager:
-        present = False
-        for entry in history:
-            if isinstance(entry, dict) and str(entry.get("source_ref") or "") == ref:
-                present = True
-        if not present:
-            history.append({
-                "sender": "user",
-                "text": body,
-                "source_ref": ref,
-                "channel": "whatsapp",
-                "summarized": True,
-            })
-            leon_turn = {"sender": "leon", "text": reply}
-            if existing.get("reply_sent"):
-                leon_turn["channel"] = "whatsapp"
-                leon_turn["summarized"] = True
-            history.append(leon_turn)
-            write_turns(hotel, manager, history)
+    history = read_turns(hotel, account["user_id"])
+    if not any(isinstance(entry, dict) and str(entry.get("source_ref") or "") == ref for entry in history):
+        history.append({"sender": "user", "text": body, "source_ref": ref, "channel": "whatsapp", "summarized": True})
+        answer = {"sender": "leon", "text": reply}
+        if existing.get("reply_sent"):
+            answer.update(channel="whatsapp", summarized=True)
+        history.append(answer)
+        write_turns(hotel, account["user_id"], history)
     coll.update_one({"source_ref": ref}, {"$set": {"applied": True}})
     return "created"

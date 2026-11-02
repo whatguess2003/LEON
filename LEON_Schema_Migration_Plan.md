@@ -1,8 +1,51 @@
 # LEON Schema Migration and Extension Plan (for approval)
 
-Status: **plan only, nothing executed.** Live counts were taken on 31 Oct 2026. Re-run every "expected" query just before each stage, because desk simulations are still writing data.
+Status (1 Nov 2026): **A0, A1, waves 2, 3 and 4 done** (see below). The whole database is test data. It was wiped and rebuilt from the SANDBOX fixture (`python -m fixtures.sandbox wipe | seed`). Only the general recipes (6 catalog / knowledge tables) and the structure are kept; the safety copy is `_backups/general_recipes_20261031_214842.json`.
 
-Baseline: agent 688931ae's general-recipe fix and the `currency VARCHAR` columns on `room_bookings`, `payment_tracking` and `payment_ledger` have landed. Currency is INR on 3 bookings and NULL on 95 bookings and both ledger rows.
+**Wave 2 (core, 31 Oct): done.** A1b, A2, A4, A6 (adults / children / commission on `booking`), A8 guest part, C1 (`department` is a core table; HR, Finance and F&B DDL only verify it), C3 / C4 (Finance: codes, tax, folios, postings, business day, cashier shifts), HR, FB-1, and the K1 core: rooms, inventory, pricing, OTA mapping, Aiosell, bookings, guests, payments, front desk, housekeeping, maintenance and staff lookups run on ids. The area routes live in `booking_system/routes/{rooms,bookings,frontdesk,operations}.py`, each with its `ACCESS` points; `access.check_routes` refuses to start the server when a route has no access point.
+- **Fixtures.** `python -m fixtures.sandbox wipe | seed` builds **SANDBOX HOTEL** (values; users SANDBOX MANAGER / SANDBOX FRONTDESK, phones `+1 555 0100–0199`, emails `@example.com`, sign-in by phone, email or username) and **SANDBOX ANNEX** (isolation), bookings around today, then the HR seed, the Finance seed with an open business date, and the F&B outlet with sample checks. `python fixtures/test_hotel.py --stage core|hr|fnb|finance|all|verify [--reset]` builds **LEON TEST HOTEL** (50 rooms, 1000 bookings, 10 users, 10 staff with rosters, 2 outlets, 78 business days of postings). Recipes validate on SANDBOX HOTEL with SANDBOX ANNEX as the isolation hotel; general recipes are republished with `python -m booking_system.semantic.seed_general`.
+- **Folio and postings contract.** Departments post through `finance.service.post_charge_in` / `post_payment_in` on the caller's cursor, so a check close and its postings commit together. Folio types: `guest` (ref = `bkg_` id), `outlet` (ref = `out_` id, `outlet_id` required), `account` (ref = AR account id). A tax posting carries `tax_code_id`, `tax_rule_id` and its parent posting; a cash posting needs the poster's open cashier shift; payments are negative, refunds positive. Postings are immutable (triggers); corrections are reversals. F&B lines carry Finance's `txc_` code (FNB_FOOD, FNB_BEVERAGE); `source_ref` is `<check_id>/<code>` or `<check_id>/pay/<n>`.
+- **Staff and users.** `staff.user_id` links an HR staff record to a login (the general manager is also staff). Housekeeping and maintenance resolve a person through `staff` / `staff_identity` and ask HR whether they may take the task (`hr.service.check_assignable` with the HOUSEKEEPING or MAINTENANCE department and the hotel-local date); available and on-duty lists come from `available_staff` / `on_duty_staff`. `staff_duty_log` is retired.
+
+**Wave 3 (remaining modules, 1 Nov): done.** K1 is complete for every non-semantic module.
+- **Guest services on ids.** `loyalty_manager` (tiers, rewards, members, points ledger, occasions), `guest_engagement_manager` (preferences, requests, complaints, upgrade offers), `referral_agent` (partnerships between hotels by `hotel_id`, referrals), `mobile_checkin_manager` (`mobile_checkin` started → verified; `digital_key` per booking room, valid until the hotel's check-out time after the last night), `concierge_manager` (content collection `concierge`, fixed kinds and fields) and `ota_agent` (search on `daily_pricing` + `availability`, book through `booking_manager`). Tables live in `schema_guests`; routes in `booking_system/routes/guest_services.py`, and the guest thread / approvals / tasks / WhatsApp / messages / biography routes moved from `main.py` to `booking_system/routes/guests.py`. Guest needs are written by the `guest_needs` job (`jobs.enqueue`) keyed by `hotel_id`.
+- **Desk actions and chat.** `desk_actions` takes `hotel_id`; the approval list is the `desk_action_approval` table and desk tasks are open `guest_request` rows. `leon_turn` keeps the hotel NAME in its signatures (the semantic workflow passes it) and resolves the id; pins, screen and seen documents are keyed by `hotel_id`. Kite pricing, `guest_summary`, the Aiosell buffer (`room_type_id`) and the channel manager lists (`?hotel_id=`) run on ids. Guest links carry `hotel_id` (older links are invalid).
+- **Manager WhatsApp.** `leon_turn.manager_account(phone)` reads `user_identity` → active `user_account` → active `hotel_user` (last hotel, else the single hotel); the 24-hour window is `user_whatsapp_window` by `user_id`, and the chat is stored under the `usr_` id, so WhatsApp and the web desk share one history. The manager documents are no longer read.
+- **Bridges.** All `bind_hotel_id` bridge triggers are gone; the remaining triggers are Finance guards and access-version bumps. Tables that still carry `hotel_name` are semantic-owned (catalogs side: `agent_usage`, `complaints`, `composition_plans`, `events`, `evidence`, `execution_runs`, `gap_candidates`, `investigations`, `investigation_traces`, `knowledge_tests`, `problem_specs`, `tasks`) or runtime state (`desk_dialog`, `desk_session`, `desk_topic`, `read_sql_cache`, keyed by hotel name + user id). The owner column of `catalogs`, `investigations` and `gap_candidates` is `user_id`; no startup DDL outside `semantic/` re-adds `manager_name`.
+- **Keep-alive.** The 4xx-then-disconnect report did not reproduce with a real keep-alive client; `ActivityLog` is now a pure ASGI middleware and uvicorn's `timeout_keep_alive` is 75 s, and a 400 / 401 / 404 / 422 followed by further requests on the same connection passes.
+
+**Wave 4 (last hotel-name areas, 1 Nov): done.** Nothing outside `semantic/` and the runtime-state tables is keyed by hotel name.
+- **Documents.** `content_store.document_key` takes an explicit `_id` first, then the natural-key fields including `hotel_id` (a hotel_id-only body used to get an empty key, so hotels overwrote each other). Existing policy, profile and screen documents were re-keyed to `hotel_id`.
+- **Policies, registration card, property details.** `policy_manager` is module functions on `hotel_id` (`read_policies`, `create_policy` one per type, `update_policy`, `delete_policy`, `read_registration_card`, `save_registration_card`; keys `hotel_id|type` and `hotel_id`; writers recorded as `user_id`). Routes live in `booking_system/routes/property.py`. `hotel_info_manager` keeps contact, address, description, facilities and amenities on the `hotel_profile` document (key `hotel_id`); the time zone is the hotel row's (a different value is refused) and check-in / check-out come from the booking policy.
+- **Channel manager.** `ota_mapping` and the channel manager's `/mapping` and `/room-mapping` take `hotel_id`. The UI calls the session routes `GET|POST /api/ota/mapping` and `POST /api/ota/room-mapping` on main, which forward with the session's hotel. `workers/cm.js` is a pure proxy and is unchanged.
+- **Onboarding.** `hotel_context_manager` and `manager_collection` are gone. `onboard_turn` creates and reads `user_account`, `user_identity`, `hotel`, `hotel_user` and the roles and modules through `user_manager`; definitions are saved on the `usr_` profile; the guide is `hotel_guide` keyed by `hotel_id`. Writers act only for the signed-in person (`/api/onboard/turn` passes the cookie's `user_id`); an existing phone without its password gets no token and no writes.
+- **Guest links.** They carry `{hotel_id, guest_phone, exp}`, are HMAC-signed and expire after 7 days; expired or altered links are refused.
+- **Verified.** A full chat onboarding of SANDBOX ONBOARD HOTEL (account, hotel, rooms, policies, definitions, booking) was run and the hotel deleted with `fixtures.sandbox.wipe([...])`. Policies, registration card, property templates and OTA mapping routes were run on SANDBOX HOTEL, with SANDBOX ANNEX documents and hotel row unchanged.
+- **Channel manager credential.** Every channel manager endpoint except `/health` and the Aiosell webhook requires `X-Leon-Service`: `{hotel_id, exp}` signed with `CM_SERVICE_SECRET` (`booking_system/service_token.py`, 60 s, constant-time check, must name the hotel the call acts on). Unset secret refuses everything. The Aiosell webhook keeps Basic auth against `AIOSSELL_USERNAME` / `AIOSSELL_PASSWORD` (constant time; refused when unset). Both workers pass `CM_SERVICE_SECRET`; it must be set as a secret on both.
+- **Onboarding replies.** The extraction step only fills fields; the reply is written after the writes from their outcomes ("Nothing was saved this turn" when none), and may claim a save only from a Saved / Open result.
+- **Desk read presentation.** `leon_turn.present_read` reads the card title (cached 300 s per process) and the pins while the sentence is written, and sends the WhatsApp copy to open windows after the reply; `hotel_registry.read_hotel_by_id` uses the per-process hotel cache (cleared by every hotel write in `hotel_registry`). Its own cost fell from about 2.4 s to 0.25 s; a recipe-answered `/api/chat/start` turn on SANDBOX HOTEL took 18.5 s cold and 16.5 s warm.
+- **What remains.** `semantic/` tables still carry hotel names and `semantic/workflow.py` upper-cases the owner for personal-recipe candidates and definition requests (semantic agent, in progress); runtime-state tables (`desk_*`, `read_sql_cache`); semantic cache invalidation on booking writes; P1–P4, FB-2, GEN, R1–R2.
+
+**Strategy (overrides every stage below).** There is no data migration at all: no backfill, no dual-write, no diff verification window, no quarantine, no rollback plan for data. Each stage is:
+1. new structure (DDL in the startup schema, idempotent, `add_column` / `lock_timeout` pattern);
+2. code switch: readers and writers move in one step, superseded tables, columns and documents are dropped in the same change, and general recipes are republished with `python -m booking_system.semantic.seed_general`;
+3. fixture update: `fixtures/sandbox.py` builds the new structure through the app writers, then `wipe` + `seed` + recipe check.
+
+The "Backfill", "Dual-write", "Verify (3 days)", "Rollback" and live-count paragraphs in the stages below are void; their DDL and code lists still describe the target. Defaults D1–D9 and D14–D15 were about cleaning old data and no longer apply; D10–D13 and D16–D17 are fixture/seed values.
+
+**Ids (overrides the "natural keys" rule everywhere below).** Every entity has a text primary id `<prefix>_<uuid4>`, `VARCHAR(48)`, with `CHECK (left(id, n) = '<prefix>_')`. The id is generated in app code (`hotel_registry.new_id(prefix)`, Python `uuid4`), never by a DB default, so the same code works on any Postgres or behind any pooler. A prefix is used because the id appears in logs, chat, URLs and LLM-written SQL; it tells which entity it belongs to, and an id of one entity can't be passed for another. Natural attributes (hotel_name, room_type name, room_number, guest phone/email, OTA booking reference, staff phone) become UNIQUE, indexed attributes scoped by `hotel_id`; people's phones and emails live in identity tables (`user_identity`, `guest_identity`) that point to one `user_id` / `guest_id`. Every FK references an id, never a name or phone. Search indexes stay on the natural attributes. Wherever the DDL below writes `hotel_name` as a key or FK column, read `hotel_id REFERENCES hotel (hotel_id)`; wherever it keys on room_type / room_number / guest_phone / staff_phone / outlet_name / department_name / account_name, read the entity id plus a UNIQUE `(hotel_id, name)`.
+
+| Prefix | Entity | Prefix | Entity |
+|---|---|---|---|
+| `htl_` | hotel | `bkg_` | booking (desk ids done; OTA ids next) |
+| `usr_` | user_account | `bkn_` | booking_room_night |
+| `uid_` | user_identity | `pay_` | payment / folio transaction |
+| `gst_` | guest | `fol_` | folio |
+| `gid_` | guest_identity | `stf_` | staff |
+| `rt_` | room_type | `dep_`, `out_`, `cc_` | department, outlet, cost centre |
+| `rm_` | room | `acc_`, `txc_` | account, transaction code |
+
+**Portability (Railway now, Cloudflare Postgres behind Hyperdrive later).** The connection comes only from `DATABASE_URL`. Only core Postgres features are used, plus the standard `pg_trgm` extension. Settings that a request needs are transaction-scoped: `content_store.with_settings` (`BEGIN` + `set_config(name, value, true)`) is used by `execute_reads` (TimeZone, statement_timeout), the SQL agent, the schema cache, and keyphrase search. There is no LISTEN/NOTIFY, no advisory lock and no temp table. Startup DDL runs on its own autocommit connection with a session `lock_timeout`, so it must run on a direct (non-pooled) connection at deploy time.
 
 Goal: a multi-user PMS schema (each hotel has many users, each limited to certain modules) that covers standard front-office, housekeeping and revenue operations, plus a shared core (organisation, access, money, business date) that Finance, HR, F&B, Spa, Events, Laundry and Reporting plug into without schema rework.
 
@@ -12,8 +55,8 @@ Goal: a multi-user PMS schema (each hotel has many users, each limited to certai
 
 ### Rules (every stage)
 - **Storage.** Computable data goes in tables: numbers, dates, statuses, keys, prices, rates, quantities, money. Content and setup prose goes in `content_document`: descriptions, photos, allergens, contact details, policy wording, credentials.
-- **Keys.** Natural keys only, and `hotel_name` is the first column of every key and FK. The keys used are hotel_name, room_type, room_number, booking_id, guest_phone, staff_phone, outlet_name, department_name, cost_center_name, transaction_code, account_name, gl_account_code and business_date.
-  - Ordinals inside a natural parent are allowed because they are printed or spoken by staff: `room_seq`, folio `folio_window`, `txn_seq`, `line_seq`, `check_number`.
+- **Keys.** `<prefix>_<uuid4>` ids (see Ids above); `hotel_id` is on every hotel-owned table and in its unique keys. Natural attributes are UNIQUE within the hotel and indexed for discovery.
+  - Ordinals inside a parent are still allowed because staff print or say them: `room_seq`, folio `folio_window`, `txn_seq`, `line_seq`, `check_number`.
 - **Case.** CHECKs enforce uppercase canonical names; phones are E.164 (without regex: `left(p,1)='+' AND translate(substr(p,2),'0123456789','')='' AND char_length(p) BETWEEN 8 AND 16`).
 - **No fallback logic.**
   - A missing value stays NULL and appears in an explicit exception list.
@@ -22,14 +65,9 @@ Goal: a multi-user PMS schema (each hotel has many users, each limited to certai
 - **Identity and access (from A1b).** The acting person is always `(hotel_name, user_phone)` from `hotel_user`. Every actor column is `*_by_user_phone` with an FK to `hotel_user`. `staff` (A3) is the HR/employment record keyed on the same phone; a person who logs in and is employed has both rows. Every API route, desk action, desk read, orchestrator tool and readable table is listed in `access_point` with the module and level it needs. A point that isn't listed is refused, and startup fails.
 
 ### Delivery pattern (every stage)
-1. **Additive DDL and backfill.** No behaviour change.
-2. **Dual-write.** Writers update old and new structures in the same transaction.
-3. **Verify.** A daily diff query must return 0 rows for 3 days.
-4. **Cut readers.** This includes general recipes, republished as new versions through `seed_general._publish` / `seed()`, and user recipes, re-authored as new versions.
-5. **Stop old writes.**
-6. **Drop legacy.** A separate approval and the point of no return.
-
-Rollback before step 6 means reverting the code. A recipe rollback just re-points `catalog_active_versions` to the previous version.
+1. **Structure.** DDL in startup schema code.
+2. **Code switch.** Readers and writers move in one change, superseded structures are dropped, and general recipes are republished. User recipes are wiped with the data.
+3. **Fixture.** Update `fixtures/sandbox.py`, run `wipe` then `seed`, run the general recipes on JACKHOTEL (values) and LITTLE COVE (isolation), and do one `/api/chat` turn.
 
 ### Defaults (JACKHOTEL and the other hotels are test data, so nothing blocks)
 
@@ -82,38 +120,41 @@ Rollback before step 6 means reverting the code. A recipe rollback just re-point
 
 ## Part 2: Stage list and dependencies
 
-| Phase | Stage | Effort | Depends on |
-|---|---|---|---|
-| **A. Foundation** | A0 Backups and defaults | 0.5 d | — |
-| | A1 `hotel` registry | 1–1.5 d | A0 |
-| | **A1b Users and module access** (`user_account`, `hotel_user`, roles, module levels, `access_point` guard, semantic-layer filtering, re-key off `manager_name`) | **8–10 d** | A1 |
-| | A2 `room_type` / `room` masters | 2 d | A1 |
-| | A3 `staff` key and natural keys for operations tables | 2–3 d | A2, A1b |
-| | A4 `booking_room_night`, the nightly fact | 5–7 d | A2 |
-| | A5 Occupancy-only room assignments (OOO / OOS blocks) | 3–4 d | A4 |
-| | A6 Booking value and channel commission | 1.5–2 d | A4 |
-| | A7 timestamptz, `booked_at`, room status history | 2.5–3 d | A1, A3 |
-| | A8 Documents: indexes, computable fields out, guest key | 3–4 d | A4 |
-| **B. Shared core** | C1 Department, cost centre, outlet | 1–1.5 d | A1, A3 |
-| | C2 Audit trail (roles moved to A1b) | 1.5–2 d | A1b, A3 |
-| | C3 Financial core (transaction codes, tax, accounts, channels, folios, transactions) | 5–7 d | A4, A6, C1, C2 |
-| | C4 Business date and night audit | 4–5 d | C3, A5, A7 |
-| **C. PMS modules** | P1 Rate plans, packages, cancellation / no-show / deposit policies | 3–4 d | C3 |
-| | P2 Groups, blocks, allotments | 3 d | A4, P1 |
-| | P3 Late checkout, service requests, lost & found | 2–3 d | C1, C3 |
-| | P4 City ledger operations and deposits | 2–3 d | C3, P1 |
-| **D. Departments** | FIN Finance | 5–7 d | C4 |
-| | HR Human resources | 5–7 d | C1, C2, A1b |
-| | FB-1 F&B outlets, menu, checks, posting | 4–5 d | C4 |
-| | FB-2 F&B stock and recipe cost | 3–4 d | FB-1, FIN (vendors) |
-| | GEN Spa / Events / Laundry (each) | 3–5 d each | C4, HR |
-| **E. Reporting** | R1 Night-audit daily snapshots | 3–4 d | C4 |
-| | R2 Standard reports as general recipes | 4–5 d (+1 d per department report) | R1, plus FIN / HR / FB for their reports |
+Effort is recomputed for "structure + code switch + fixture" (no backfill, dual-write or verification window). The id re-key adds work: the old code holds about 1,800 natural-key references (front_desk_manager about 670, booking_manager about 190, main.py about 150). That work is counted in the stage that introduces each entity, plus K1 for the remaining modules.
 
-**Totals**
-- PMS path (A, B, C, E): **about 57–76 developer days** (was 50–66: A1b adds 8–10 days and C2 shrinks by 0.5–1 day).
-- Adding FIN, HR and F&B: **about 74–99 days** (was 67–89).
-- Each extra department module (Spa, Events, Laundry) adds 3–5 days, plus 0.5 day to register its module, role rows and access points.
+| Phase | Stage | Effort (was) | Depends on |
+|---|---|---|---|
+| **A. Foundation** | A0 Backups and defaults | **done** (0.5) | — |
+| | A1 `hotel` registry (`htl_` id, bridge trigger, recipes and agents on `hotel_id`) | **done** (1–1.5) | A0 |
+| | **A1b Users and module access**: `user_account` (`usr_`), `user_identity` (phone / email to one user_id), `hotel_user`, roles, module levels, `access_point` guard, semantic-layer filtering, actor columns as `user_id` | **6–7 d** (8–10) | A1 |
+| | A2 `room_type` (`rt_`) / `room` (`rm_`) masters; inventory, pricing, assignments, mapping by id | 2–2.5 d (2) | A1 |
+| | A3 `staff` (`stf_`) and ids for operations tables | 1.5–2 d (2–3) | A2, A1b |
+| | A4 `booking_room_night` (`bkn_`); `bkg_` ids for OTA bookings; booking → guest_id | 4–5 d (5–7) | A2, A8 guest part |
+| | A5 Occupancy-only room assignments (OOO / OOS blocks) | 2–2.5 d (3–4) | A4 |
+| | A6 Booking value and channel commission | 1–1.5 d (1.5–2) | A4 |
+| | A7 timestamptz, `booked_at`, room status history | 1.5–2 d (2.5–3) | A1, A3 |
+| | A8 Documents: indexes, computable fields out; `guest` (`gst_`) + `guest_identity` | 2.5–3 d (3–4) | A1 |
+| | **K1 Re-key the remaining modules** (front desk, housekeeping, maintenance, loyalty, concierge, engagement, referral, Kite pricing, main.py routes, desk.js / UI payloads), then drop the `bind_hotel_id` bridge triggers and every `hotel_name` column on child tables | **6–8 d** (new) | A2–A8 |
+| **B. Shared core** | C1 Department, cost centre, outlet | 1 d (1–1.5) | A1, A3 |
+| | C2 Audit trail (roles moved to A1b) | 1.5 d (1.5–2) | A1b, A3 |
+| | C3 Financial core (transaction codes, tax, accounts, channels, folios, transactions) | 4.5–6 d (5–7) | A4, A6, C1, C2 |
+| | C4 Business date and night audit | 3.5–4.5 d (4–5) | C3, A5, A7 |
+| **C. PMS modules** | P1 Rate plans, packages, cancellation / no-show / deposit policies | 3 d (3–4) | C3 |
+| | P2 Groups, blocks, allotments | 2.5 d (3) | A4, P1 |
+| | P3 Late checkout, service requests, lost & found | 2 d (2–3) | C1, C3 |
+| | P4 City ledger operations and deposits | 2 d (2–3) | C3, P1 |
+| **D. Departments** | FIN Finance | 4.5–6 d (5–7) | C4 |
+| | HR Human resources | 4.5–6 d (5–7) | C1, C2, A1b |
+| | FB-1 F&B outlets, menu, checks, posting | 3.5–4.5 d (4–5) | C4 |
+| | FB-2 F&B stock and recipe cost | 3–3.5 d (3–4) | FB-1, FIN (vendors) |
+| | GEN Spa / Events / Laundry (each) | 3–4.5 d each (3–5) | C4, HR |
+| **E. Reporting** | R1 Night-audit daily snapshots | 2.5–3.5 d (3–4) | C4 |
+| | R2 Standard reports as general recipes | 3.5–4.5 d (4–5), +1 d per department report | R1, plus FIN / HR / FB for their reports |
+
+**Totals (remaining work)**
+- PMS path (A, B, C, E): **about 53–64 developer days** (was 57–76). Dropping data migration saves about 13–17 days; the id re-key (K1 plus the larger A2 / A4 / A8) costs back about 8–10.
+- Adding FIN, HR and F&B: **about 68–84 days** (was 74–99).
+- Each extra department module (Spa, Events, Laundry) adds 3–4.5 days, plus 0.5 day to register its module, role rows and access points.
 
 **What can run in parallel**
 - After A1: A1b and A2. A1b's semantic-layer part (module tags, filtering) and its API-guard part can ship separately.
@@ -124,70 +165,43 @@ Rollback before step 6 means reverting the code. A recipe rollback just re-point
 
 ## Part 3: Foundation stages (A)
 
-### A0: Backups and defaults (0.5 day)
+### A0: Backups and defaults (done)
 
-```sql
-CREATE SCHEMA mig_backup;
-CREATE TABLE mig_backup.room_bookings AS TABLE public.room_bookings;
--- repeat for: booking_stays, room_stay, room_number_assignments, payment_tracking, payment_ledger, channel_reservations,
--- room_readiness_status, maintenance_requests, maintenance_schedules, guest_profile, guest_message,
--- room_inventory_nightly, daily_pricing, content_document
-CREATE TABLE mig_backup.quarantine_room_bookings (LIKE public.room_bookings);  -- D2 / D4 targets, same for each table
-```
+Only the general recipes are kept: `python -m migrations.general_recipes export` wrote `_backups/general_recipes_20261031_214842.json` (catalogs 16, catalog_versions 36, catalog_active_versions 15, catalog_keyphrase 91, knowledge_index 15, knowledge_publications 36). `python -m fixtures.sandbox wipe` truncates every other public table in one statement (no CASCADE, so a kept table is never touched); `seed` rebuilds the SANDBOX fixture through the app writers.
 
-Apply the D1–D13 defaults at the stage that needs each one.
+SANDBOX fixture (`fixtures/sandbox.py`, test password printed only as "set"):
+- **JACKHOTEL** (MYR, Asia/Kuala_Lumpur, channel code `sandbox-pms`), manager MR. JACK +6033445566. DELUXE rooms 101–103 at 250, FAMILY rooms 201–202 at 380. Inventory and pricing from today−14 to today+30, with booking and payment policies.
+- **LITTLE COVE** (MYR), manager LINA TAN +60175550007, STANDARD room 1 at 180. It exists only for the recipe isolation check.
+- **6 guests and 7 bookings** around today: 1 checked out last week, 1 in-house departing today, 1 in-house staying, 2 arrivals today, 1 future booking and 1 cancelled. 2 payments.
 
-### A1: `hotel` registry (1–1.5 days)
+### A1: `hotel` registry (done)
 
-**Goal.** One FK target for `hotel_name`, holding the computable configuration: currency, time zone, channel code, standard times and night audit time. Descriptive content (city_name, address, facilities) goes in a new `hotel_profile` document keyed `hotel_name`, indexed in A8.
+**Built.** `booking_system/hotel_registry.py`, run at startup (`main.py`) and by the fixture.
 
 ```sql
 CREATE TABLE hotel (
-  hotel_name             VARCHAR(255) PRIMARY KEY CHECK (hotel_name = UPPER(btrim(hotel_name)) AND hotel_name <> ''),
+  hotel_id               VARCHAR(48)  PRIMARY KEY CHECK (left(hotel_id, 4) = 'htl_'),
+  hotel_name             VARCHAR(255) NOT NULL UNIQUE CHECK (hotel_name = UPPER(btrim(hotel_name)) AND hotel_name <> ''),
   currency               CHAR(3)      NOT NULL CHECK (currency = UPPER(currency)),
   timezone               VARCHAR(64)  NOT NULL,
   channel_hotel_code     VARCHAR(64)  UNIQUE,
-  standard_checkin_time  TIME         NOT NULL,
-  standard_checkout_time TIME         NOT NULL,
-  night_audit_time       TIME         NOT NULL);
--- per child table T: ADD CONSTRAINT T_hotel_fk FOREIGN KEY (hotel_name) REFERENCES hotel ON UPDATE CASCADE NOT VALID; VALIDATE CONSTRAINT T_hotel_fk;
+  standard_checkin_time  TIME         NOT NULL,   -- seeded 14:00 (D10), editable
+  standard_checkout_time TIME         NOT NULL,   -- seeded 12:00
+  night_audit_time       TIME         NOT NULL);  -- seeded 03:00 (D11)
+-- bridge until K1, per child table T:
+--   ADD COLUMN hotel_id VARCHAR(48); BEFORE INSERT OR UPDATE OF hotel_name trigger bind_hotel_id() sets hotel_id
+--   from hotel_name and raises when the hotel is not registered;
+--   T_hotel_fk FOREIGN KEY (hotel_id) REFERENCES hotel (hotel_id) (validated); index T_hotel_id_idx.
 ```
 
-The child tables are: `room_inventory_nightly`, `daily_pricing`, `room_bookings`, `booking_stays`, `room_stay`, `room_number_assignments`, `room_readiness_status`, `payment_ledger`, `channel_reservations`, `channel_reservation_sync`, `hotel_room_code_mapping`, `booking_guest_counts`, `guest_profile`, `guest_message`, `guest_preference`, `guest_request`, `guest_complaint`, `maintenance_requests`, `maintenance_schedules`, `cleaning_status`, `staff_duty_log`, `room_allotments`, `kite_hotel_setting`, `kite_push_day`, `kite_price_anchor`, `booking_modification_log`, `aiosell_buffer_room_nights`.
+Child tables: `room_inventory_nightly`, `daily_pricing`, `room_bookings`, `booking_stays`, `room_stay`, `room_number_assignments`, `room_readiness_status`, `payment_ledger`, `channel_reservations`, `channel_reservation_sync`, `hotel_room_code_mapping`, `booking_guest_counts`, `guest_profile`, `guest_message`, `guest_preference`, `guest_request`, `guest_complaint`, `maintenance_requests`, `maintenance_schedules`, `cleaning_status`, `staff_duty_log`, `room_allotments`, `kite_hotel_setting`, `kite_push_day`, `kite_price_anchor`, `booking_modification_log`, `aiosell_buffer_room_nights`.
 
-**Backfill.** Expect **7 rows**, all MYR / Asia/Kuala_Lumpur, using D10 and D11.
+**Code switched (no dual-write).**
+- Writers: `signup_manager` and `set_manager_hotel` write the hotel row, the manager document and the `hotel_profile` document (city_name) in one transaction. `onboard_turn` asks for the city. `ota_mapping.save_mapping` writes `hotel.channel_hotel_code`, and the `ota_link` collection is gone. Manager documents no longer hold currency or time zone.
+- Readers: `timezone_utils`, `currency_utils`, `guest_manager.hotel_currency`, `onboard_turn`, `leon_meta_orchestrator.read_hotel_local_time_tool`, `aiosell_reservation._hotel_name`, `channel_reservations`, `aiosell_channel_manager.hotel_code_for`, the hotel checks in `policy_manager`, and the JWT `hotel_timezone` / `hotel_currency` claims (filled from the row at sign-in).
+- Desk booking ids are `bkg_<uuid>` (the regex counter is gone); `create_booking` now writes `check_in_date` and `currency`.
 
-```sql
-WITH m AS (SELECT UPPER(body->>'hotel_name') hotel_name, MAX(body->>'hotel_currency') currency, MAX(body->>'hotel_timezone') timezone,
-                  COUNT(DISTINCT body->>'hotel_currency') n_cur, COUNT(DISTINCT body->>'hotel_timezone') n_tz
-           FROM content_document WHERE collection_name='manager_collection' AND body->>'hotel_name' IS NOT NULL GROUP BY 1),
-     g AS (SELECT UPPER(body->>'hotel_name') hotel_name, MAX(body->'fields'->>'checkin_time') ci, MAX(body->'fields'->>'checkout_time') co
-           FROM content_document WHERE collection_name='hotel_guide' GROUP BY 1)
-INSERT INTO hotel
-SELECT m.hotel_name, m.currency, m.timezone, o.body->>'hotel_code',
-       CASE WHEN g.ci IS NULL THEN TIME '14:00' ELSE g.ci::time END,   -- D10 explicit seed, not a runtime default
-       CASE WHEN g.co IS NULL THEN TIME '12:00' ELSE g.co::time END, TIME '03:00'
-FROM m LEFT JOIN g USING (hotel_name)
-LEFT JOIN content_document o ON o.collection_name='ota_link' AND o.body->>'hotel_name'=m.hotel_name
-WHERE m.n_cur = 1 AND m.n_tz = 1;
-```
-
-Check the `hotel_guide` time strings parse as `time` before running; any that don't are seeded with the D10 values and listed.
-
-**Code**
-- Dual-write: `onboard_turn._write_hotel`, `hotel_context_manager.signup_manager`, `set_manager_hotel`, and the `ota_link` writer in `ota_mapping.py`.
-- Cut readers: `timezone_utils._lookup_hotel_timezone`, `guest_manager.hotel_currency`, `desk_actions._currency`, `_hotel_doc`, the JWT claims in `hotel_context_manager._process_signin` (used by `main._get_tz_from_jwt` and `currency_utils.get_currency_from_jwt`), `leon_meta_orchestrator.read_hotel_local_time_tool`, `aiosell_reservation._hotel_name`.
-
-**Recipes**
-- `_HOTEL_CURRENCY` becomes `SELECT currency AS code FROM hotel WHERE hotel_name = UPPER(%(hotel_name)s)` (4 general recipes).
-- `_scope()` becomes `hotel_name = UPPER(%(hotel_name)s)` (all 15).
-- User recipes are unaffected.
-
-**Verify.** `SELECT conname FROM pg_constraint WHERE conname LIKE '%\_hotel_fk' AND NOT convalidated` returns 0 rows; `hotel` has 7 rows.
-
-**Rollback.** Drop the FKs and the table; the manager documents still hold the fields until A8.
-
-**Risk.** Low (onboarding order).
+**Recipes and agents.** `execute_reads` resolves the session hotel to its row and binds `%(hotel_id)s`, which every statement must use. All 15 general recipes filter `alias.hotel_id = %(hotel_id)s`, and `_HOTEL_CURRENCY` reads `hotel.currency` by id. `sql_agent`, `catalog_agent` (and its prompt), `review_flow` and `library` require and teach `hotel_id = %(hotel_id)s` and joins on id columns.
 
 ### A1b: Users and module access (8–10 days)
 
@@ -1779,6 +1793,104 @@ Each module follows the same generic pattern:
 6. **Daily statistics** in `daily_outlet_stats` (R1). **GL** through the transaction-code mapping (FIN).
 
 Verification, rollback and risk mirror FB-1. Effort is 3–5 days each.
+
+### SET: Hotel operating settings, versioned (done)
+
+Operational choices belong to each hotel and are captured from the hotel's own answers, at onboarding or later. Nothing in code chooses them, and nothing falls back to a default.
+
+**Schema (`booking_system/settings/schema.py`)**
+- `setting_catalog` (data, seeded from `settings/catalog.py`) has one row per choice. Columns:
+  - `setting_key` and `module_name`;
+  - `question` and `explanation`;
+  - `value_type` (boolean, choice, choices, time, amount, tax_codes) and `options [{value, meaning}]`;
+  - `required` and `required_when`;
+  - `set_module` and `set_level` (the role allowed to set it);
+  - `sop_prompt`, `display_order`;
+  - `effective_basis`: `local_date` for front desk and HR, `business_date` for finance and F&B.
+- `hotel_setting` holds per-hotel values: `hst_` id, `value` jsonb, `effective_from`, `set_by_user_id`, `set_at`, `source`, `note`.
+  - It is append-only (a trigger refuses UPDATE), so history is never overwritten.
+  - The value in effect on a day is the latest `effective_from` on or before that day.
+  - A new value may start no earlier than the hotel's open date for the row's basis.
+- SOP free text is kept as versioned documents (`hotel_sop`, `sop_` id) linked by `setting_key`, each with its own `effective_from`.
+- SQL functions:
+  - `hotel_local_date`, `hotel_setting_at(hotel, key, day)`;
+  - `hotel_setting_required`, which raises an error naming the setting and its question;
+  - `hotel_module_state(hotel, module, day)`;
+  - `hr_worked_hours`, and `hr_leave_days(hotel, from, to, rule_day)` (PL/pgSQL, so it reads only the branch the setting selects).
+- Migration: the three `hotel` time columns became `hotel_setting` rows (source `migration`) and were dropped.
+
+**Catalog**
+
+| Area | Settings |
+|---|---|
+| Front desk | Check-in time, check-out time, night-audit time, check-in room readiness |
+| Finance | `enabled`; tax pricing (inclusive or exclusive); tax calculation (simple or compound); tax order (required when compound); cashier variance tolerance |
+| F&B | `enabled`; closed-check correction (folio adjustment, or reopen with approval) |
+| HR | `enabled`; worked-hours breaks (deduct unpaid breaks, or breaks paid); leave day counting (calendar days or working days); working weekdays (required when working days) |
+
+**Module gating**
+- A module with an `.enabled` setting (finance, F&B, HR) is refused by the access guard with HTTP 409 in three cases:
+  - it is not set up;
+  - it is turned off;
+  - it is enabled but has unanswered required settings. The message names each missing setting and its question.
+- Front desk is core: each of its operations refuses on the specific setting it reads.
+- The settings routes (`/api/settings`, `/pending`, `/{key}/history`, POST) are member routes. They need membership only, and the service checks `set_module` / `set_level` for each setting.
+- `pending()` splits each module's missing settings into two lists:
+  - `ask`: answerable now;
+  - `waiting`: needs hotel data first. For example, a tax order needs the hotel's tax codes. Waiting settings still keep the module refused.
+
+**Behaviour per setting**
+- **Finance tax:**
+  - Exclusive pricing adds tax on top of the price.
+  - Inclusive pricing splits the price into net plus taxes. The net is rounded, and the rounding residual stays in the net.
+  - Compound tax applies the taxes in `finance.tax_order`, each on the net plus the taxes before it.
+  - The tolerance setting decides whether a cashier shift variance needs a reason.
+- **F&B:** the closed-check correction setting allows only one path. Under folio adjustment the check stays closed and an adjustment is posted. Under reopen with approval, a manager other than the requester approves, the settlement postings are reversed, and the check reopens for a new settlement round.
+- **HR:** worked hours and leave days are computed by the SQL functions, using the setting in effect on the work date or the leave start date.
+
+**Changes over time**
+- Enabling a module later asks that module's required questions through the desk, using the `hotel_settings` intent:
+  - a change is held with awaiting kind `setting_confirm` and saved only after the manager says yes;
+  - each follow-up question is held with awaiting kind `setting`;
+  - the module stays refused until every follow-up is answered.
+- Operations use the value in effect at their business or local date.
+- Finance and F&B recipes read the setting for each posting's business date. They report `tax_pricing_in_effect` (one value, or several when it changed within the period) and `revenue_at_quoted_prices`. HR recipes report `break_rule_in_effect` and `day_counting_in_effect`.
+- The live SQL agent and the catalog agent get `SQL_FACTS`, which tells them to use these functions.
+
+**Definitions**
+- Per-user definitions are versioned: `version_id` (`dfv_`), `effective_from`, `supersedes`. A superseded entry moves to `definition_history`.
+- `execution_runs.definition_versions`, `answer_complaints.definition_versions` and the session's `last_answer` record the versions an answer used.
+
+**Onboarding**
+- The `settings` step sits between policies and definitions. Its fields (`set_<key>`, `sop_<key>`) and questions are generated from the catalog: first each module's yes/no, then what each enabled module needs.
+- Values are recorded with source `onboarding`, and replies state only what was saved.
+- The step completes when nothing answerable is left. A waiting setting is reported, and its module stays refused until it is answered.
+
+**Verified (SANDBOX HOTEL vs SANDBOX ANNEX, opposite values)**
+
+| Check | SANDBOX HOTEL | SANDBOX ANNEX |
+|---|---|---|
+| FNB_FOOD priced 100 (SC 10%, SST 6%) | Net 100, tax 16, total 116 | Net 85.76, SC 8.58, SST 5.66, total 100 |
+| F&B check at menu 42 | Total 48.72 | Total 42.00 |
+| Cashier variance of 3 | Closes (tolerance 5) | Refused without a reason (tolerance 0) |
+| Worked hours, 8-hour shift with 30-minute break | 7.50 | 8.00 |
+| Leave Sun–Tue | 3 calendar days | 2 working days |
+| Correcting a closed check | Folio adjustment; reopen refused | Adjustment refused; reopen requested, refused for the requester, approved by another manager (3 postings reversed) |
+
+- **F&B enablement on ANNEX:**
+  - The F&B route returned 409 while F&B was turned off.
+  - The desk turn "we now serve food" asked for confirmation; "yes" saved it and asked the correction question.
+  - Between those turns, the route returned 409 naming `fnb.closed_check_correction`.
+  - Once answered (with its SOP), the route returned 200.
+- **Mid-period tax change on HOTEL:**
+  - A change dated on a closed business date was refused.
+  - Inclusive pricing was set from the next business date.
+  - `fin_revenue_by_department` this month read `tax_pricing_in_effect = "exclusive, inclusive"`, with quoted revenue 249.20 = 207.20 (net, exclusive day) + 42.00 (gross, inclusive day).
+- **Definitions:** the complaint kept the old `dfv_` version; later runs recorded the new versions. A change of population moved the answer from 5 to 9 guests.
+- **Onboarding:** a synthetic hotel was asked and recorded every applicable setting, plus SOPs, and was then wiped.
+- **Recipes:** 12 recipes were validated and republished by direct insert: finance v4, HR v3/v4, F&B v3.
+
+**Rollback.** Drop `hotel_setting`, `setting_catalog` and the functions. Then restore the hotel time columns from the `migration` rows.
 
 ---
 

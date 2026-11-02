@@ -1,7 +1,7 @@
 """One chat turn that opens a hotel, from the account through the first booking."""
 import json
-import os
 from datetime import date, datetime, timedelta, timezone
+from functools import lru_cache
 
 from booking_system.semantic.definitions import STANDARD, STYLE, manager_definitions, save_definition
 
@@ -19,13 +19,12 @@ _FIELDS = (
     "primary_language",
     "hotel_timezone",
     "hotel_currency",
+    "city_name",
     "room_type",
     "room_numbers",
     "nightly_price",
     "price_from",
     "price_to",
-    "checkin_time",
-    "checkout_time",
     "payment_percent",
     "guest_name",
     "guest_phone",
@@ -35,63 +34,86 @@ _STEPS = (
     ("account", ("manager_phone", "manager_name", "password", "role", "nationality", "primary_language")),
     ("hotel", ("hotel_name", "hotel_timezone", "hotel_currency")),
     ("rooms", ("room_type", "room_numbers", "nightly_price", "price_from", "price_to")),
-    ("policies", ("checkin_time", "checkout_time", "payment_percent")),
+    ("policies", ("payment_percent",)),
+    ("settings", ()),
     ("definitions", _DEFINITION_FIELDS),
     ("booking", ("guest_name", "guest_phone", "stay_night")),
 )
 _NAMES = dict(_STEPS)
-_UPPER = ("hotel_name", "manager_name", "hotel_currency", "room_type", "guest_name")
+_UPPER = ("hotel_name", "manager_name", "hotel_currency", "city_name", "room_type", "guest_name")
 _INSTRUCTIONS = (
-    "You are Leon, opening a hotel with the person in this chat. "
-    "The account comes first. Its key is the WhatsApp phone number. The hotel name comes after the account is saved. "
-    "reply is spoken, the way a person talks. One or two short sentences. One question. "
-    "Ask for one missing field. When that field has an offer, mention it the way you would say it out loud and let them take it or change it. "
-    "Copy a field only when the person stated that value or accepted the offer you just made. "
+    "You read a chat in which a person opens a hotel with Leon, and you fill in the fields. You do not write a reply. "
+    "Copy a field only when the person stated that value or accepted the offer Leon just made. "
     "Copy every known value forward. Leave a field empty when it is not known. "
-    "A short yes, yeah, ok, or sure accepts only the offer you just made. "
+    "A short yes, yeah, ok, or sure accepts only the offer Leon just made. "
     "They may answer in passing, with a city, a time of day, or a currency in words. Store the value in the form below. "
     "Kuala Lumpur time is Asia/Kuala_Lumpur. Ringgit is MYR. 3 pm is 15:00. Noon is 12:00. 30 percent is 30. "
     "Tomorrow, a month ahead, and tomorrow night are the offered dates. "
     "A phone starts with + and the country code, with no spaces. "
     "hotel_name, manager_name, room_type, and guest_name are capitals. "
-    "hotel_timezone is an IANA name for the city they named. hotel_currency is three letters. payment_percent is digits. "
+    "city_name is the city they named, in capitals. hotel_timezone is an IANA name for that city. hotel_currency is three letters. payment_percent is digits. "
     "A time of day is HH:MM. room_numbers are separated by commas. Dates are YYYY-MM-DD. "
     "Tomorrow and a month ahead are the offered dates. price_from and price_to are the first and last night the price covers. stay_night is the night the guest sleeps. "
     "When the person mentions several values, copy each of them. "
     "Do not invent a phone, a password, a hotel, a guest, or a date. "
     "The def_ fields are what this manager means when asking Leon about arrivals, in-house guests, departures, and reservations. "
-    "A def_ field holds the offer they accepted, or what they mean. " + STYLE + " "
-    "When a step is saved, do not ask for it again. "
-    "When the hotel is open, say so and name the booking. Do not ask another question."
+    "A def_ field holds the offer they accepted, or what they mean. "
+    "The set_ fields are how this hotel operates, one per setting question listed under Settings. They have no offer: copy only what "
+    "the person said about their own hotel, as one of the listed values; several values are separated by commas. "
+    "A sop_ field holds, in the person's own words, how their staff carry out that setting, when they described it."
 )
+_SETTING, _SOP = "set_", "sop_"
 _REWRITE = (
-    "Speak like a person, in one or two short sentences. Do not name the field. "
+    "You are Leon, opening a hotel with the person in this chat. Speak like a person, in one or two short sentences. "
+    "Do not name the field. " + STYLE + " "
+    "Results lists what the system wrote this turn; it is the only record of what happened. "
+    "Say that something is saved, stored, set up, created, booked or open only when a Results line says Saved or Open. "
+    "When Results says nothing was saved this turn, do not say or imply that anything was saved; thank them at most, then ask. "
     "When a result says Saved, say what is now in place, then ask for the next field. "
-    "When the next field has an offer, offer that value the way you would say it. "
+    "Ask for the next field with its question. When it has an offer, offer that value the way you would say it. "
     "When a result says Failed or Already, say it was not done and include the reason. Do not ask for a later step. "
     "When a result says Open, say the hotel is open and include the booking id from the result. Do not ask another question."
 )
 
 
-def _client():
-    from openai import OpenAI
-    return OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+@lru_cache(maxsize=1)
+def _catalog():
+    """The setting catalog rows (seeded at startup, fixed for the process)."""
+    from booking_system.settings import service
+    return tuple(service.catalog_rows())
+
+
+def _setting_fields():
+    """{field: catalog row} for every set_ and sop_ field."""
+    found = {_SETTING + row["setting_key"]: row for row in _catalog()}
+    found.update({_SOP + row["setting_key"]: row for row in _catalog() if row["sop_prompt"]})
+    return found
+
+
+def _all_fields():
+    return _FIELDS + tuple(_setting_fields())
+
+
+def _property(name):
+    """A set_ field takes its catalog row's value form; every other field is free text."""
+    from booking_system.settings import service
+    row = _setting_fields().get(name) if name.startswith(_SETTING) else None
+    return service.text_property(row) if row else {"type": "string"}
 
 
 def _schema():
-    properties = {name: {"type": "string"} for name in _FIELDS}
-    properties["reply"] = {"type": "string"}
+    names = _all_fields()
     return {
         "type": "object",
-        "properties": properties,
-        "required": list(_FIELDS) + ["reply"],
+        "properties": {name: _property(name) for name in names},
+        "required": list(names),
         "additionalProperties": False,
     }
 
 
 def _clean(fields):
     stored = {}
-    for name in _FIELDS:
+    for name in _all_fields():
         stored[name] = str((fields or {}).get(name) or "").strip()
     for name in _UPPER:
         stored[name] = stored[name].upper()
@@ -108,8 +130,6 @@ def _offers(today):
         "primary_language": "English",
         "hotel_timezone": "Asia/Kuala_Lumpur",
         "hotel_currency": "MYR",
-        "checkin_time": "15:00",
-        "checkout_time": "12:00",
         "payment_percent": "30",
         "price_from": tomorrow.isoformat(),
         "price_to": (tomorrow + timedelta(days=30)).isoformat(),
@@ -147,259 +167,235 @@ def _missing(fields, names):
     return [name for name in names if not str(fields.get(name) or "").strip()]
 
 
-def _bad(result):
-    text = str(result or "").strip()
-    first = text.split("\n")[0].strip()
-    if first.startswith("❌"):
-        return first.lstrip("❌").strip()
-    return ""
+def _hotel_row(hotel_name):
+    from booking_system.hotel_registry import read_hotel
+    return (read_hotel(hotel_name) if hotel_name else None) or {}
 
 
-def _account_doc(fields):
-    from booking_system.hotel_context_manager import manager_col
+def _account_by_phone(fields):
+    """The person holding this WhatsApp number: user_id, user_name, profile language and nationality, and their hotels; or None."""
+    from booking_system import db
+    from booking_system.user_manager import find_user, hotels_of, profile_col
     phone = str(fields.get("manager_phone") or "").strip()
-    if not phone or manager_col is None:
+    if not phone:
         return None
-    return manager_col.find_one({"manager_phone": phone}, {"password": 0})
+
+    def read(cur):
+        user = find_user(cur, "phone", phone)
+        return dict(user, hotels=hotels_of(cur, user["user_id"])) if user else None
+    user = db.transaction(read)
+    if not user:
+        return None
+    profile = profile_col.find_one({"user_id": user["user_id"]}) or {}
+    first = user["hotels"][0] if user["hotels"] else {}
+    return {"user_id": user["user_id"], "manager_name": user["user_name"], "manager_phone": phone, "hotels": user["hotels"],
+            "hotel_name": first.get("hotel_name") or "", "role": first.get("role_name") or "",
+            "nationality": profile.get("nationality") or "", "primary_language": profile.get("primary_language") or ""}
+
+
+def _account_doc(fields, owner):
+    """The account on this phone only when it is the signed-in person (owner user_id); a phone alone proves nothing."""
+    doc = _account_by_phone(fields) if owner else None
+    return doc if doc and doc["user_id"] == owner else None
 
 
 def _account_exact(doc, fields):
     return str(doc.get("manager_phone") or "") == fields["manager_phone"] and str(doc.get("manager_name") or "").upper() == fields["manager_name"]
 
 
-def _recall(fields):
-    """Fill empty account and hotel values from the profile stored under this WhatsApp number."""
-    doc = _account_doc(fields)
+def _hotel_of(doc, hotel_name):
+    """The membership row of this account at this hotel, or None."""
+    return next((row for row in (doc or {}).get("hotels") or [] if row["hotel_name"] == hotel_name), None)
+
+
+def _recall(fields, owner):
+    """Fill empty account and hotel values from the signed-in person's profile."""
+    doc = _account_doc(fields, owner)
     if not doc:
         return fields
     stored_name = str(doc.get("manager_name") or "").upper()
     if fields["manager_name"] and fields["manager_name"] != stored_name:
         return fields
-    for name in ("manager_name", "role", "nationality", "primary_language", "hotel_name", "hotel_timezone", "hotel_currency"):
+    for name in ("manager_name", "role", "nationality", "primary_language", "hotel_name"):
         if not fields[name] and doc.get(name):
             fields[name] = str(doc.get(name) or "")
-    fields.update({name: value for name, value in _profile_definitions(stored_name).items() if not fields[name]})
+    row = _hotel_row(fields["hotel_name"])
+    for name, column in (("hotel_timezone", "timezone"), ("hotel_currency", "currency")):
+        if not fields[name] and row.get(column):
+            fields[name] = row[column]
+    fields.update({name: value for name, value in _profile_definitions(doc["user_id"]).items() if not fields[name]})
     return _clean(fields)
 
 
-def _profile_definitions(manager_name):
-    """def_ fields already answered on this manager's profile."""
-    known = {item["key"]: item["definition"] for item in manager_definitions(manager_name)}
+def _profile_definitions(user_id):
+    """def_ fields already answered on this user's profile."""
+    known = {item["key"]: item["definition"] for item in manager_definitions(user_id)} if user_id else {}
     return {field: known[item["key"]] for field, item in _DEFINITION_BY_FIELD.items() if known.get(item["key"])}
 
 
-def _account_text(doc):
-    return "Hotel " + str(doc.get("hotel_name") or "") + ", manager " + str(doc.get("manager_name") or "") + ", phone " + str(doc.get("manager_phone") or "")
-
-
-def _write_account(fields):
-    from booking_system.hotel_context_manager import signin_manager_by_phone, signup_manager
-    doc = _account_doc(fields)
-    if doc and not _account_exact(doc, fields):
-        return "clarify", "Already on record. " + _account_text(doc), {}
+def _write_account(fields, owner):
+    """READ the phone first. A new phone creates the person; an existing one is the signed-in person, or signs in with its password."""
+    from booking_system import user_manager
+    doc = _account_by_phone(fields)
+    if doc and doc["user_id"] == owner:
+        return "saved", "", {"user_id": owner}
+    if doc and not fields["password"]:
+        return "clarify", "Already on record. Phone " + fields["manager_phone"] + " has an account; give its password to sign in.", {}
     if doc:
-        if not fields["password"]:
-            return "saved", "", {}
-        signed = signin_manager_by_phone(fields["manager_phone"], fields["password"])
-        if not signed.get("success"):
-            return "failed", "Failed account. " + str(signed.get("message") or "Sign in failed"), {}
-        return "saved", "", {"token": signed.get("token") or ""}
+        signed = user_manager.signin("phone", fields["manager_phone"], fields["password"])
+        if signed.get("error"):
+            return "failed", "Failed account. " + signed["error"], {}
+        return "saved", "", {"token": signed.get("token") or "", "user_id": doc["user_id"]}
     if _missing(fields, _STEPS[0][1]):
         return "missing", "", {}
-    created = signup_manager({
-        "manager_name": fields["manager_name"],
-        "manager_phone": fields["manager_phone"],
-        "password": fields["password"],
-        "role": fields["role"],
-        "nationality": fields["nationality"],
-        "primary_language": fields["primary_language"],
-    })
-    if not created.get("success"):
-        return "failed", "Failed account. " + str(created.get("message") or "Signup failed"), {}
-    signed = signin_manager_by_phone(fields["manager_phone"], fields["password"])
-    if not signed.get("success"):
-        return "failed", "Failed account. " + str(signed.get("message") or "Sign in failed"), {}
+    created = user_manager.signup(fields["manager_name"], {"phone": fields["manager_phone"]}, fields["password"],
+                                  fields["primary_language"], fields["nationality"])
+    if created.get("error"):
+        return "failed", "Failed account. " + created["error"], {}
+    signed = user_manager.signin("phone", fields["manager_phone"], fields["password"])
+    if signed.get("error"):
+        return "failed", "Failed account. " + signed["error"], {}
     line = "Saved account. " + fields["manager_name"] + " is signed in on " + fields["manager_phone"] + "."
-    return "saved", line, {"token": signed.get("token") or ""}
+    return "saved", line, {"token": signed.get("token") or "", "user_id": created["user_id"]}
 
 
-def _write_hotel(fields):
-    from booking_system.hotel_context_manager import set_manager_hotel
+def _write_hotel(fields, owner):
+    from booking_system import user_manager
     if _missing(fields, _STEPS[1][1]):
         return "missing", "", {}
-    saved = set_manager_hotel(fields["manager_phone"], fields["hotel_name"], fields["hotel_timezone"], fields["hotel_currency"])
-    if saved.get("clarify"):
-        return "clarify", "Already on record. " + str(saved.get("message") or ""), {}
-    if not saved.get("success"):
-        return "failed", "Failed hotel. " + str(saved.get("message") or "Hotel was not saved"), {}
+    doc = _account_doc(fields, owner)
+    if not doc:
+        return "missing", "", {}
+    member = _hotel_of(doc, fields["hotel_name"])
+    if member:
+        issued = user_manager.token_for(doc["user_id"], member["hotel_id"]) or {}
+        return "saved", "", {"token": issued.get("token") or "", "hotel_name": fields["hotel_name"]}
+    if _hotel_row(fields["hotel_name"]):
+        return "clarify", "Already on record. Hotel " + fields["hotel_name"] + " belongs to another account.", {}
+    created = user_manager.create_hotel(doc["user_id"], fields["hotel_name"], fields["hotel_currency"], fields["hotel_timezone"], fields["city_name"])
+    if created.get("error"):
+        return "failed", "Failed hotel. " + created["error"], {}
+    issued = user_manager.token_for(doc["user_id"], created["hotel_id"]) or {}
     line = "Saved hotel. " + fields["hotel_name"] + " is on this account."
-    return "saved", line, {"token": saved.get("token") or "", "hotel_name": saved.get("hotel_name") or fields["hotel_name"]}
+    return "saved", line, {"token": issued.get("token") or "", "hotel_name": created["hotel_name"]}
 
 
-def _price_exists(hotel, room_type, day):
-    from booking_system.inventory_manager import inventory_manager
-    from booking_system.llm_utils import canonical_key
-    if not day or not inventory_manager._ensure_postgres_connection():
+def _owner(fields, owner):
+    """(hotel row, user_id) of the signed-in account at the hotel being opened; ({}, None) before both exist."""
+    doc = _account_doc(fields, owner)
+    row = _hotel_row(fields["hotel_name"])
+    if not doc or not row or not _hotel_of(doc, fields["hotel_name"]):
+        return {}, None
+    return row, doc["user_id"]
+
+
+def _price_exists(hotel_id, room_type, day):
+    from booking_system.inventory_manager import night_on_file
+    if not day:
         return False
-    inventory_manager._safe_rollback()
-    cur = inventory_manager.postgres_conn.cursor()
-    cur.execute(
-        "SELECT base_price FROM daily_pricing WHERE hotel_name = %s AND room_type = %s AND stay_date = %s",
-        (canonical_key(hotel), canonical_key(room_type), day),
-    )
-    row = cur.fetchone()
-    cur.close()
-    return row is not None
+    try:
+        night = night_on_file(hotel_id, room_type, day)
+    except ValueError:
+        return False
+    return bool(night) and night["price"] is not None
 
 
-def _write_rooms(fields):
-    from booking_system.inventory_manager import inventory_manager
-    from booking_system.room_manager import room_manager
-    hotel = fields["hotel_name"]
+def _room_numbers_by_type(hotel_id):
+    from booking_system.room_manager import read_portfolio
+    return {row["room_type"]: [room["room_number"] for room in row["room_numbers"]] for row in read_portfolio(hotel_id)["room_types"]}
+
+
+def _write_rooms(fields, owner):
+    from booking_system import inventory_manager, room_manager
+    hotel, user_id = _owner(fields, owner)
+    if not user_id:
+        return "missing", "", {}
     room_type = fields["room_type"]
     numbers = _numbers(fields["room_numbers"])
     if not room_type and not numbers:
         return "missing", "", {}
-    base = room_manager.collection.find_one({"hotel_name": hotel, "room_type": room_type, "has_room_number": False}) if room_type else None
-    owned = []
-    if room_type:
-        owned = [str(doc.get("room_number") or "") for doc in room_manager.collection.find({"hotel_name": hotel, "room_type": room_type, "has_room_number": True}, {"room_number": 1})]
-    used = []
-    if numbers:
-        used = list(room_manager.collection.find({"hotel_name": hotel, "room_number": {"$in": numbers}, "has_room_number": True}, {"room_number": 1, "room_type": 1}))
-    same = bool(base) and bool(numbers) and set(numbers) == set(owned)
-    other = [str(doc.get("room_number") or "") + " " + str(doc.get("room_type") or "") for doc in used if str(doc.get("room_type") or "") != room_type]
-    priced = _price_exists(hotel, room_type, fields["price_from"]) if same else False
-    if same and priced:
+    by_type = _room_numbers_by_type(hotel["hotel_id"])
+    base = room_type in by_type
+    owned = by_type.get(room_type) or []
+    other = [number + " " + kind for kind, rooms in by_type.items() if kind != room_type for number in rooms if number in numbers]
+    same = base and bool(numbers) and set(numbers) == set(owned)
+    if same and _price_exists(hotel["hotel_id"], room_type, fields["price_from"]):
         return "saved", "", {}
     if other or (base and numbers and not same):
         listed = ", ".join(owned) or "none"
         extra = (" Also used: " + ", ".join(other)) if other else ""
-        return "clarify", "Already on record. " + room_type + " rooms at " + hotel + ": " + listed + "." + extra, {}
+        return "clarify", "Already on record. " + room_type + " rooms at " + fields["hotel_name"] + ": " + listed + "." + extra, {}
     if _missing(fields, _NAMES["rooms"]):
         return "missing", "", {}
-    nights = _nights(fields["price_from"], fields["price_to"])
-    if not nights:
+    if not _nights(fields["price_from"], fields["price_to"]):
         return "failed", "Failed rooms. The price dates are not a range of nights.", {}
     try:
         price = float(fields["nightly_price"])
     except ValueError:
         return "failed", "Failed rooms. The nightly price is not a number.", {}
     if not base:
-        created = room_manager._create_room_type_logic(hotel, fields["manager_name"], room_type, {})
-        reason = _bad(created)
-        if reason:
-            return "failed", "Failed rooms. " + reason, {}
-        added = room_manager.add_room_numbers(hotel, fields["manager_name"], room_type, numbers)
-        reason = _bad(added)
-        if reason:
-            return "failed", "Failed rooms. " + reason, {}
-    priced_now = inventory_manager.update_dates(hotel, fields["manager_name"], room_type, nights, price, len(numbers))
-    if isinstance(priced_now, dict) and priced_now.get("error"):
-        return "failed", "Failed rooms. " + str(priced_now.get("error")), {}
+        created = room_manager.create_room_type(hotel["hotel_id"], user_id, hotel["timezone"], room_type, {}, numbers, price)
+        if created.get("error"):
+            return "failed", "Failed rooms. " + created["error"], {}
+    priced = inventory_manager.set_prices(hotel["hotel_id"], user_id, room_type, fields["price_from"], fields["price_to"], price)
+    if priced.get("error"):
+        return "failed", "Failed rooms. " + priced["error"], {}
     return "saved", "Saved rooms. Room number " + ", ".join(numbers) + ", type " + room_type + ", at " + str(price) + " each night.", {}
 
 
-def _policy_docs(hotel):
-    from booking_system.policy_manager import policy_manager
-    rows = list(policy_manager.records["booking_policies"].find(
-        {"hotel_name": hotel, "status": "active"},
-        {"_id": 0, "policy_type": 1},
-    ))
-    return [str(row.get("policy_type") or "") for row in rows]
+def _booking_doc(hotel_id, fields):
+    """The live booking of this guest phone, room type and night at the hotel, or None."""
+    from booking_system import db
+    from booking_system.user_manager import normalize
+    return db.row(
+        """SELECT DISTINCT b.booking_id, g.guest_name FROM booking b
+           JOIN guest g ON g.guest_id = b.guest_id JOIN guest_identity i ON i.guest_id = g.guest_id AND i.identity_type = 'phone'
+           JOIN booking_room_night n ON n.booking_id = b.booking_id JOIN room_type t ON t.room_type_id = n.room_type_id
+           WHERE b.hotel_id = %s AND i.identity_value = %s AND t.room_type_name = %s AND n.stay_date = %s
+             AND b.booking_status NOT IN ('cancelled', 'no_show')""",
+        (hotel_id, normalize("phone", fields["guest_phone"]), fields["room_type"], fields["stay_night"]),
+    )
 
 
-def _write_policies(fields):
-    from booking_system.policy_manager import policy_manager
-    hotel = fields["hotel_name"]
-    present = _policy_docs(hotel)
-    have_booking = "booking" in present
-    have_payment = "payment" in present
-    if have_booking and have_payment:
-        return "saved", "", {}
-    if _missing(fields, _NAMES["policies"]):
+def _write_booking(fields, owner):
+    from booking_system import booking_manager
+    from booking_system.guest_manager import guest_manager
+    hotel, user_id = _owner(fields, owner)
+    if not user_id:
         return "missing", "", {}
-    try:
-        percent = float(fields["payment_percent"])
-    except ValueError:
-        return "failed", "Failed policies. The payment percent is not a number.", {}
-    manager = fields["manager_name"]
-    if not have_booking:
-        created = policy_manager.create_policy("booking", {
-            "checkin_time": fields["checkin_time"],
-            "checkout_time": fields["checkout_time"],
-            "cancellation_policy": {"window_hours": 48, "penalty_nights": 1, "refund_percent": 50},
-        }, hotel, manager)
-        reason = _bad(created)
-        if reason:
-            return "failed", "Failed policies. " + reason, {}
-    if not have_payment:
-        created = policy_manager.create_policy("payment", {
-            "payment_threshold_percent": percent,
-            "payment_window_days": 7,
-            "methods_allowed": ["CASH"],
-        }, hotel, manager)
-        reason = _bad(created)
-        if reason:
-            return "failed", "Failed policies. " + reason, {}
-    return "saved", "Saved policies. Check-in " + fields["checkin_time"] + ", check-out " + fields["checkout_time"] + ", deposit " + str(percent) + " percent.", {}
-
-
-def _booking_doc(fields):
-    from booking_system.guest_manager import guest_manager
-    night = fields["stay_night"]
-    return guest_manager.records["guest_bookings"].find_one({
-        "hotel_name": fields["hotel_name"],
-        "guest_phone": fields["guest_phone"],
-        "room_type": fields["room_type"],
-        "stay_dates": night,
-    }, {"_id": 0, "booking_id": 1, "guest_name": 1})
-
-
-def _write_booking(fields):
-    from booking_system.booking_manager import booking_manager
-    from booking_system.guest_manager import guest_manager
     if not fields["guest_phone"] and not fields["guest_name"]:
         return "missing", "", {}
-    guest = guest_manager.records["guests"].find_one({"guest_phone": fields["guest_phone"], "status": "active"}) if fields["guest_phone"] else None
-    if guest and str(guest.get("hotel_name") or "").upper() != fields["hotel_name"]:
-        return "clarify", "Already on record. Guest " + str(guest.get("guest_name") or "") + " " + fields["guest_phone"] + " is at " + str(guest.get("hotel_name") or "") + ".", {}
-    if guest and str(guest.get("guest_name") or "").upper() != fields["guest_name"] and fields["guest_name"]:
+    guest = guest_manager.read_guest(hotel["hotel_id"], fields["guest_phone"]) if fields["guest_phone"] else None
+    if guest and fields["guest_name"] and str(guest.get("guest_name") or "").upper() != fields["guest_name"]:
         return "clarify", "Already on record. Guest " + fields["guest_phone"] + " is " + str(guest.get("guest_name") or "") + " at " + fields["hotel_name"] + ".", {}
-    existing = _booking_doc(fields) if fields["guest_phone"] and fields["stay_night"] and fields["room_type"] else None
+    existing = _booking_doc(hotel["hotel_id"], fields) if fields["guest_phone"] and fields["stay_night"] and fields["room_type"] else None
     if existing:
-        return "saved", "", {"booking_id": existing.get("booking_id") or ""}
+        return "saved", "", {"booking_id": existing["booking_id"]}
     if _missing(fields, _NAMES["booking"]):
         return "missing", "", {}
     try:
-        datetime.strptime(fields["stay_night"], "%Y-%m-%d")
+        night = datetime.strptime(fields["stay_night"], "%Y-%m-%d").date()
     except ValueError:
         return "failed", "Failed booking. The stay night is not a date.", {}
-    if not guest:
-        created = guest_manager.create_guest_profile(
-            fields["hotel_name"], fields["manager_name"], fields["guest_phone"], fields["guest_name"], nationality=fields["nationality"]
-        )
-        reason = _bad(created)
-        if reason:
-            return "failed", "Failed booking. " + reason, {}
     result = booking_manager.create_booking(
-        fields["hotel_name"], fields["manager_name"], fields["guest_phone"], fields["room_type"],
-        [fields["stay_night"]], 1, "", "PMS",
+        hotel["hotel_id"], user_id, {"guest_name": fields["guest_name"], "phone": fields["guest_phone"], "nationality": fields["nationality"]},
+        fields["room_type"], night.isoformat(), (night + timedelta(days=1)).isoformat(),
     )
-    reason = _bad(result)
-    if reason:
-        return "failed", "Failed booking. " + reason, {}
-    booking_id = str(getattr(booking_manager, "_last_booking_id", "") or "")
+    if result.get("error"):
+        return "failed", "Failed booking. " + result["error"], {}
+    booking_id = result["booking_id"]
     return "saved", "Saved booking. " + booking_id + " is confirmed for " + fields["stay_night"] + ".", {"booking_id": booking_id}
 
 
-def _write_definitions(fields):
-    """Read the manager profile first. A new or changed meaning is saved; a matching one is left alone."""
-    manager = fields["manager_name"]
-    stored = _profile_definitions(manager)
+def _write_definitions(fields, owner):
+    """Read the user_profile document first. A new or changed meaning is saved on it; a matching one is left alone."""
+    doc = _account_doc(fields, owner)
+    if not doc:
+        return "missing", "", {}
+    stored = _profile_definitions(doc["user_id"])
     changed = [name for name in _DEFINITION_FIELDS if fields[name] and fields[name] != stored.get(name)]
     for name in changed:
-        result = save_definition(manager, _DEFINITION_BY_FIELD[name]["key"], fields[name], "onboarding")
+        result = save_definition(doc["user_id"], _DEFINITION_BY_FIELD[name]["key"], fields[name], "onboarding")
         if result.get("error"):
             return "failed", "Failed definitions. " + str(result["error"]), {}
     if _missing(fields, _DEFINITION_FIELDS):
@@ -410,22 +406,219 @@ def _write_definitions(fields):
     return "saved", "Saved definitions. " + said + ".", {}
 
 
+def _already(fields, owner):
+    """Steps already stored for the signed-in person. This reads and does not write."""
+    saved = []
+    doc = _account_doc(fields, owner)
+    if not doc or not _account_exact(doc, fields):
+        return saved, ""
+    saved.append("account")
+    hotel_on_file = fields["hotel_name"] or doc["hotel_name"]
+    if not hotel_on_file or not _hotel_of(doc, hotel_on_file):
+        return saved, ""
+    saved.append("hotel")
+    hotel = _hotel_row(hotel_on_file)
+    room_type = fields["room_type"]
+    numbers = _numbers(fields["room_numbers"])
+    if not room_type or not numbers:
+        return saved, ""
+    owned = _room_numbers_by_type(hotel["hotel_id"]).get(room_type)
+    if owned is None or set(numbers) != set(owned) or not _price_exists(hotel["hotel_id"], room_type, fields["price_from"]):
+        return saved, ""
+    saved.append("rooms")
+    if not _policies_on_file(hotel["hotel_id"]):
+        return saved, ""
+    saved.append("policies")
+    if _setting_asks(fields):
+        return saved, ""
+    saved.append("settings")
+    if _missing(_profile_definitions(doc["user_id"]), _DEFINITION_FIELDS):
+        return saved, ""
+    saved.append("definitions")
+    existing = _booking_doc(hotel["hotel_id"], fields) if fields["guest_phone"] and fields["stay_night"] else None
+    if not existing:
+        return saved, ""
+    saved.append("booking")
+    return saved, existing["booking_id"]
+
+
+def _priced_span(hotel_id, room_type):
+    from booking_system import db
+    row = db.row(
+        """SELECT MIN(p.stay_date) AS first, MAX(p.stay_date) AS last, MAX(p.base_price) AS price FROM daily_pricing p
+           JOIN room_type t ON t.room_type_id = p.room_type_id WHERE p.hotel_id = %s AND t.room_type_name = %s AND p.base_price > 0""",
+        (hotel_id, room_type),
+    )
+    if not row or not row["first"]:
+        return "", "", ""
+    return row["first"].isoformat(), row["last"].isoformat(), _money(row["price"])
+
+
+def _fields_from_hotel(hotel_id):
+    """Read the hotel that is already open: its general manager, first room type, policies and first booking."""
+    from booking_system import db
+    from booking_system.hotel_registry import read_hotel_by_id
+    from booking_system.policy_manager import read_policy
+    from booking_system.user_manager import profile_col
+    row = read_hotel_by_id(hotel_id)
+    if not row:
+        return None, "", None
+    manager = db.row(
+        """SELECT a.user_id, a.user_name, r.role_name,
+                  (SELECT i.identity_value FROM user_identity i WHERE i.user_id = a.user_id AND i.identity_type = 'phone' LIMIT 1) AS phone
+           FROM hotel_user u JOIN access_role r ON r.role_id = u.role_id JOIN user_account a ON a.user_id = u.user_id
+           WHERE u.hotel_id = %s AND r.role_name = 'GENERAL_MANAGER' ORDER BY u.activated_at LIMIT 1""",
+        (hotel_id,),
+    )
+    if not manager:
+        return None, "", None
+    profile = profile_col.find_one({"user_id": manager["user_id"]}) or {}
+    fields = _clean({
+        "hotel_name": row["hotel_name"],
+        "manager_name": manager["user_name"],
+        "manager_phone": manager["phone"],
+        "role": manager["role_name"],
+        "nationality": profile.get("nationality"),
+        "primary_language": profile.get("primary_language"),
+        "hotel_timezone": row.get("timezone"),
+        "hotel_currency": row.get("currency"),
+        **_profile_definitions(manager["user_id"]),
+    })
+    owned = {kind: rooms for kind, rooms in _room_numbers_by_type(hotel_id).items() if rooms}
+    chosen = min(owned) if owned else ""
+    if chosen:
+        start, end, price = _priced_span(hotel_id, chosen)
+        fields["room_type"] = chosen
+        fields["room_numbers"] = ", ".join(owned[chosen])
+        fields["price_from"] = start
+        fields["price_to"] = end
+        fields["nightly_price"] = price
+    payment_details = (read_policy(hotel_id, "payment") or {}).get("details") or {}
+    fields.update(_stated_settings(hotel_id))
+    percent = payment_details.get("payment_threshold_percent")
+    fields["payment_percent"] = _money(percent) if percent is not None else ""
+    booking = db.row(
+        """SELECT b.booking_id, g.guest_name, b.check_in_date, t.room_type_name,
+                  (SELECT i.identity_value FROM guest_identity i WHERE i.guest_id = g.guest_id AND i.identity_type = 'phone' LIMIT 1) AS phone
+           FROM booking_summary b JOIN guest g ON g.guest_id = b.guest_id
+           LEFT JOIN LATERAL (SELECT n.room_type_id FROM booking_room_night n WHERE n.booking_id = b.booking_id LIMIT 1) n ON TRUE
+           LEFT JOIN room_type t ON t.room_type_id = n.room_type_id
+           WHERE b.hotel_id = %s ORDER BY b.booked_at LIMIT 1""",
+        (hotel_id,),
+    )
+    booking_id = ""
+    if booking:
+        fields["guest_name"] = booking["guest_name"]
+        fields["guest_phone"] = booking["phone"] or ""
+        fields["stay_night"] = booking["check_in_date"].isoformat()
+        if not fields["room_type"]:
+            fields["room_type"] = booking["room_type_name"] or ""
+        booking_id = booking["booking_id"]
+    return _clean(fields), booking_id, manager["user_id"]
+
+
+def _policies_on_file(hotel_id):
+    from booking_system.policy_manager import read_policy
+    return all(read_policy(hotel_id, kind) for kind in ("booking", "payment"))
+
+
+def _write_policies(fields, owner):
+    """READ the hotel's booking and payment policies; create the missing ones from the stated times and deposit."""
+    from booking_system.policy_manager import create_policy, read_policy
+    hotel, user_id = _owner(fields, owner)
+    if not user_id:
+        return "missing", "", {}
+    hotel_id = hotel["hotel_id"]
+    have_booking = read_policy(hotel_id, "booking") is not None
+    have_payment = read_policy(hotel_id, "payment") is not None
+    if have_booking and have_payment:
+        return "saved", "", {}
+    if _missing(fields, _NAMES["policies"]):
+        return "missing", "", {}
+    try:
+        percent = float(fields["payment_percent"])
+    except ValueError:
+        return "failed", "Failed policies. The payment percent is not a number.", {}
+    wanted = []
+    if not have_booking:
+        wanted.append(("booking", {"cancellation_policy": {"window_hours": 48, "penalty_nights": 1, "refund_percent": 50}}))
+    if not have_payment:
+        wanted.append(("payment", {"payment_threshold_percent": percent, "payment_window_days": 7, "methods_allowed": ["CASH"]}))
+    for kind, details in wanted:
+        created = create_policy(hotel_id, user_id, kind, details)
+        if created.get("error"):
+            return "failed", "Failed policies. " + created["error"], {}
+    return "saved", "Saved policies. Deposit " + str(percent) + " percent.", {}
+
+
+def _stated_settings(hotel_id):
+    """set_ fields from the values the hotel has in effect."""
+    from booking_system.settings import service
+    types = {row["setting_key"]: row["value_type"] for row in _catalog()}
+    return {_SETTING + key: service.TO_TEXT[types[key]](value) for key, value in service.values_in_effect(hotel_id).items() if key in types}
+
+
+def _setting_asks(fields):
+    """set_ fields the hotel being opened still has to answer: each module's yes/no first, then what an enabled module needs."""
+    from booking_system.settings import service
+    hotel = _hotel_row(fields.get("hotel_name"))
+    return [_SETTING + key for key in service.asks(hotel["hotel_id"])] if hotel else []
+
+
+def _write_settings(fields, owner):
+    """READ the catalog and each value in effect (write_setting); record every stated value that differs, effective on the hotel's
+    operating date, with its SOP text, in one transaction. The step is done when no module has a question left."""
+    from booking_system import db
+    from booking_system.settings import service
+    hotel, user_id = _owner(fields, owner)
+    if not user_id:
+        return "missing", "", {}
+    stated = [row for row in _catalog() if fields.get(_SETTING + row["setting_key"])]
+
+    def run(cur):
+        said = []
+        for row in stated:
+            key = row["setting_key"]
+            on = service.earliest_date(cur, hotel["hotel_id"], row["effective_basis"])
+            done = service.write_setting(cur, hotel["hotel_id"], user_id, key, service.FROM_TEXT[row["value_type"]](fields[_SETTING + key]), on,
+                                         "onboarding", "", fields.get(_SOP + key))
+            if done["result"] == "saved" or done["sop_saved"]:
+                said.append(key + " = " + (done["meaning"] or json.dumps(done["value"])) + " from " + done["effective_from"]
+                            + (" with its procedure" if done["sop_saved"] else ""))
+        return said
+    try:
+        said = db.transaction(run)
+    except (service.Refused, ValueError) as refusal:
+        return "failed", "Failed settings. " + str(refusal), {}
+    line = ("Saved settings. " + "; ".join(said) + ".") if said else ""
+    if _setting_asks(fields):
+        return "missing", line, {}
+    later = service.waiting(hotel["hotel_id"])
+    line += "".join(" Not asked yet: " + item["setting_key"] + " (" + item["question"] + ") needs " + item["waits_for"]
+                    + "; that module stays refused until it is answered." for item in later)
+    return "saved", line.strip(), {}
+
+
 _WRITERS = {
     "account": _write_account,
     "hotel": _write_hotel,
     "rooms": _write_rooms,
     "policies": _write_policies,
+    "settings": _write_settings,
     "definitions": _write_definitions,
     "booking": _write_booking,
 }
+# Steps whose questions depend on what is already stored rather than a fixed field list.
+_ASKED = {"settings": _setting_asks}
 
 
-def _apply(fields):
+def _apply(fields, owner):
+    """Run each step in order as the signed-in person; the account step may sign them in for the steps after it."""
     lines = []
     saved = []
     extra = {}
     for step, _names in _STEPS:
-        outcome, line, more = _WRITERS[step](fields)
+        outcome, line, more = _WRITERS[step](fields, extra.get("user_id") or owner)
         if more:
             extra.update(more)
         if outcome == "saved":
@@ -441,68 +634,40 @@ def _apply(fields):
     return lines, saved, extra
 
 
-def _already(fields):
-    """Steps already stored. This reads and does not write."""
-    saved = []
-    doc = _account_doc(fields)
-    if not doc or not _account_exact(doc, fields):
-        return saved, ""
-    saved.append("account")
-    hotel_on_file = str(doc.get("hotel_name") or "")
-    if not hotel_on_file or not doc.get("hotel_timezone") or not doc.get("hotel_currency"):
-        return saved, ""
-    if fields["hotel_name"] and fields["hotel_name"] != hotel_on_file:
-        return saved, ""
-    saved.append("hotel")
-    from booking_system.room_manager import room_manager
-    hotel = fields["hotel_name"] or hotel_on_file
-    room_type = fields["room_type"]
-    numbers = _numbers(fields["room_numbers"])
-    if not room_type or not numbers:
-        return saved, ""
-    base = room_manager.collection.find_one({"hotel_name": hotel, "room_type": room_type, "has_room_number": False})
-    owned = [str(doc.get("room_number") or "") for doc in room_manager.collection.find({"hotel_name": hotel, "room_type": room_type, "has_room_number": True}, {"room_number": 1})]
-    if not base or set(numbers) != set(owned) or not _price_exists(hotel, room_type, fields["price_from"]):
-        return saved, ""
-    saved.append("rooms")
-    present = _policy_docs(hotel)
-    if "booking" not in present or "payment" not in present:
-        return saved, ""
-    saved.append("policies")
-    if _missing(_profile_definitions(fields["manager_name"]), _DEFINITION_FIELDS):
-        return saved, ""
-    saved.append("definitions")
-    existing = _booking_doc(fields) if fields["guest_phone"] and fields["stay_night"] else None
-    if not existing:
-        return saved, ""
-    saved.append("booking")
-    return saved, str(existing.get("booking_id") or "")
-
-
 def _public(fields, saved):
     shown = {}
-    for name in _FIELDS:
+    for name in _all_fields():
         if name == "password" and "account" in saved:
             continue
         shown[name] = fields[name]
     return shown
 
 
+def _step_names(step, names, fields):
+    return _ASKED[step](fields) if step in _ASKED else names
+
+
+def _setting_lines():
+    """The Settings block of the extraction prompt: each set_ field with its question and allowed values, each sop_ field with its prompt."""
+    from booking_system.settings import service
+    lines = ["Settings"]
+    for row in _catalog():
+        lines.append(_SETTING + service.describe_values(row))
+        if row["sop_prompt"]:
+            lines.append(_SOP + row["setting_key"] + ": " + row["sop_prompt"])
+    return lines
+
+
 def _prompt(message, history, fields, offers, saved, booking_id):
     lines = ["Today " + date.today().isoformat(), "Known"]
-    for name in _FIELDS:
+    for name in _all_fields():
         lines.append(name + ": " + fields.get(name, ""))
     lines.append("Offers")
     for name, value in offers.items():
         lines.append(name + ": " + value)
+    lines.extend(_setting_lines())
     lines.append("Saved: " + ", ".join(saved))
-    gap = ""
-    for step, names in _STEPS:
-        if step in saved:
-            continue
-        missing = _missing(fields, names)
-        gap = missing[0] if missing else ""
-        break
+    gap = _next_name(fields, saved)
     lines.append("Next field: " + gap)
     lines.append("Booking id: " + str(booking_id or ""))
     lines.append("The booking policy uses a 48 hour cancellation window, a one night penalty, and a 50 percent refund. Payment is due in 7 days by cash.")
@@ -529,8 +694,6 @@ _QUESTIONS = {
     "nightly_price": "What is the nightly price?",
     "price_from": "Does the price start tomorrow?",
     "price_to": "Does the price run for a month?",
-    "checkin_time": "Is check-in at 3 pm?",
-    "checkout_time": "Is check-out at noon?",
     "payment_percent": "Is the deposit 30 percent?",
     "guest_name": "Who is the first guest?",
     "guest_phone": "What is the guest's phone number, with the country code?",
@@ -543,8 +706,6 @@ _CHIPS = {
     "primary_language": "English",
     "hotel_timezone": "Kuala Lumpur time",
     "hotel_currency": "ringgit",
-    "checkin_time": "3 pm",
-    "checkout_time": "noon",
     "payment_percent": "30 percent",
     "price_from": "tomorrow",
     "price_to": "a month ahead",
@@ -560,13 +721,12 @@ _HIGHLIGHTS = {
     "primary_language": "Language",
     "hotel_timezone": "Timezone",
     "hotel_currency": "Currency",
+    "city_name": "City",
     "room_type": "Room",
     "room_numbers": "Room numbers",
     "nightly_price": "Nightly price",
     "price_from": "Price from",
     "price_to": "Price to",
-    "checkin_time": "Check-in",
-    "checkout_time": "Check-out",
     "payment_percent": "Deposit",
     "guest_name": "Guest",
     "guest_phone": "Guest phone",
@@ -578,26 +738,35 @@ _STEP_LABELS = {
     "hotel": "Hotel",
     "rooms": "Rooms",
     "policies": "Policies",
+    "settings": "How the hotel operates",
     "definitions": "Your definitions",
     "booking": "First booking",
 }
+
+
+def _question(name):
+    """A fixed field's question, or a set_ field's catalog question."""
+    row = _setting_fields().get(name) if name.startswith(_SETTING) else None
+    return _QUESTIONS.get(name) or (row or {}).get("question") or ""
 
 
 def _next_name(fields, saved):
     for step, names in _STEPS:
         if step in saved:
             continue
-        missing = _missing(fields, names)
+        missing = _missing(fields, _step_names(step, names, fields))
         return missing[0] if missing else ""
     return ""
 
 
 def _recap(step, fields, booking_id):
+    answered = [name for name in _setting_fields() if name.startswith(_SETTING) and fields.get(name)]
     lines = {
         "account": fields["manager_name"] + " " + fields["manager_phone"],
         "hotel": fields["hotel_name"],
         "rooms": fields["room_type"] + " " + fields["room_numbers"] + " at " + fields["nightly_price"],
-        "policies": "In " + fields["checkin_time"] + ", out " + fields["checkout_time"] + ", deposit " + fields["payment_percent"] + "%",
+        "policies": "Deposit " + fields["payment_percent"] + "%",
+        "settings": str(len(answered)) + " answered",
         "definitions": str(len(STANDARD) - len(_missing(fields, _DEFINITION_FIELDS))) + " of " + str(len(STANDARD)) + " set",
         "booking": fields["guest_name"] + " " + str(booking_id or ""),
     }
@@ -609,12 +778,13 @@ def build_guide(fields, saved, booking_id):
     highlights = []
     if "account" in saved or fields.get("password"):
         highlights.append({"label": "Password", "value": "Password set"})
-    for name in _FIELDS:
-        if name == "password" or name not in _HIGHLIGHTS:
+    labels = dict(_HIGHLIGHTS, **{name: row["setting_key"] for name, row in _setting_fields().items() if name.startswith(_SETTING)})
+    for name in _all_fields():
+        if name == "password" or name not in labels:
             continue
         value = str(fields.get(name) or "").strip()
         if value:
-            highlights.append({"label": _HIGHLIGHTS[name], "value": value})
+            highlights.append({"label": labels[name], "value": value})
     todos = []
     opened = False
     suggestion = ""
@@ -629,7 +799,7 @@ def build_guide(fields, saved, booking_id):
         opened = True
         gap = _next_name(fields, saved)
         suggestion = _CHIPS.get(gap) or ""
-        todos.append({"step": step, "label": label, "state": "now", "detail": _QUESTIONS.get(gap) or ""})
+        todos.append({"step": step, "label": label, "state": "now", "detail": _question(gap)})
     return {
         "hotel_name": str(fields.get("hotel_name") or ""),
         "highlights": highlights,
@@ -642,19 +812,17 @@ def build_guide(fields, saved, booking_id):
 
 def _guide_collection():
     from booking_system.guest_manager import guest_manager
-    collection = guest_manager.records["hotel_guide"]
-    collection.create_index("hotel_name", unique=True, name="hotel_name_guide")
-    return collection
+    return guest_manager.records["hotel_guide"]
 
 
-def store_guide(guide):
-    """Read the hotel guide, then create or update it. Natural key is hotel_name."""
-    hotel = str(guide.get("hotel_name") or "").upper()
-    if not hotel:
+def store_guide(hotel_id, guide):
+    """Read the hotel's guide, then create or update it. Key: hotel_id."""
+    if not hotel_id:
         return
     collection = _guide_collection()
     body = {
-        "hotel_name": hotel,
+        "hotel_id": hotel_id,
+        "hotel_name": str(guide.get("hotel_name") or ""),
         "highlights": guide.get("highlights") or [],
         "todos": guide.get("todos") or [],
         "suggestion": str(guide.get("suggestion") or ""),
@@ -662,11 +830,10 @@ def store_guide(guide):
         "fields": guide.get("fields") or {},
         "updated_at": datetime.now(timezone.utc),
     }
-    current = collection.find_one({"hotel_name": hotel}, {"_id": 1})
-    if current:
-        collection.update_one({"hotel_name": hotel}, {"$set": body})
+    if collection.find_one({"hotel_id": hotel_id}, {"_id": 1}):
+        collection.update_one({"hotel_id": hotel_id}, {"$set": body})
         return
-    collection.insert_one(body)
+    collection.insert_one(dict(body, _id=hotel_id))
 
 
 def _money(value):
@@ -679,169 +846,123 @@ def _money(value):
     return str(number)
 
 
-def _priced_span(hotel, room_type):
-    from booking_system.inventory_manager import inventory_manager
-    from booking_system.llm_utils import canonical_key
-    if not room_type or not inventory_manager._ensure_postgres_connection():
-        return "", "", ""
-    inventory_manager._safe_rollback()
-    cur = inventory_manager.postgres_conn.cursor()
-    cur.execute(
-        "SELECT MIN(stay_date), MAX(stay_date), MAX(base_price) FROM daily_pricing WHERE hotel_name = %s AND room_type = %s AND base_price > 0",
-        (canonical_key(hotel), canonical_key(room_type)),
-    )
-    row = cur.fetchone()
-    cur.close()
-    inventory_manager._safe_rollback()
-    if not row or not row[0]:
-        return "", "", ""
-    start = row[0].isoformat() if hasattr(row[0], "isoformat") else str(row[0])[:10]
-    end = row[1].isoformat() if hasattr(row[1], "isoformat") else str(row[1])[:10]
-    return start, end, _money(row[2])
-
-
-def _fields_from_hotel(hotel):
-    """Read the hotel that is already open. Returns fields and a booking id."""
-    from booking_system.guest_manager import guest_manager
-    from booking_system.hotel_context_manager import manager_col
-    from booking_system.policy_manager import policy_manager
-    from booking_system.room_manager import room_manager
-    manager = manager_col.find_one({"hotel_name": hotel}, {"password": 0}) if manager_col is not None else None
-    if not manager:
-        return None, ""
-    fields = _clean({
-        "hotel_name": hotel,
-        "manager_name": manager.get("manager_name"),
-        "manager_phone": manager.get("manager_phone"),
-        "role": manager.get("role"),
-        "nationality": manager.get("nationality"),
-        "primary_language": manager.get("primary_language"),
-        "hotel_timezone": manager.get("hotel_timezone"),
-        "hotel_currency": manager.get("hotel_currency"),
-        **_profile_definitions(manager.get("manager_name")),
-    })
-    bases = list(room_manager.collection.find({"hotel_name": hotel, "has_room_number": False}, {"room_type": 1}))
-    chosen = ""
-    numbers = []
-    for base in bases:
-        room_type = str(base.get("room_type") or "")
-        owned = [str(doc.get("room_number") or "") for doc in room_manager.collection.find({"hotel_name": hotel, "room_type": room_type, "has_room_number": True}, {"room_number": 1})]
-        if owned and not chosen:
-            chosen = room_type
-            numbers = owned
-    if chosen:
-        start, end, price = _priced_span(hotel, chosen)
-        fields["room_type"] = chosen
-        fields["room_numbers"] = ", ".join(numbers)
-        fields["price_from"] = start
-        fields["price_to"] = end
-        fields["nightly_price"] = price
-    policies = list(policy_manager.records["booking_policies"].find({"hotel_name": hotel, "status": "active"}, {"_id": 0, "policy_type": 1, "details": 1}))
-    by_type = {}
-    for row in policies:
-        details = row.get("details") if isinstance(row.get("details"), dict) else {}
-        by_type[str(row.get("policy_type") or "")] = details
-    booking_details = by_type.get("booking") or {}
-    payment_details = by_type.get("payment") or {}
-    fields["checkin_time"] = str(booking_details.get("checkin_time") or "")
-    fields["checkout_time"] = str(booking_details.get("checkout_time") or "")
-    percent = payment_details.get("payment_threshold_percent")
-    fields["payment_percent"] = _money(percent) if percent is not None else ""
-    first = guest_manager.records["guest_bookings"].find(
-        {"hotel_name": hotel},
-        {"_id": 0, "booking_id": 1, "guest_name": 1, "guest_phone": 1, "stay_dates": 1, "room_type": 1, "created_timestamp": 1},
-    ).sort("created_timestamp", 1).limit(1)
-    booking = next(iter(first), None)
-    booking_id = ""
-    if booking:
-        nights = booking.get("stay_dates") or []
-        fields["guest_name"] = str(booking.get("guest_name") or "")
-        fields["guest_phone"] = str(booking.get("guest_phone") or "")
-        fields["stay_night"] = str(nights[0])[:10] if nights else ""
-        if not fields["room_type"]:
-            fields["room_type"] = str(booking.get("room_type") or "")
-        booking_id = str(booking.get("booking_id") or "")
-    return _clean(fields), booking_id
-
-
-def read_guide(hotel_name):
+def read_guide(hotel_id):
     """The stored guide, or one built from the hotel record when none is stored yet."""
-    hotel = str(hotel_name or "").upper()
-    if not hotel:
-        return {"hotel_name": "", "highlights": [], "todos": [], "suggestion": "", "booking_id": "", "fields": {}}
-    collection = _guide_collection()
-    current = collection.find_one({"hotel_name": hotel}, {"_id": 0, "updated_at": 0})
+    empty = {"hotel_name": "", "highlights": [], "todos": [], "suggestion": "", "booking_id": "", "fields": {}}
+    if not hotel_id:
+        return empty
+    current = _guide_collection().find_one({"hotel_id": hotel_id}, {"_id": 0, "hotel_id": 0, "updated_at": 0})
     if current:
         return current
-    fields, booking_id = _fields_from_hotel(hotel)
+    fields, booking_id, manager_id = _fields_from_hotel(hotel_id)
     if not fields:
-        return {"hotel_name": hotel, "highlights": [], "todos": [], "suggestion": "", "booking_id": "", "fields": {}}
-    saved, found = _already(fields)
+        return empty
+    saved, found = _already(fields, manager_id)
     if found:
         booking_id = found
     guide = build_guide(fields, saved, booking_id)
     if "account" in saved:
-        store_guide(guide)
+        store_guide(hotel_id, guide)
     return guide
 
 
-def _speak(client, draft, lines, offers, fields, saved):
-    gap = ""
-    for step, names in _STEPS:
-        if step in saved:
-            continue
-        missing = _missing(fields, names)
-        gap = missing[0] if missing else ""
-        break
-    offer = offers.get(gap) or ""
-    text = "Draft\n" + str(draft or "") + "\nResults\n" + "\n".join(lines) + "\nNext field: " + gap + "\nOffer: " + offer
-    from booking_system.llm_utils import haiku_text
-    spoken = haiku_text(_REWRITE, text, max_tokens=300, timeout=60).strip()
-    return spoken or str(draft or "").strip()
+def _results(lines):
+    """The write outcomes of this turn, the speaker's only source for what happened."""
+    return list(lines) or ["Nothing was saved this turn."]
 
 
-def onboard_turn(message, history, fields):
-    """Read the chat, keep the stated fields, then create the step that is complete."""
-    incoming = _recall(_clean(fields))
-    client_password = incoming["password"]
-    known_saved, known_booking = _already(incoming)
-    today = date.today()
-    offers = _offers(today)
-    client = _client()
-    from booking_system.llm_utils import haiku_text
-    response_text = haiku_text(
-        _INSTRUCTIONS,
-        _prompt(message, history, incoming, offers, known_saved, known_booking),
-        schema=_schema(),
-        max_tokens=1200,
-        timeout=90,
+def _speak(message, history, lines, offers, fields, saved):
+    """The reply, written after the writes from their outcomes; the extraction step never speaks."""
+    gap = _next_name(fields, saved)
+    text = "\n".join(
+        ["Conversation"]
+        + [("Person: " if str((item or {}).get("role") or "") == "person" else "Leon: ") + str((item or {}).get("text") or "")
+           for item in list(history or [])[-6:]]
+        + ["Person: " + str(message or ""), "Results"] + _results(lines)
+        + ["Next field question: " + _question(gap), "Offer: " + (offers.get(gap) or "")]
     )
-    parsed = json.loads(response_text)
-    stored = dict(incoming)
-    for name in _FIELDS:
-        value = str((parsed or {}).get(name) or "").strip()
-        if value:
-            stored[name] = value
-    stored = _clean(stored)
-    if "account" in known_saved and not client_password:
-        stored["password"] = ""
-    lines, saved, extra = _apply(stored)
-    reply = str((parsed or {}).get("reply") or "").strip()
-    if lines:
-        try:
-            reply = _speak(client, reply, lines, offers, stored, saved)
-        except Exception:
-            reply = " ".join(lines)
-    if not reply:
-        reply = "What's your WhatsApp number, with the country code?"
-    if "account" in saved:
-        stored["password"] = ""
+    from booking_system.llm_utils import haiku_text
+    try:
+        spoken = haiku_text(_REWRITE, text, max_tokens=300, timeout=60).strip()
+    except Exception:
+        spoken = ""
+    return spoken or " ".join(list(lines) + [_question(gap)]).strip()
+
+
+def _signup_graph(message, history, incoming, offers, known_saved, known_booking, client_password, signed_user_id):
+    """Signup extract, writes, and reply are nodes. The model calls stay inside read and reply."""
+    from typing import TypedDict
+
+    from langgraph.graph import END, START, StateGraph
+
+    class State(TypedDict, total=False):
+        parsed: dict
+        stored: dict
+        lines: list
+        saved: list
+        extra: dict
+        reply: str
+
+    def read(state: State):
+        from booking_system.llm_utils import haiku_text
+
+        response_text = haiku_text(
+            _INSTRUCTIONS,
+            _prompt(message, history, incoming, offers, known_saved, known_booking),
+            schema=_schema(),
+            max_tokens=1200,
+            timeout=90,
+        )
+        return {"parsed": json.loads(response_text)}
+
+    def apply(state: State):
+        stored = dict(incoming)
+        for name in _all_fields():
+            value = str((state.get("parsed") or {}).get(name) or "").strip()
+            if value:
+                stored[name] = value
+        stored = _clean(stored)
+        if "account" in known_saved and not client_password:
+            stored["password"] = ""
+        lines, saved, extra = _apply(stored, signed_user_id)
+        return {"stored": stored, "lines": lines, "saved": saved, "extra": extra}
+
+    def reply(state: State):
+        stored = state.get("stored") or {}
+        saved = state.get("saved") or []
+        text = _speak(message, history, state.get("lines") or [], offers, stored, saved)
+        if "account" in saved:
+            stored = dict(stored, password="")
+        return {"reply": text, "stored": stored}
+
+    builder = StateGraph(State)
+    builder.add_node("read", read)
+    builder.add_node("apply", apply)
+    builder.add_node("reply", reply)
+    builder.add_edge(START, "read")
+    builder.add_edge("read", "apply")
+    builder.add_edge("apply", "reply")
+    builder.add_edge("reply", END)
+    return builder.compile().invoke({})
+
+
+def onboard_turn(message, history, fields, signed_user_id=None):
+    """Read the chat, keep the stated fields, then create the step that is complete. signed_user_id is the person on the
+    request's token; without it, an existing phone must give its password before anything about it is read or written."""
+    incoming = _recall(_clean(fields), signed_user_id)
+    client_password = incoming["password"]
+    known_saved, known_booking = _already(incoming, signed_user_id)
+    offers = _offers(date.today())
+    found = _signup_graph(message, history, incoming, offers, known_saved, known_booking, client_password, signed_user_id)
+    stored = found.get("stored") or {}
+    saved = found.get("saved") or []
+    extra = found.get("extra") or {}
     booking_id = str(extra.get("booking_id") or "")
     guide = build_guide(stored, saved, booking_id)
     if "hotel" in saved:
-        store_guide(guide)
+        store_guide(_hotel_row(stored["hotel_name"]).get("hotel_id"), guide)
     return {
-        "reply": reply,
+        "reply": found.get("reply") or "",
         "fields": guide["fields"],
         "saved": saved,
         "booking_id": booking_id,

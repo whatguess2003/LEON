@@ -276,7 +276,7 @@ class DashboardComponent {
         const availableEl = document.getElementById('available-count');
         const occupiedEl = document.getElementById('occupied-count');
         const maintenanceEl = document.getElementById('maintenance-count');
-        if (availableEl) availableEl.textContent = countOf('clean');
+        if (availableEl) availableEl.textContent = countOf('clean') + countOf('inspected');
         if (occupiedEl) occupiedEl.textContent = occupiedRooms;
         if (maintenanceEl) maintenanceEl.textContent = countOf('dirty') + countOf('cleaning');
     }
@@ -369,7 +369,8 @@ class DashboardComponent {
     getRoomStatusClass(status) {
         switch (status) {
             case 'occupied': return 'bg-yellow-50 border-yellow-200';
-            case 'clean': return 'bg-green-50 border-green-200';
+            case 'clean':
+            case 'inspected': return 'bg-green-50 border-green-200';
             case 'dirty': return 'bg-orange-50 border-orange-200';
             case 'cleaning': return 'bg-red-50 border-red-200';
             default: return 'bg-gray-50 border-gray-200';
@@ -379,7 +380,8 @@ class DashboardComponent {
     getRoomStatusText(status) {
         switch (status) {
             case 'occupied': return 'Occupied';
-            case 'clean': return 'Available';
+            case 'clean':
+            case 'inspected': return 'Available';
             case 'dirty': return 'Dirty';
             case 'cleaning': return 'Cleaning';
             default: return 'Unknown';

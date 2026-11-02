@@ -47,16 +47,10 @@ def _sent_at(timestamp: str) -> str:
 
 
 def _guest_hotel(phone: str) -> str:
+    """The hotel_id when exactly one hotel has an active guest with this phone, else ''."""
     from booking_system.guest_manager import guest_manager
-    matches = list(guest_manager.mongo_db["guests"].find({"guest_phone": phone}, {"_id": 0, "hotel_name": 1}))
-    hotels = []
-    for row in matches:
-        hotel = str((row or {}).get("hotel_name") or "").upper()
-        if hotel and hotel not in hotels:
-            hotels.append(hotel)
-    if len(hotels) == 1:
-        return hotels[0]
-    return ""
+    hotels = guest_manager.hotels_for_phone(phone)
+    return hotels[0]["hotel_id"] if len(hotels) == 1 else ""
 
 
 def _media_part(message: dict) -> dict:
@@ -99,7 +93,8 @@ def _keep_media(source_ref: str, message: dict) -> None:
 
 
 def accept_webhook(payload: dict) -> list:
-    """Save inbound messages and return each guest whose needs should be summarized."""
+    """Save inbound messages and return each (hotel_id, phone) whose needs should be summarized. A hotel user's message is a desk
+    turn instead."""
     from booking_system.guest_manager import guest_manager
     touched = []
     for entry in (payload or {}).get("entry") or []:
@@ -112,6 +107,25 @@ def accept_webhook(payload: dict) -> list:
                 source_ref = str((message or {}).get("id") or "")
                 sent_at = _sent_at(str((message or {}).get("timestamp") or ""))
                 if not phone or not source_ref or not sent_at:
+                    continue
+                from booking_system.leon_turn import manager_account, note_manager_inbound, receive_manager_whatsapp
+                from booking_system.whatsapp_list import list_reply
+                hotel_user = manager_account(phone)
+                if hotel_user:
+                    note_manager_inbound(hotel_user["user_id"], sent_at)
+                    selection = list_reply(message)
+                    row_id = ""
+                    text = ""
+                    if selection:
+                        row_id = selection.get("id") or ""
+                        text = str(selection.get("title") or "").strip()
+                        detail = str(selection.get("description") or "").strip()
+                        if detail:
+                            text = text + "\n" + detail
+                    elif str((message or {}).get("type") or "") == "text":
+                        text = _text_body(message)
+                    if text:
+                        receive_manager_whatsapp(hotel_user, source_ref, text, row_id)
                     continue
                 hotel = _guest_hotel(phone)
                 guest_manager.save_whatsapp_event(source_ref, phone, hotel, sent_at, _text_body(message), "in")

@@ -8,8 +8,8 @@ from langgraph.graph import START, StateGraph
 from langgraph.graph.message import add_messages
 
 _CATALOG_MODEL = "gpt-6.1-sol"
-_CATALOG_EFFORT = "medium"
-_RECURSION_LIMIT = 16
+_CATALOG_EFFORT = "low"
+_RECURSION_LIMIT = 24
 
 
 class CatalogState(TypedDict, total=False):
@@ -48,10 +48,10 @@ def _schema_problem(body):
     sql = str(((body.get("solution") or {}).get("sql_template")) or "").strip()
     from booking_system.semantic.query import _words, accepted_reads
     words = set(_words(sql))
-    column_words = {name.upper() for name in names if name.upper() != "HOTEL_NAME"}
-    sketched = table.upper() in words and "HOTEL_NAME" in words and (not column_words or bool(column_words & words))
-    if not table or not key or "hotel_name" not in key or not names or not aliases or not accepted_reads([sql]) or not sketched:
-        return "schema needs a table, a natural key including hotel_name, columns, aliases, and a read sketched on that table"
+    column_words = {name.upper() for name in names if name.upper() != "HOTEL_ID"}
+    sketched = table.upper() in words and "HOTEL_ID" in words and (not column_words or bool(column_words & words))
+    if not table or not key or "hotel_id" not in key or not names or not aliases or not accepted_reads([sql]) or not sketched:
+        return "schema needs a table, a key including hotel_id, columns, aliases, and a read sketched on that table"
     return ""
 
 
@@ -152,10 +152,10 @@ def _tools(sink):
 
     @tool
     def run_read(sql: str, parameter_names_json: str = "") -> str:
-        """Run the SQL you will submit. parameter_names_json is a JSON list whose only name is hotel_name. Relative days use CURRENT_DATE in the hotel time zone. No rows is a valid result."""
+        """Run the SQL you will submit. parameter_names_json is a JSON list whose only name is hotel_id. Relative days use CURRENT_DATE in the hotel time zone. No rows is a valid result."""
         from booking_system.semantic.context_engine import parameter_names, parameter_values
         from booking_system.semantic.executor import run_read as execute_read
-        hotel_name = str(sink.get("hotel_name") or "")
+        hotel_id = str(sink.get("hotel_id") or "")
         raw = []
         text = str(parameter_names_json or "").strip()
         if text:
@@ -167,13 +167,13 @@ def _tools(sink):
                 return json.dumps({"error": "parameter_names_json must be a list"})
             raw = parsed
         values, missing = parameter_values(
-            hotel_name,
+            hotel_id,
             [],
             parameter_names({"solution": {"parameters": raw}}),
         )
         if missing:
             return json.dumps({"error": "missing parameter " + " ".join(missing)})
-        result = execute_read([str(sql or "")], values, None, hotel_name, "catalog")
+        result = execute_read([str(sql or "")], values, None, hotel_id, "catalog")
         return json.dumps({
             "rows": result.get("rows") or [],
             "error": result.get("error") or "",
@@ -189,7 +189,7 @@ def _tools(sink):
             return json.dumps({"error": "references_json is not a JSON list"})
         if not isinstance(refs, list):
             return json.dumps({"error": "references_json must be a list"})
-        package = ContextEngine().expand(0, refs, {"max_tokens": 3000}, hotel_name=str(sink.get("hotel_name") or ""), manager_name=manager)
+        package = ContextEngine().expand(0, refs, {"max_tokens": 3000}, hotel_id=str(sink.get("hotel_id") or ""), user_id=manager)
         return json.dumps(package, ensure_ascii=True, default=str)
 
     @tool
@@ -204,7 +204,7 @@ def _tools(sink):
         catalog_id is a short natural snake_case name for the capability. It is required.
         outputs is a list of the column names the read returns, as plain strings.
         output_grain is guest, reservation, room, night, or channel.
-        A SQL page also needs validation.hotel_name.
+        The validator runs a SQL page at the fixture hotel and checks isolation against another hotel.
         When run_read returns rows, validation.expected_value must appear in those rows.
         When run_read returns no rows, leave validation.expected_value empty and still submit the page.
         Seeded or unseeded rows do not change the SQL or the action. An empty result is a valid read of existing tables.
@@ -258,7 +258,7 @@ def _tools(sink):
         if not catalog_id.strip():
             return json.dumps({"error": "catalog_id required: a short natural snake_case name for the capability"})
         existing = catalog_scopes([catalog_id]).get(catalog_id)
-        if existing and not (existing["scope"] == "user" and existing["manager_name"] == manager.upper()):
+        if existing and not (existing["scope"] == "user" and existing["user_id"] == manager):
             return json.dumps({
                 "error": catalog_id + " is taken by a " + existing["scope"] + " recipe that is read-only for this manager. "
                 "Submit create_child with a new catalog_id for this manager's own user recipe."
@@ -342,7 +342,7 @@ def improve_from_trace(trace_id, auto_promote=True, findings=None):
         "trace_id": int(trace_id),
         "auto_promote": bool(auto_promote),
         "result": {},
-        "hotel_name": trace.get("hotel_name") or "",
+        "hotel_id": trace.get("hotel_id") or "",
         "question": trace.get("question") or "",
         "stall_reason": trace.get("stall_reason") or "",
     }
@@ -352,7 +352,7 @@ def improve_from_trace(trace_id, auto_promote=True, findings=None):
 
     sink["manager"] = trace_manager(trace)
 
-    facts = platform_facts(trace["hotel_name"])
+    facts = platform_facts(trace["hotel_id"])
     definitions = manager_definitions(trace_manager(trace))
     tools = _tools(sink)
     model = _model().bind_tools(tools)
@@ -366,7 +366,7 @@ def improve_from_trace(trace_id, auto_promote=True, findings=None):
         response = model.invoke([
             {"role": "system", "content": _system({
                 "trace_id": trace["trace_id"],
-                "hotel_name": trace["hotel_name"],
+                "hotel_id": trace["hotel_id"],
                 "question": trace["question"],
                 "catalog_ids": trace["catalog_ids"],
                 "stall_reason": trace["stall_reason"],

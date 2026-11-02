@@ -866,10 +866,12 @@ class RoomsComponent {
             const data = await res.json();
             const map = new Map();
             (data.items || []).forEach(x => map.set(String(x.room_number), String(x.readiness_status).toLowerCase()));
-            this.roomNumbers.forEach(rn => {
+            const apply = (rn) => {
                 const st = map.get(String(rn.room_number));
-                if (st) rn.room_status = st;
-            });
+                if (st && String(rn.room_status || '').toLowerCase() !== 'occupied') rn.room_status = st;
+            };
+            (this.roomTypes || []).forEach(rt => (rt.room_numbers || []).forEach(apply));
+            this.roomNumbers.forEach(apply);
         } catch (e) {
             // fail silently
         }
@@ -1102,8 +1104,8 @@ class RoomsComponent {
     
     async updateRoomStatus(roomId, newStatus) {
         try {
-            const hotelId = this.getCurrentHotelId();
-            await this.app.updateRoomStatus(hotelId, roomId, newStatus);
+            const hotelId = await window.leonHotelId();
+            await this.app.updateRoomStatus(encodeURIComponent(hotelId), roomId, newStatus);
             this.loadRoomsData(); // Refresh rooms data
         } catch (error) {
             console.error('Error updating room status:', error);
@@ -1479,7 +1481,7 @@ class RoomsComponent {
     
     async bulkStatusUpdate() {
         if (!this.selectedRooms.length) { this.showNotification('Select rooms first', 'info'); return; }
-        const next = window.prompt('Readiness for the selected rooms (clean, dirty, cleaning, occupied)', 'dirty');
+        const next = window.prompt('Readiness for the selected rooms (clean, dirty, cleaning, inspected)', 'dirty');
         if (!next) return;
         const hotel = await this.ensureHotel();
         let updated = 0;

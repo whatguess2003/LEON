@@ -32,16 +32,7 @@ class InventoryComponent {
     }
     
     getCurrentHotelId() {
-        try {
-            const cookies = document.cookie.split(';').map(c => c.trim());
-            const kv = cookies.find(c => c.startsWith('leon_hotel='));
-            if (!kv) return '';
-            const val = decodeURIComponent(kv.split('=')[1] || '');
-            if (!val) return '';
-            return val.toLowerCase().replace(/\s+/g, '_');
-        } catch (_) {
-            return '';
-        }
+        return window.leonHotelId();
     }
 
     async refreshInventoryFromApi() {
@@ -611,8 +602,8 @@ class InventoryComponent {
         try {
             // No hotel context needed
             console.log(`Updating inventory for ${roomType} on ${date} at ${price}`);
-            const hotelId = this.getCurrentHotelId();
-            const response = await fetch(`${this.apiBase}/hotels/${hotelId}/inventory/update-date`, {
+            const hotelId = await this.getCurrentHotelId();
+            const response = await fetch(`${this.apiBase}/hotels/${encodeURIComponent(hotelId)}/inventory/update-date`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -658,8 +649,8 @@ class InventoryComponent {
 
     async updateInventoryDates(dates, roomType, quantity, price) {
         try {
-            const hotelId = this.getCurrentHotelId();
-            const response = await fetch(`${this.apiBase}/hotels/${hotelId}/inventory/update-dates`, {
+            const hotelId = await this.getCurrentHotelId();
+            const response = await fetch(`${this.apiBase}/hotels/${encodeURIComponent(hotelId)}/inventory/update-dates`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',

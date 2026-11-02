@@ -4,7 +4,6 @@ from urllib.parse import quote
 import requests
 from requests.auth import HTTPBasicAuth
 from datetime import datetime, timedelta
-from typing import List, Dict, Any
 
 PROPERTY_DETAILS_URL = "https://live.aiosell.com/api/v2/cm/property_details/{hotel_code}"
 INVENTORY_URL = "https://live.aiosell.com/api/v2/cm/update/{partner}"
@@ -120,42 +119,24 @@ def _day_span(start_date, end_date):
     return start, end, ""
 
 
-def hotel_code_for(hotel_name: str) -> str:
-    from booking_system.front_desk_manager import intelligent_front_desk
-    doc = intelligent_front_desk.get_mongodb_connection().get_collection("ota_link").find_one(
-        {"hotel_name": str(hotel_name or "").strip().upper()},
-        {"_id": 0, "hotel_code": 1},
+def _hotel(hotel_id: str) -> dict:
+    from booking_system.hotel_registry import read_hotel_by_id
+    return read_hotel_by_id(hotel_id) or {}
+
+
+def hotel_code_for(hotel_id: str) -> str:
+    return str(_hotel(hotel_id).get("channel_hotel_code") or "")
+
+
+def read_room_maps(hotel_id: str) -> list:
+    """[{'room_code', 'room_type', 'room_type_id'}] mapped for the hotel."""
+    from booking_system import db
+    return db.rows(
+        """SELECT m.channel_room_code AS room_code, t.room_type_name AS room_type, m.room_type_id
+           FROM hotel_room_code_mapping m JOIN room_type t ON t.room_type_id = m.room_type_id
+           WHERE m.hotel_id = %s ORDER BY m.channel_room_code""",
+        (hotel_id,),
     )
-    return str((doc or {}).get("hotel_code") or "").strip()
-
-
-def read_room_maps(hotel_name: str, hotel_code: str) -> list:
-    hotel_name = str(hotel_name or "").strip().upper()
-    from booking_system.aiosell_reservation import _ensure_mapping_table
-    from booking_system.booking_manager import booking_manager
-    with booking_manager.postgres_lock:
-        booking_manager._clear_transaction()
-        cur = booking_manager.postgres_conn.cursor()
-        try:
-            _ensure_mapping_table(cur)
-            booking_manager.postgres_conn.commit()
-        finally:
-            cur.close()
-        cur = booking_manager.postgres_conn.cursor()
-        try:
-            cur.execute(
-                """
-                SELECT room_code, room_type FROM hotel_room_code_mapping
-                WHERE hotel_code = %s AND hotel_name = %s
-                ORDER BY room_code
-                """,
-                (hotel_code, hotel_name),
-            )
-            rows = [{"room_code": row[0], "room_type": row[1]} for row in cur.fetchall()]
-        finally:
-            cur.close()
-            booking_manager._safe_rollback()
-        return rows
 
 
 def _property_rooms(property_body: dict) -> dict:
@@ -172,113 +153,50 @@ def _property_rooms(property_body: dict) -> dict:
     return found
 
 
-def _available_by_date(hotel_name: str, room_type: str, start, end) -> dict:
-    from booking_system.booking_manager import booking_manager
-    from booking_system.llm_utils import canonical_key
-    with booking_manager.postgres_lock:
-        return _available_by_date_locked(booking_manager, canonical_key, hotel_name, room_type, start, end)
+def _available_by_date(hotel_id: str, room_type_id: str, start, end) -> dict:
+    """{day: rooms to sell, or None when the night has no inventory}."""
+    from booking_system import db, inventory_manager
+    nights = db.transaction(lambda cur: inventory_manager.availability(cur, hotel_id, room_type_id, start, end))
+    return {start + timedelta(days=offset): (nights.get(start + timedelta(days=offset)) or {}).get("available")
+            for offset in range((end - start).days + 1)}
 
 
-def _available_by_date_locked(booking_manager, canonical_key, hotel_name: str, room_type: str, start, end) -> dict:
-    booking_manager._clear_transaction()
-    cur = booking_manager.postgres_conn.cursor()
-    hotel = canonical_key(hotel_name)
-    room = canonical_key(room_type)
-    try:
-        cur.execute(
-            """
-            SELECT stay_date, blocked_quantity
-            FROM room_inventory_nightly
-            WHERE hotel_name = %s AND room_type = %s AND stay_date BETWEEN %s AND %s
-            """,
-            (hotel, room, start, end),
-        )
-        blocked = {row[0]: int(row[1] or 0) for row in cur.fetchall()}
-        cur.execute(
-            """
-            SELECT stay_date, COUNT(DISTINCT room_number)
-            FROM room_number_assignments
-            WHERE hotel_name = %s AND room_type = %s AND stay_date BETWEEN %s AND %s
-            GROUP BY stay_date
-            """,
-            (hotel, room, start, end),
-        )
-        physical = {row[0]: int(row[1] or 0) for row in cur.fetchall()}
-        cur.execute(
-            """
-            SELECT stay_date, COALESCE(SUM(rooms_booked), 0)
-            FROM booking_stays
-            WHERE hotel_name = %s AND room_type = %s AND stay_date BETWEEN %s AND %s
-              AND LOWER(COALESCE(booking_status, '')) <> 'cancelled'
-            GROUP BY stay_date
-            """,
-            (hotel, room, start, end),
-        )
-        booked = {row[0]: int(row[1] or 0) for row in cur.fetchall()}
-    finally:
-        cur.close()
-        booking_manager._safe_rollback()
-    available = {}
-    day = start
-    while day <= end:
-        if day not in blocked:
-            available[day] = None
-        else:
-            rooms = physical.get(day, 0)
-            held = min(blocked.get(day, 0), rooms)
-            open_rooms = rooms - held - booked.get(day, 0)
-            available[day] = open_rooms if open_rooms > 0 else 0
-        day += timedelta(days=1)
-    return available
-
-
-def _mapped_codes(hotel_name: str, hotel_code: str, property_body: dict):
-    maps = read_room_maps(hotel_name, hotel_code)
+def _mapped_codes(hotel_id: str, property_body: dict):
+    maps = read_room_maps(hotel_id)
     if not maps:
         return None, "No room codes are mapped for this hotel"
     rooms = _property_rooms(property_body)
-    paired = []
-    missing = []
-    for item in maps:
-        code = str(item.get("room_code") or "").strip()
-        room_type = str(item.get("room_type") or "").strip()
-        if code not in rooms:
-            missing.append(code)
-            continue
-        paired.append({"room_code": code, "room_type": room_type, "rateplans": rooms[code]})
+    paired = [dict(item, rateplans=rooms[item["room_code"]]) for item in maps if item["room_code"] in rooms]
+    missing = [item["room_code"] for item in maps if item["room_code"] not in rooms]
     if missing and not paired:
         return None, "Mapped room codes are not on this property: " + ", ".join(missing)
     return {"paired": paired, "missing": missing}, ""
 
 
-def push_inventory_range(hotel_name: str, start_date: str, end_date: str) -> dict:
+def push_inventory_range(hotel_id: str, start_date: str, end_date: str) -> dict:
     """Push mapped room availability to Aiosell for each date in the range."""
-    hotel_name = str(hotel_name or "").strip().upper()
     start, end, span_error = _day_span(start_date, end_date)
     if span_error:
         return {"error": span_error}
-    hotel_code = hotel_code_for(hotel_name)
+    hotel_code = hotel_code_for(hotel_id)
     if not hotel_code:
         return {"error": "Hotel code is not linked"}
     details = read_property_details(hotel_code)
     if details.get("error"):
         return {"error": details["error"]}
-    mapped, map_error = _mapped_codes(hotel_name, hotel_code, details.get("property"))
+    mapped, map_error = _mapped_codes(hotel_id, details.get("property"))
     if map_error:
         return {"error": map_error}
-    by_type = {}
+    by_type = {item["room_type_id"]: _available_by_date(hotel_id, item["room_type_id"], start, end) for item in mapped["paired"]}
     updates = []
     gaps = []
     day = start
     while day <= end:
         rooms = []
         for item in mapped["paired"]:
-            room_type = item["room_type"]
-            if room_type not in by_type:
-                by_type[room_type] = _available_by_date(hotel_name, room_type, start, end)
-            count = by_type[room_type].get(day)
+            count = by_type[item["room_type_id"]].get(day)
             if count is None:
-                gaps.append(day.isoformat() + " " + room_type)
+                gaps.append(day.isoformat() + " " + item["room_type"])
                 continue
             rooms.append({"roomCode": item["room_code"], "available": count})
         if rooms:
@@ -293,20 +211,20 @@ def push_inventory_range(hotel_name: str, start_date: str, end_date: str) -> dic
     return sent
 
 
-def push_rate_range(hotel_name: str, start_date: str, end_date: str) -> dict:
+def push_rate_range(hotel_id: str, start_date: str, end_date: str) -> dict:
     """Push the mapped room type price onto each rate plan for each date."""
     from booking_system.kite_pricing import kite_pricing
-    hotel_name = str(hotel_name or "").strip().upper()
     start, end, span_error = _day_span(start_date, end_date)
     if span_error:
         return {"error": span_error}
-    hotel_code = hotel_code_for(hotel_name)
+    hotel = _hotel(hotel_id)
+    hotel_code = str(hotel.get("channel_hotel_code") or "")
     if not hotel_code:
         return {"error": "Hotel code is not linked"}
     details = read_property_details(hotel_code)
     if details.get("error"):
         return {"error": details["error"]}
-    mapped, map_error = _mapped_codes(hotel_name, hotel_code, details.get("property"))
+    mapped, map_error = _mapped_codes(hotel_id, details.get("property"))
     if map_error:
         return {"error": map_error}
     quotes = {}
@@ -315,8 +233,8 @@ def push_rate_range(hotel_name: str, start_date: str, end_date: str) -> dict:
         if room_type in quotes:
             continue
         quotes[room_type] = {}
-        for quote in kite_pricing.quotes_for_range(hotel_name, room_type, start.isoformat(), end.isoformat()):
-            quotes[room_type][quote["stay_date"]] = quote.get("push_price")
+        for quoted in kite_pricing.quotes_for_range(hotel_id, room_type, start.isoformat(), end.isoformat()):
+            quotes[room_type][quoted["stay_date"]] = quoted.get("push_price")
     updates = []
     gaps = []
     day = start
@@ -345,19 +263,13 @@ def push_rate_range(hotel_name: str, start_date: str, end_date: str) -> dict:
     return sent
 
 
-def push_dates(hotel_name: str, stay_dates) -> dict:
+def push_dates(hotel_id: str, stay_dates) -> dict:
     """Push inventory and rates for the stay dates that changed."""
-    days = []
-    seen = set()
-    for stay_date in stay_dates or []:
-        parsed = _parse_day(stay_date)
-        if parsed is None or parsed in seen:
-            continue
-        seen.add(parsed)
-        days.append(parsed)
+    days = sorted({day for day in (_parse_day(stay_date) for stay_date in stay_dates or []) if day is not None})
     if not days:
         return {"skipped": "no dates"}
-    days.sort()
+    if not hotel_code_for(hotel_id):
+        return {"skipped": "Hotel code is not linked"}
     chunks = []
     start = days[0]
     end = days[0]
@@ -370,24 +282,20 @@ def push_dates(hotel_name: str, stay_dates) -> dict:
     inventory = []
     rates = []
     for chunk_start, chunk_end in chunks:
-        inventory.append(push_inventory_range(hotel_name, chunk_start.isoformat(), chunk_end.isoformat()))
-        rates.append(push_rate_range(hotel_name, chunk_start.isoformat(), chunk_end.isoformat()))
+        inventory.append(push_inventory_range(hotel_id, chunk_start.isoformat(), chunk_end.isoformat()))
+        rates.append(push_rate_range(hotel_id, chunk_start.isoformat(), chunk_end.isoformat()))
     return {"inventory": inventory, "rates": rates}
 
 
-def push_rates_for_date(hotel_name, stay_date, to_channels=None):
+def push_rates_for_date(hotel_id, stay_date, to_channels=None):
     """Send the selected price for every mapped room on one stay date."""
     text = str(stay_date)[:10]
-    return push_rate_range(hotel_name, text, text)
+    return push_rate_range(hotel_id, text, text)
 
 
-def push_rates_for_dates(hotel_name, stay_dates, to_channels=None):
+def push_rates_for_dates(hotel_id, stay_dates, to_channels=None):
     """Send the selected price for every mapped room on each of the given stay dates."""
-    days = []
-    for stay_date in stay_dates or []:
-        parsed = _parse_day(stay_date)
-        if parsed is not None:
-            days.append(parsed)
+    days = [day for day in (_parse_day(stay_date) for stay_date in stay_dates or []) if day is not None]
     if not days:
         return {"error": "Dates must be YYYY-MM-DD"}
-    return push_rate_range(hotel_name, min(days).isoformat(), max(days).isoformat())
+    return push_rate_range(hotel_id, min(days).isoformat(), max(days).isoformat())

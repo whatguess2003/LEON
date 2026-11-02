@@ -75,6 +75,59 @@ class GuestComponent {
         this.record = data;
         this.renderRecord();
         this.refreshSummary();
+        this.watchThread();
+    }
+
+    watchThread() {
+        if (this.threadTimer) clearInterval(this.threadTimer);
+        this.threadTimer = setInterval(() => this.pullThread(), 2000);
+    }
+
+    async pullThread() {
+        const guest = (this.record && this.record.guest) || {};
+        const phone = guest.guest_phone;
+        if (!phone || this.threadBusy) return;
+        this.threadBusy = true;
+        try {
+            const response = await fetch(`${this.apiUrl}/guests/thread?hotel_name=${encodeURIComponent(this.currentHotel)}&guest_phone=${encodeURIComponent(phone)}`, { credentials: 'include' });
+            const data = await response.json();
+            if (!response.ok || data.error) return;
+            if ((this.record.guest || {}).guest_phone !== phone) return;
+            const mark = (rows) => (rows || []).map(message => [message.sent_at, message.source_ref, message.status, message.body].join('|')).join('\n');
+            const changed = mark(this.record.messages) !== mark(data.messages);
+            this.record.messages = data.messages || [];
+            this.record.whatsapp_window = data.whatsapp_window;
+            if (changed && document.getElementById('msg-list')) this.renderMessages(this.messageChannel || '');
+            const summaryChanged = String(data.ai_summary_at || '') && data.ai_summary_at !== guest.ai_summary_at;
+            const deskChanged = JSON.stringify([guest.approval_actions, guest.desk_tasks, this.record.desk_require_approval]) !== JSON.stringify([data.approval_actions, data.desk_tasks, data.desk_require_approval]);
+            if (summaryChanged) {
+                guest.guest_profile_summary = data.guest_profile_summary || '';
+                guest.guest_needs = data.guest_needs || '';
+                guest.recommended_action = data.recommended_action || '';
+                guest.ai_summary_at = data.ai_summary_at;
+                guest.ai_summary_for = data.ai_summary_for;
+                const boxes = {
+                    'guest-profile-summary': guest.guest_profile_summary,
+                    'guest-needs': guest.guest_needs,
+                    'recommended-action': guest.recommended_action,
+                };
+                Object.keys(boxes).forEach(id => {
+                    const box = document.getElementById(id);
+                    if (box) box.textContent = boxes[id];
+                });
+                const when = document.getElementById('ai-when');
+                if (when) when.textContent = 'Saved ' + data.ai_summary_at;
+            }
+            if (summaryChanged || deskChanged) {
+                guest.approval_actions = data.approval_actions || [];
+                guest.desk_tasks = data.desk_tasks || [];
+                this.record.desk_require_approval = data.desk_require_approval || [];
+                this.record.executional_names = data.executional_names || this.record.executional_names;
+                this.renderDeskColumn();
+            }
+        } finally {
+            this.threadBusy = false;
+        }
     }
 
     renderRecord() {
@@ -97,27 +150,21 @@ class GuestComponent {
                     ${this.summaryCard('Cancelled', counts.cancelled)}
                     ${this.summaryCard('Total spent', (this.record.currency || '') + ' ' + counts.spent.toFixed(2))}
                 </div>
-                <div class="mt-4 border rounded p-3 md:flex">
-                    <div class="flex-1 md:pr-4 space-y-3">
-                        <div>
-                            <h3 class="text-sm font-semibold">Guest profile summary</h3>
-                            <div id="guest-profile-summary" class="text-sm whitespace-pre-wrap mt-1">${this.esc(guest.guest_profile_summary) || ''}</div>
-                        </div>
-                        <div>
-                            <h3 class="text-sm font-semibold">Guest needs</h3>
-                            <div id="guest-needs" class="text-sm whitespace-pre-wrap mt-1">${this.esc(guest.guest_needs) || ''}</div>
-                        </div>
-                        <div>
-                            <h3 class="text-sm font-semibold">Recommended action</h3>
-                            <div id="recommended-action" class="text-sm whitespace-pre-wrap mt-1">${this.esc(guest.recommended_action) || ''}</div>
-                        </div>
-                        <p id="ai-when" class="text-xs text-gray-500">${guest.ai_summary_at ? 'Saved ' + this.esc(guest.ai_summary_at) : ''}</p>
-                        <p id="ai-status" class="text-sm"></p>
+                <div class="mt-4 border rounded p-3 space-y-3">
+                    <div>
+                        <h3 class="text-sm font-semibold">Guest profile summary</h3>
+                        <div id="guest-profile-summary" class="text-sm whitespace-pre-wrap mt-1">${this.esc(guest.guest_profile_summary) || ''}</div>
                     </div>
-                    <div class="md:w-80 md:border-l md:pl-4 mt-4 md:mt-0 flex-shrink-0">
-                        <h3 class="text-sm font-semibold">Executable actions</h3>
-                        <div id="executable-actions" class="mt-2 space-y-2"></div>
+                    <div>
+                        <h3 class="text-sm font-semibold">Guest needs</h3>
+                        <div id="guest-needs" class="text-sm whitespace-pre-wrap mt-1">${this.esc(guest.guest_needs) || ''}</div>
                     </div>
+                    <div>
+                        <h3 class="text-sm font-semibold">Recommended action</h3>
+                        <div id="recommended-action" class="text-sm whitespace-pre-wrap mt-1">${this.esc(guest.recommended_action) || ''}</div>
+                    </div>
+                    <p id="ai-when" class="text-xs text-gray-500">${guest.ai_summary_at ? 'Saved ' + this.esc(guest.ai_summary_at) : ''}</p>
+                    <p id="ai-status" class="text-sm"></p>
                 </div>
             </div>
             <div id="pane-messages" class="hidden">
@@ -145,11 +192,11 @@ class GuestComponent {
                         <button type="button" id="wa-upload" class="bg-gray-100 text-gray-700 px-3 py-1 rounded text-sm">Choose file</button>
                         <span id="wa-file-name" class="text-sm text-gray-600 ml-2"></span>
                     </div>
-                    <div class="flex justify-end mt-2">
+                    <div class="flex justify-end mt-2 pr-48">
                         <button type="button" id="wa-simulate" class="bg-gray-700 text-white px-3 py-1 rounded text-sm">Simulate</button>
                         <button type="button" id="wa-send" class="bg-blue-600 text-white px-3 py-1 rounded text-sm ml-2">Send</button>
                     </div>
-                    <p class="text-xs text-gray-500 mt-2">Simulate saves the message on this guest. WhatsApp is not sent.</p>
+                    <p class="text-xs text-gray-500 mt-2">Simulate records the guest's message here. The assistant replies in this thread. WhatsApp is not sent.</p>
                     <p id="wa-status" class="text-sm mt-2"></p>
                 </div>
             </div>
@@ -216,7 +263,7 @@ class GuestComponent {
             if (name) name.textContent = chosen ? chosen.name : '';
         });
         this.renderMessages(this.messageChannel || '');
-        this.renderActions(guest.executable_actions);
+        this.renderDeskColumn();
         if (this.viewTab) this.showTab(this.viewTab);
     }
 
@@ -427,7 +474,7 @@ class GuestComponent {
             status.textContent = 'Write a message first';
             return;
         }
-        status.textContent = 'Saving on this guest...';
+        status.textContent = 'Saving the guest message...';
         const response = await fetch(`${this.apiUrl}/guests/whatsapp/simulate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -439,6 +486,7 @@ class GuestComponent {
             status.textContent = data.error || 'Simulation failed';
             return;
         }
+        if (data.reply_error) status.textContent = data.reply_error;
         field.value = '';
         this.viewTab = 'messages';
         this.messageChannel = 'whatsapp';
@@ -506,18 +554,18 @@ class GuestComponent {
             return sent > max ? sent : max;
         }, '');
         const filled = guest.guest_profile_summary && guest.guest_needs && guest.recommended_action;
-        const listed = Array.isArray(guest.executable_actions);
+        const approvals = Array.isArray(guest.approval_actions) ? guest.approval_actions : [];
         const bookings = [].concat(this.record.past || [], this.record.current || [], this.record.future || []);
         const byId = {};
         bookings.forEach(booking => { byId[booking.booking_id] = booking; });
         const needsConfirmed = { cancel_booking: 1, modify_booking: 1, check_in: 1 };
-        const stale = listed && guest.executable_actions.some(action => {
+        const stale = approvals.some(action => {
             if (!action.booking_id) return false;
             const booking = byId[action.booking_id];
             if (!booking) return true;
             return needsConfirmed[action.action] && String(booking.booking_status || '').toLowerCase() !== 'confirmed';
         });
-        const current = guest.ai_summary_for === 'brief' && filled && listed && !stale && (!latest || String(guest.ai_summary_at || '') >= latest);
+        const current = guest.ai_summary_for === 'brief' && filled && !stale && (!latest || String(guest.ai_summary_at || '') >= latest);
         if (current) return;
         const status = document.getElementById('ai-status');
         if (status) status.textContent = 'Reading what the guest needs...';
@@ -536,7 +584,8 @@ class GuestComponent {
         guest.guest_profile_summary = data.guest_profile_summary;
         guest.guest_needs = data.guest_needs;
         guest.recommended_action = data.recommended_action;
-        guest.executable_actions = data.executable_actions || [];
+        guest.approval_actions = data.approval_actions || [];
+        guest.desk_tasks = data.desk_tasks || [];
         guest.ai_summary_at = data.ai_summary_at;
         guest.ai_summary_for = data.ai_summary_for;
         const boxes = {
@@ -551,23 +600,84 @@ class GuestComponent {
         const when = document.getElementById('ai-when');
         if (when) when.textContent = 'Saved ' + data.ai_summary_at;
         if (status) status.textContent = '';
-        this.renderActions(guest.executable_actions);
+        this.renderDeskColumn();
     }
 
-    renderActions(actions) {
-        const box = document.getElementById('executable-actions');
-        if (!box) return;
-        const rows = Array.isArray(actions) ? actions : [];
-        box.innerHTML = rows.map((action, index) => `
-            <div class="border rounded p-2">
-                <p class="text-sm">${this.esc(action.label || '')}</p>
-                <button type="button" data-action-index="${index}" class="execute-action mt-2 bg-blue-600 text-white px-3 py-1 rounded text-sm">Execute?</button>
-                <p class="execute-result text-sm mt-1"></p>
-            </div>
-        `).join('');
-        box.querySelectorAll('.execute-action').forEach(button => {
-            button.addEventListener('click', () => this.executeAction(rows[Number(button.dataset.actionIndex)], button));
+    renderDeskColumn() {
+        const guest = (this.record && this.record.guest) || {};
+        const held = this.record.desk_require_approval || [];
+        const toggles = document.getElementById('approval-toggles');
+        if (toggles) {
+            const names = this.record.executional_names || [];
+            toggles.innerHTML = names.map(name => `
+                <label class="flex items-center text-sm mt-1">
+                    <input type="checkbox" data-approval="${this.esc(name)}" ${held.indexOf(name) >= 0 ? 'checked' : ''}>
+                    <span class="ml-2">${this.esc(name.split('_').join(' '))}</span>
+                </label>
+            `).join('');
+            toggles.querySelectorAll('input').forEach(input => {
+                input.addEventListener('change', () => this.saveApproval(input.dataset.approval, input.checked));
+            });
+        }
+        const approvals = document.getElementById('approval-actions');
+        const rows = Array.isArray(guest.approval_actions) ? guest.approval_actions : [];
+        if (approvals) {
+            approvals.innerHTML = rows.map((action, index) => `
+                <div class="border rounded p-2">
+                    <p class="text-sm">${this.esc(action.label || '')}</p>
+                    <button type="button" data-approval-index="${index}" class="approve-action mt-2 bg-blue-600 text-white px-3 py-1 rounded text-sm">Approve</button>
+                    <p class="execute-result text-sm mt-1"></p>
+                </div>
+            `).join('');
+            approvals.querySelectorAll('.approve-action').forEach(button => {
+                button.addEventListener('click', () => this.executeAction(rows[Number(button.dataset.approvalIndex)], button));
+            });
+        }
+        const tasks = document.getElementById('desk-tasks');
+        const openTasks = (Array.isArray(guest.desk_tasks) ? guest.desk_tasks : []).filter(item => item.status !== 'done');
+        if (tasks) {
+            tasks.innerHTML = openTasks.map(item => `
+                <div class="border rounded p-2">
+                    <p class="text-sm">${this.esc(item.task || '')}</p>
+                    <button type="button" data-task="${this.esc(item.task || '')}" class="done-task mt-2 bg-gray-700 text-white px-3 py-1 rounded text-sm">Done</button>
+                </div>
+            `).join('');
+            tasks.querySelectorAll('.done-task').forEach(button => {
+                button.addEventListener('click', () => this.doneTask(button.dataset.task, button));
+            });
+        }
+    }
+
+    async saveApproval(action, required) {
+        const response = await fetch(`${this.apiUrl}/guests/approval`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ hotel_name: this.currentHotel, action: action, require_approval: required })
         });
+        const data = await response.json();
+        if (response.ok && data.desk_require_approval) {
+            this.record.desk_require_approval = data.desk_require_approval;
+            this.renderDeskColumn();
+        }
+    }
+
+    async doneTask(task, button) {
+        button.disabled = true;
+        const guest = (this.record && this.record.guest) || {};
+        const response = await fetch(`${this.apiUrl}/guests/tasks/done`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ hotel_name: this.currentHotel, guest_phone: guest.guest_phone, task: task })
+        });
+        const data = await response.json();
+        if (!response.ok || data.error) {
+            button.disabled = false;
+            return;
+        }
+        guest.desk_tasks = (guest.desk_tasks || []).map(item => item.task === task ? Object.assign({}, item, { status: 'done' }) : item);
+        this.renderDeskColumn();
     }
 
     async executeAction(action, button) {
@@ -640,6 +750,14 @@ class GuestComponent {
             return;
         }
         if (result) result.textContent = data.result || 'Done';
+        if (button.classList.contains('approve-action')) {
+            await fetch(`${this.apiUrl}/guests/approval/clear`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ hotel_name: this.currentHotel, guest_phone: guest.guest_phone, label: action.label })
+            });
+        }
         await this.openGuest(guest.guest_phone);
     }
 

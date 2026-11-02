@@ -1,1091 +1,507 @@
-#!/usr/bin/env python3
-"""
-INVENTORY MANAGER - Agent-Rule Compliant
-ONLY manages hotel room inventory and pricing using natural keys
+"""Nightly inventory and prices per room type: room_inventory_nightly, daily_pricing, room_allotments.
 
-AGENT-RULE COMPLIANCE:
-- Natural Keys: explicit hotel_name + room_type (no artificial IDs)
-- PostgreSQL Only: Computable data (numbers, dates) for inventory/pricing
-- CRUD Operations: All operations validate with READ first
-- Parameter Validation: All user input validated against database
-"""
+available_rooms / free_rooms / count_rooms take the caller's cursor (RealDictCursor) so every module reads availability inside its own
+transaction. A night without a room_inventory_nightly row is not for sale: those reads return None and the caller reports it."""
 
-import psycopg2
-import pymongo
-import os
-from datetime import timedelta
-from datetime import datetime, timezone
-from typing import Dict, Any
-from dotenv import load_dotenv
-from langchain.tools import tool
-from langchain_openai import ChatOpenAI
-import difflib
-from .llm_utils import canonical_key
-# Load environment variables
-load_dotenv()
+import sys
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
-class InventoryManager:
-    def __init__(self):
-        """Initialize Inventory Manager with PostgreSQL and MongoDB connections"""
-        self.postgres_conn = None
-        self.mongo_client = None
-        self.mongo_db = None
-        # Remove naive date context; compute per hotel on demand
-        self.current_date = None
-        
-        # Initialize LLM for parsing unstructured inventory information
-        self.llm = ChatOpenAI(
-            model="gpt-4.1-nano",
-            temperature=0.1,
-            openai_api_key=os.getenv('OPENAI_API_KEY')
-        )
-        
-        # No global DATE_CONTEXT; defaults computed with hotel timezone where needed
-        self.DATE_CONTEXT = {}
+from booking_system import core_refs, db
 
-    # Timezone logic centralized in timezone_utils; use hotel_now_local/hotel_local_today
-        
-        self._connect_databases()
-        # self._ensure_tables()  # Removed: schema setup now handled by setup_schema.py
-    
-    def _safe_rollback(self):
-        try:
-            if self.postgres_conn:
-                self.postgres_conn.rollback()
-        except Exception:
-            pass
+HORIZON_DAYS = 365
+LIVE_NIGHTS = ("booked", "checked_in")
+SOLD_NIGHTS = ("booked", "checked_in", "checked_out")
 
-    def _ensure_postgres_connection(self) -> bool:
-        """Ensure PostgreSQL connection is alive; reconnect if closed/broken."""
-        try:
-            if self.postgres_conn is None or getattr(self.postgres_conn, 'closed', True):
-                self.postgres_conn = psycopg2.connect(os.getenv('DATABASE_URL'))
-                return True
-            # Probe connection
-            try:
-                with self.postgres_conn.cursor() as cur:
-                    cur.execute("SELECT 1;")
-            except Exception:
-                # Reconnect on failure
-                self.postgres_conn = psycopg2.connect(os.getenv('DATABASE_URL'))
-            return True
-        except Exception as e:
-            print(f"❌ PostgreSQL reconnect error: {e}")
-            return False
 
-    def _connect_databases(self):
-        """Connect to PostgreSQL and MongoDB (agent-rule: read room types from MongoDB)"""
-        try:
-            # PostgreSQL connection for computable data
-            self.postgres_conn = psycopg2.connect(os.getenv('DATABASE_URL'))
-            # Database connections established silently
-            
-            # MongoDB connection to read available room types
-            self.mongo_client = pymongo.MongoClient(os.getenv('MONGO_URL'))
-            self.mongo_db = self.mongo_client['leon_hotel_memory']
-            # Database connections established silently
-        except Exception as e:
-            print(f"❌ Database connection error: {e}")
-    
-    def _validate_and_read_nightly_inventory(self, hotel_name: str, room_type: str, stay_date: str) -> Dict[str, Any]:
-        """CRUD VALIDATION: READ nightly inventory to validate parameters (intelligent similarity-based room_type suggestion)"""
-        if not self._ensure_postgres_connection():
-            return {'exists': False, 'error': 'Database connection not available'}
-        try:
-            # Clear any aborted transaction state
-            self._safe_rollback()
-            cur = self.postgres_conn.cursor()
-            # Try exact match first
-            cur.execute("""
-                SELECT hotel_name, room_type, stay_date, total_inventory, blocked_quantity, updated_at
-                FROM room_inventory_nightly
-                WHERE hotel_name = %s AND room_type = %s AND stay_date = %s;
-            """, (canonical_key(hotel_name), canonical_key(room_type), canonical_key(stay_date)))
-            exact_match = cur.fetchone()
-            if exact_match:
-                rooms = self.count_rooms(hotel_name, room_type, stay_date)
-                blocked = min(int(exact_match[4] or 0), rooms)
-                return {
-                    'exists': True,
-                    'exact_match': True,
-                    'matched_room_type': exact_match[1],
-                    'data': {
-                        'hotel_name': exact_match[0],
-                        'room_type': exact_match[1],
-                        'stay_date': exact_match[2],
-                        'total_inventory': rooms,
-                        'blocked_quantity': blocked,
-                        'updated_at': exact_match[5]
-                    }
-                }
-            # If not found, try case-insensitive match
-            cur.execute("""
-                SELECT DISTINCT room_type FROM room_inventory_nightly
-                WHERE hotel_name = %s AND room_type = %s
-                LIMIT 1;
-            """, (canonical_key(hotel_name), canonical_key(room_type)))
-            ci_match = cur.fetchone()
-            if ci_match:
-                matched_room_type = ci_match[0]
-                return {
-                    'exists': False,
-                    'exact_match': False,
-                    'matched_room_type': matched_room_type,
-                    'suggestion': f"Did you mean room type '{matched_room_type}'?",
-                }
-            # If still not found, use similarity matching
-            cur.execute("""
-                SELECT DISTINCT room_type FROM room_inventory_nightly
-                WHERE hotel_name = %s;
-            """, (canonical_key(hotel_name),))
-            all_room_types = [row[0] for row in cur.fetchall()]
-            close_matches = difflib.get_close_matches(room_type, all_room_types, n=1, cutoff=0.6)
-            if close_matches:
-                suggestion = close_matches[0]
-                return {
-                    'exists': False,
-                    'exact_match': False,
-                    'suggestion': f"Did you mean room type '{suggestion}'?",
-                    'matched_room_type': suggestion
-                }
-            return {'exists': False, 'exact_match': False}
-        except Exception as e:
-            self._safe_rollback()
-            return {'exists': False, 'error': str(e)}
+def _day(value):
+    return value if isinstance(value, date) else date.fromisoformat(str(value or "").strip()[:10])
 
-    def count_rooms(self, hotel_name: str, room_type: str, stay_date: str = None) -> int:
-        """Physical rooms of this room type. A stay date counts the rooms that exist that night."""
-        if not self._ensure_postgres_connection():
-            return 0
-        try:
-            self._safe_rollback()
-            cur = self.postgres_conn.cursor()
-            if stay_date:
-                cur.execute(
-                    """
-                    SELECT COUNT(DISTINCT room_number)
-                    FROM room_number_assignments
-                    WHERE hotel_name = %s AND room_type = %s AND stay_date = %s
-                    """,
-                    (canonical_key(hotel_name), canonical_key(room_type), canonical_key(stay_date))
-                )
-            else:
-                cur.execute(
-                    """
-                    SELECT COUNT(DISTINCT room_number)
-                    FROM room_number_assignments
-                    WHERE hotel_name = %s AND room_type = %s
-                    """,
-                    (canonical_key(hotel_name), canonical_key(room_type))
-                )
-            row = cur.fetchone()
-            self._safe_rollback()
-            return int(row[0] or 0) if row else 0
-        except Exception:
-            self._safe_rollback()
-            return 0
 
-    def room_counts_between(self, hotel_name: str, room_type: str, start_date: str, end_date: str):
-        if not self._ensure_postgres_connection():
-            return {}
-        try:
-            self._safe_rollback()
-            cur = self.postgres_conn.cursor()
-            cur.execute(
-                """
-                SELECT stay_date, COUNT(DISTINCT room_number)
-                FROM room_number_assignments
-                WHERE hotel_name = %s AND room_type = %s AND stay_date BETWEEN %s AND %s
-                GROUP BY stay_date
-                """,
-                (canonical_key(hotel_name), canonical_key(room_type), canonical_key(start_date), canonical_key(end_date))
-            )
-            counts = {str(stay_date): int(rooms or 0) for stay_date, rooms in cur.fetchall()}
-            self._safe_rollback()
-            return counts
-        except Exception:
-            self._safe_rollback()
-            return {}
+def _days(values):
+    """Sorted distinct dates, or None when one is not YYYY-MM-DD."""
+    try:
+        return sorted({_day(value) for value in values or []})
+    except ValueError:
+        return None
 
-    def update_dates(self, hotel_name: str, manager_name: str, room_type: str, dates, price, quantity):
-        """Write price and inventory for many stay dates in one database transaction."""
-        if not self._ensure_postgres_connection():
-            return {"error": "Database connection not available"}
-        hotel = canonical_key(hotel_name)
-        room = canonical_key(room_type)
-        days = []
-        seen = set()
-        for raw in dates or []:
-            text = str(raw or "").strip()[:10]
-            if not text or text in seen:
-                continue
-            try:
-                day = datetime.strptime(text, "%Y-%m-%d").date()
-            except ValueError:
-                return {"error": "Invalid date"}
-            seen.add(text)
-            days.append(day)
-        if not days:
-            return {"error": "dates are required"}
-        try:
-            price_value = float(price)
-        except (TypeError, ValueError):
-            return {"error": "Price is required"}
-        block_all = quantity is not None and int(quantity) == 0
-        try:
-            from psycopg2.extras import execute_values
-            from booking_system.kite_pricing import ensure_schema
-            ensure_schema()
-            self._safe_rollback()
-            cur = self.postgres_conn.cursor()
-            cur.execute(
-                """
-                SELECT stay_date, COUNT(DISTINCT room_number)
-                FROM room_number_assignments
-                WHERE hotel_name = %s AND room_type = %s AND stay_date = ANY(%s)
-                GROUP BY stay_date
-                """,
-                (hotel, room, days),
-            )
-            counts = {row[0]: int(row[1] or 0) for row in cur.fetchall()}
-            cur.execute(
-                """
-                SELECT stay_date, blocked_quantity
-                FROM room_inventory_nightly
-                WHERE hotel_name = %s AND room_type = %s AND stay_date = ANY(%s)
-                """,
-                (hotel, room, days),
-            )
-            blocked_now = {row[0]: int(row[1] or 0) for row in cur.fetchall()}
-            now = datetime.now(timezone.utc)
-            inventory_rows = []
-            for day in days:
-                rooms = counts.get(day, 0)
-                blocked = rooms if block_all else min(blocked_now.get(day, 0), rooms)
-                inventory_rows.append((hotel, room, day, rooms, blocked, now, manager_name))
-            execute_values(
-                cur,
-                """
-                INSERT INTO room_inventory_nightly
-                    (hotel_name, room_type, stay_date, total_inventory, blocked_quantity, updated_at, updated_by)
-                VALUES %s
-                ON CONFLICT (hotel_name, room_type, stay_date)
-                DO UPDATE SET total_inventory = EXCLUDED.total_inventory,
-                              blocked_quantity = EXCLUDED.blocked_quantity,
-                              updated_at = EXCLUDED.updated_at,
-                              updated_by = EXCLUDED.updated_by
-                """,
-                inventory_rows,
-            )
-            execute_values(
-                cur,
-                """
-                INSERT INTO daily_pricing
-                    (hotel_name, room_type, stay_date, base_price, saved_price, updated_at, created_by, updated_by)
-                VALUES %s
-                ON CONFLICT (hotel_name, room_type, stay_date)
-                DO UPDATE SET base_price = EXCLUDED.base_price,
-                              saved_price = EXCLUDED.saved_price,
-                              updated_at = EXCLUDED.updated_at,
-                              updated_by = EXCLUDED.updated_by
-                """,
-                [(hotel, room, day, price_value, price_value, now, manager_name, manager_name) for day in days],
-            )
-            execute_values(
-                cur,
-                """
-                INSERT INTO kite_price_anchor (hotel_name, room_type, stay_date, anchor_at)
-                VALUES %s
-                ON CONFLICT (hotel_name, room_type, stay_date)
-                DO UPDATE SET anchor_at = EXCLUDED.anchor_at
-                """,
-                [(hotel, room, day, now) for day in days],
-            )
-            self.postgres_conn.commit()
-            cur.close()
-            return {"success": True, "dates": len(days)}
-        except Exception as exc:
-            self._safe_rollback()
-            return {"error": str(exc)}
 
-    def apply_room_count(self, hotel_name: str, manager_name: str, room_type: str) -> str:
-        """Write each night's total from the rooms of this room type. Blocked nights stay blocked, capped at that count."""
-        if not self._ensure_postgres_connection():
-            return "❌ Database connection not available"
-        try:
-            self._safe_rollback()
-            cur = self.postgres_conn.cursor()
-            cur.execute(
-                """
-                UPDATE room_inventory_nightly AS nightly
-                SET total_inventory = counts.rooms,
-                    blocked_quantity = LEAST(nightly.blocked_quantity, counts.rooms),
-                    updated_at = %s,
-                    updated_by = %s
-                FROM (
-                    SELECT stay_date, COUNT(DISTINCT room_number) AS rooms
-                    FROM room_number_assignments
-                    WHERE hotel_name = %s AND room_type = %s
-                    GROUP BY stay_date
-                ) AS counts
-                WHERE nightly.hotel_name = %s AND nightly.room_type = %s AND nightly.stay_date = counts.stay_date
-                """,
-                (datetime.now(timezone.utc), manager_name, canonical_key(hotel_name), canonical_key(room_type), canonical_key(hotel_name), canonical_key(room_type))
-            )
-            self.postgres_conn.commit()
-            return f"✅ Inventory for {room_type} follows its rooms"
-        except Exception as e:
-            self._safe_rollback()
-            return f"❌ Error applying room count: {e}"
+def hotel_today(zone):
+    return datetime.now(ZoneInfo(zone)).date()
 
-    def update_nightly_inventory(self, hotel_name: str, manager_name: str, room_type: str, stay_date: str, total_inventory: int = None, blocked_quantity: int = 0) -> str:
-        """UPDATE nightly inventory record for a specific date (only total_inventory and blocked_quantity are stored; active_inventory is computed)"""
-        if not self.postgres_conn:
-            return "❌ Database connection not available"
-        validation = self._validate_and_read_nightly_inventory(hotel_name, room_type, stay_date)
-        if validation.get('error'):
-            return f"❌ Validation error: {validation['error']}"
-        if not validation.get('exists'):
-            return f"❌ Cannot UPDATE - no nightly inventory found for '{room_type}' at '{hotel_name}' on {stay_date}. Use CREATE first."
-        current_data = validation['data']
-        if total_inventory is None:
-            total_inventory = current_data['total_inventory']
-        if blocked_quantity is None:
-            blocked_quantity = current_data.get('blocked_quantity', 0)
-        try:
-            cur = self.postgres_conn.cursor()
-            cur.execute("""
-                UPDATE room_inventory_nightly
-                SET total_inventory = %s, blocked_quantity = %s, updated_at = %s, updated_by = %s
-                WHERE hotel_name = %s AND room_type = %s AND stay_date = %s;
-            """, (total_inventory, blocked_quantity, datetime.now(timezone.utc), manager_name, canonical_key(hotel_name), canonical_key(room_type), canonical_key(stay_date)))
-            self.postgres_conn.commit()
-            return f"✅ Updated room quantity for {room_type} at {hotel_name} on {stay_date}: Total {total_inventory}, Blocked {blocked_quantity}, Active {total_inventory - blocked_quantity} (by {manager_name})"
-        except Exception as e:
-            self.postgres_conn.rollback()
-            return f"❌ Error updating nightly inventory: {e}"
 
-    def read_nightly_inventory(self, hotel_name: str, room_type: str, stay_date: str) -> str:
-        """READ nightly inventory record for a specific date (active_inventory is computed as total_inventory - blocked_quantity)"""
-        if not self._ensure_postgres_connection():
-            return "❌ Database connection not available"
-        try:
-            self._safe_rollback()
-            cur = self.postgres_conn.cursor()
-            cur.execute("""
-                SELECT total_inventory, blocked_quantity, updated_at
-                FROM room_inventory_nightly
-                WHERE hotel_name = %s AND room_type = %s AND stay_date = %s;
-            """, (canonical_key(hotel_name), canonical_key(room_type), canonical_key(stay_date)))
-            row = cur.fetchone()
-            if not row:
-                return f"❌ No nightly inventory found for '{room_type}' at '{hotel_name}' on {stay_date}"
-            stored_total, blocked_quantity, updated_at = row
-            total_inventory = self.count_rooms(hotel_name, room_type, stay_date)
-            blocked_quantity = min(int(blocked_quantity or 0), total_inventory)
-            active_inventory = total_inventory - blocked_quantity
-            return f"📊 Nightly Inventory for {room_type} at {hotel_name} on {stay_date}:\n  • Total: {total_inventory}\n  • Blocked: {blocked_quantity}\n  • Active: {active_inventory}\n  • Last Updated: {updated_at}"
-        except Exception as e:
-            self._safe_rollback()
-            return f"❌ Error reading nightly inventory: {e}"
+# ---------- availability (shared) ----------
 
-    def read_calendar(self, hotel_name: str, start_date: str, end_date: str):
-        """Prices and nightly quantities for every room type in one connection."""
-        if not self._ensure_postgres_connection():
-            return {"room_types": [], "error": "Database connection not available"}
-        hotel = canonical_key(hotel_name)
-        start = canonical_key(start_date)
-        end = canonical_key(end_date)
-        try:
-            self._safe_rollback()
-            cur = self.postgres_conn.cursor()
-            cur.execute(
-                """
-                SELECT DISTINCT room_type
-                FROM room_inventory_nightly
-                WHERE hotel_name = %s
-                ORDER BY room_type
-                """,
-                (hotel,),
-            )
-            rooms = [row[0] for row in cur.fetchall()]
-            cur.execute(
-                """
-                SELECT room_type, stay_date, base_price, COALESCE(saved_price, base_price), updated_at
-                FROM daily_pricing
-                WHERE hotel_name = %s AND stay_date BETWEEN %s AND %s
-                """,
-                (hotel, start, end),
-            )
-            prices = {}
-            for room_type, stay_date, base_price, saved_price, updated_at in cur.fetchall():
-                prices.setdefault(room_type, []).append({
-                    "date": str(stay_date),
-                    "price": float(base_price) if base_price is not None else 0.0,
-                    "saved_price": float(saved_price) if saved_price is not None else float(base_price or 0),
-                    "updated_at": str(updated_at) if updated_at is not None else "",
-                })
-            cur.execute(
-                """
-                SELECT room_type, stay_date, blocked_quantity, updated_at
-                FROM room_inventory_nightly
-                WHERE hotel_name = %s AND stay_date BETWEEN %s AND %s
-                """,
-                (hotel, start, end),
-            )
-            nightly = {}
-            for room_type, stay_date, blocked_quantity, updated_at in cur.fetchall():
-                nightly.setdefault(room_type, {})[str(stay_date)] = (int(blocked_quantity or 0), updated_at)
-            cur.execute(
-                """
-                SELECT room_type, stay_date, COUNT(DISTINCT room_number)
-                FROM room_number_assignments
-                WHERE hotel_name = %s AND stay_date BETWEEN %s AND %s
-                GROUP BY room_type, stay_date
-                """,
-                (hotel, start, end),
-            )
-            counts = {}
-            for room_type, stay_date, rooms_n in cur.fetchall():
-                counts.setdefault(room_type, {})[str(stay_date)] = int(rooms_n or 0)
-            cur.close()
-            self._safe_rollback()
-            room_types = []
-            for room in rooms:
-                quantities = []
-                for date_text, (blocked_raw, updated_at) in nightly.get(room, {}).items():
-                    rooms_n = counts.get(room, {}).get(date_text, 0)
-                    blocked = min(blocked_raw, rooms_n)
-                    quantities.append({
-                        "date": date_text,
-                        "total_inventory": rooms_n,
-                        "active_inventory": rooms_n - blocked,
-                        "updated_at": str(updated_at) if updated_at is not None else "",
-                    })
-                room_types.append({
-                    "room_type": room,
-                    "pricing": prices.get(room, []),
-                    "quantities": quantities,
-                })
-            return {"room_types": room_types}
-        except Exception as e:
-            self._safe_rollback()
-            return {"room_types": [], "error": str(e)}
+def count_rooms(cur, hotel_id, room_type_id):
+    """Active physical rooms of a room type."""
+    cur.execute("SELECT COUNT(*) AS n FROM room WHERE hotel_id = %s AND room_type_id = %s AND status = 'active'", (hotel_id, room_type_id))
+    return int(cur.fetchone()["n"])
 
-    def read_nightly_inventory_range(self, hotel_name: str, room_type: str, start_date: str, end_date: str):
-        """READ nightly inventory for a date range; returns list of dicts per date."""
-        if not self._ensure_postgres_connection():
-            return {"items": [], "error": "Database connection not available"}
-        try:
-            self._safe_rollback()
-            cur = self.postgres_conn.cursor()
-            cur.execute(
-                """
-                SELECT stay_date, total_inventory, blocked_quantity, updated_at
-                FROM room_inventory_nightly
-                WHERE hotel_name = %s AND room_type = %s AND stay_date BETWEEN %s AND %s
-                ORDER BY stay_date
-                """,
-                (canonical_key(hotel_name), canonical_key(room_type), canonical_key(start_date), canonical_key(end_date))
-            )
-            rows = cur.fetchall()
-            counts = self.room_counts_between(hotel_name, room_type, start_date, end_date)
-            items = []
-            for stay_date, total_inventory, blocked_quantity, updated_at in rows:
-                rooms = counts.get(str(stay_date), 0)
-                blocked = min(int(blocked_quantity or 0), rooms)
-                items.append({
-                    "date": str(stay_date),
-                    "total_inventory": rooms,
-                    "active_inventory": rooms - blocked,
-                    "updated_at": str(updated_at) if updated_at is not None else ""
-                })
-            self._safe_rollback()
-            return {"items": items}
-        except Exception as e:
-            self._safe_rollback()
-            return {"items": [], "error": str(e)}
 
-    def delete_nightly_inventory(self, hotel_name: str, manager_name: str, room_type: str, stay_date: str) -> str:
-        """DELETE nightly inventory record for a specific date (canonical for all per-night operations)"""
-        if not self.postgres_conn:
-            return "❌ Database connection not available"
-        try:
-            cur = self.postgres_conn.cursor()
-            cur.execute("""
-                DELETE FROM room_inventory_nightly
-                WHERE hotel_name = %s AND room_type = %s AND stay_date = %s;
-            """, (canonical_key(hotel_name), canonical_key(room_type), canonical_key(stay_date)))
-            self.postgres_conn.commit()
-            return f"✅ Deleted nightly inventory for {room_type} at {hotel_name} on {stay_date} (by {manager_name})"
-        except Exception as e:
-            self.postgres_conn.rollback()
-            return f"❌ Error deleting nightly inventory: {e}"
-
-    def create_room_price(self, hotel_name: str, manager_name: str, room_type: str, start_date: str, end_date: str, price: float) -> str:
-        """CREATE room price data using natural keys with CRUD validation using manager_context.json
-        Now independent of inventory: only checks that room_type exists for the hotel (any date).
-        Assumes start_date and end_date are valid ISO date strings (YYYY-MM-DD).
-        """
-        if not self.postgres_conn:
-            return "❌ Database connection not available"
-        
-        cur = self.postgres_conn.cursor()
-        cur.execute("""
-            SELECT 1 FROM room_inventory_nightly
-            WHERE hotel_name = %s AND room_type = %s
-            LIMIT 1;
-        """, (canonical_key(hotel_name), canonical_key(room_type)))
-        if not cur.fetchone():
-            return f"❌ Cannot CREATE pricing - room type '{room_type}' does not exist for '{hotel_name}'. Create the room type first."
-        
-        try:
-            from booking_system.kite_pricing import ensure_schema
-            ensure_schema()
-            # Use start_date and end_date as provided (assume valid ISO format)
-            y1, m1, d1 = [int(x) for x in str(start_date).split('-')]
-            y2, m2, d2 = [int(x) for x in str(end_date).split('-')]
-            base_today = datetime.now(timezone.utc).date()
-            start = base_today.replace(year=y1, month=m1, day=d1)
-            end = base_today.replace(year=y2, month=m2, day=d2)
-            
-            dates_created = 0
-            current = start
-            
-            while current <= end:
-                cur.execute("""
-                    INSERT INTO daily_pricing (hotel_name, room_type, stay_date, base_price, saved_price, updated_at, created_by, updated_by)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (hotel_name, room_type, stay_date) DO UPDATE SET
-                        base_price = EXCLUDED.base_price,
-                        saved_price = EXCLUDED.saved_price,
-                        updated_at = %s,
-                        updated_by = EXCLUDED.updated_by;
-                """, (canonical_key(hotel_name), canonical_key(room_type), current.isoformat(), price, price, datetime.now(timezone.utc), manager_name, manager_name, datetime.now(timezone.utc)))
-                
-                dates_created += 1
-                current += timedelta(days=1)
-            
-            self.postgres_conn.commit()
-            from booking_system.kite_pricing import kite_pricing
-            day = start
-            while day <= end:
-                kite_pricing.note_anchor(hotel_name, room_type, day.isoformat())
-                day += timedelta(days=1)
-            
-            return f"✅ Created pricing for {room_type} at {hotel_name} (by {manager_name}):\n" \
-                   f"  • Period: {start_date} to {end_date}\n" \
-                   f"  • Days updated: {dates_created}\n" \
-                   f"  • Price: ${price}/night"
-            
-        except Exception as e:
-            self.postgres_conn.rollback()
-            return f"❌ Error creating pricing: {e}"
-
-    def read_room_price(self, hotel_name: str, room_type: str, start_date: str = None, end_date: str = None) -> str:
-        """READ room price data using natural keys with validation using manager_context.json"""
-        if not self._ensure_postgres_connection():
-            return "❌ Database connection not available"
-        
-        try:
-            self._safe_rollback()
-            # Default to next 7 days if no dates provided (hotel-local)
-            if not start_date:
-                try:
-                    start_date = datetime.now(timezone.utc).date().isoformat()
-                except Exception:
-                    return "❌ Missing hotel timezone for pricing window"
-            if not end_date:
-                y, m, d = [int(x) for x in str(start_date).split('-')]
-                base_today = datetime.now(timezone.utc).date()
-                start_dt = base_today.replace(year=y, month=m, day=d)
-                end_date = (start_dt + timedelta(days=6)).isoformat()
-            
-            cur = self.postgres_conn.cursor()
-            
-            cur.execute("""
-                SELECT stay_date, base_price, COALESCE(saved_price, base_price), updated_at
-                FROM daily_pricing 
-                WHERE hotel_name = %s AND room_type = %s AND stay_date BETWEEN %s AND %s
-                ORDER BY stay_date;
-            """, (canonical_key(hotel_name), canonical_key(room_type), canonical_key(start_date), canonical_key(end_date)))
-            
-            results = cur.fetchall()
-            
-            output = f"💰 Pricing for {room_type} at {hotel_name}:\n"
-            output += f"  • Period: {start_date} to {end_date}\n\n"
-            
-            if not results:
-                output += "  ❌ No pricing data set for this period"
-            else:
-                for stay_date, price, saved_price, updated_at in results:
-                    output += f"  • {stay_date}: ${price}/night saved ${saved_price}/night (updated {updated_at})\n"
-            self._safe_rollback()
-            return output.strip()
-            
-        except Exception as e:
-            self._safe_rollback()
-            return f"❌ Error reading pricing: {e}"
-
-    def update_room_price(self, hotel_name: str, manager_name: str, room_type: str, stay_date: str, price: float) -> str:
-        """UPDATE room price data for specific date using natural keys with CRUD validation using manager_context.json"""
-        if not self._ensure_postgres_connection():
-            return "❌ Database connection not available"
-        
-        parsed_date = stay_date
-        
-        validation = self._validate_and_read_nightly_inventory(hotel_name, room_type, parsed_date)
-        
-        if validation.get('error'):
-            return f"❌ Validation error: {validation['error']}"
-        
-        if not validation.get('exists'):
-            return f"❌ Cannot UPDATE price - no inventory found for '{room_type}' at '{hotel_name}' on {parsed_date}. Create inventory first."
-        
-        try:
-            from booking_system.kite_pricing import ensure_schema
-            ensure_schema()
-            cur = self.postgres_conn.cursor()
-            
-            # Check if pricing record exists for this date
-            cur.execute("""
-                SELECT base_price FROM daily_pricing 
-                WHERE hotel_name = %s AND room_type = %s AND stay_date = %s;
-            """, (canonical_key(hotel_name), canonical_key(room_type), canonical_key(parsed_date)))
-            
-            existing_price = cur.fetchone()
-            
-            if existing_price:
-                # UPDATE existing price
-                cur.execute("""
-                    UPDATE daily_pricing 
-                    SET base_price = %s, saved_price = %s, updated_at = %s, updated_by = %s
-                    WHERE hotel_name = %s AND room_type = %s AND stay_date = %s;
-                """, (price, price, datetime.now(timezone.utc), manager_name, canonical_key(hotel_name), canonical_key(room_type), canonical_key(parsed_date)))
-                
-                action = "Updated"
-                old_price = existing_price[0]
-            else:
-                # CREATE new price record
-                cur.execute("""
-                    INSERT INTO daily_pricing (hotel_name, room_type, stay_date, base_price, saved_price, updated_at, created_by, updated_by)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
-                """, (canonical_key(hotel_name), canonical_key(room_type), canonical_key(parsed_date), price, price, datetime.now(timezone.utc), manager_name, manager_name))
-                
-                action = "Created"
-                old_price = 0.0
-            
-            self.postgres_conn.commit()
-            from booking_system.kite_pricing import kite_pricing
-            kite_pricing.note_anchor(hotel_name, room_type, parsed_date)
-            
-            return f"✅ {action} price for {room_type} at {hotel_name} (by {manager_name}):\n" \
-                   f"  • Date: {parsed_date}\n" \
-                   f"  • Price: ${old_price:.2f} → ${price:.2f}\n" \
-                   f"  • Action: {action} price record"
-            
-        except Exception as e:
-            self.postgres_conn.rollback()
-            return f"❌ Error updating price: {e}"
-
-    def read_available_room_types(self, hotel_name: str) -> str:
-        """READ available hotel_name and room_type combinations from PostgreSQL using manager_context.json
-        
-        This shows what hotel_name + room_type combinations exist and can have inventory updated
-        """
-        if not self._ensure_postgres_connection():
-            return "❌ PostgreSQL connection not available"
-        
-        try:
-            # Clear any aborted transaction state before running SELECTs
-            self._safe_rollback()
-            cur = self.postgres_conn.cursor()
-            
-            # Get latest record per room_type for this hotel
-            cur.execute("""
-                SELECT DISTINCT ON (room_type)
-                    room_type, total_inventory, blocked_quantity, updated_at
-                FROM room_inventory_nightly
-                WHERE hotel_name = %s
-                ORDER BY room_type, updated_at DESC
-            """, (canonical_key(hotel_name),))
-            
-            room_data = cur.fetchall()
-            
-            if not room_data:
-                return f"❌ No room types found for {hotel_name} in PostgreSQL. Create room types first using room_manager tools."
-            
-            result = f"📋 Available Room Types for Inventory Management at {hotel_name} ({len(room_data)} types):\n"
-            result += "💡 These room types have inventory records (quantities and prices can be updated):\n\n"
-            
-            for room_type, total_inventory, blocked_quantity, updated_at in room_data:
-                rooms = self.count_rooms(hotel_name, room_type)
-                blocked = min(int(blocked_quantity or 0), rooms)
-                active_inventory = rooms - blocked
-                status = "✅ Ready" if rooms > 0 else "⏳ Empty"
-                result += f"  • {room_type} ({status})\n"
-                result += f"    - Total: {rooms} | Blocked: {blocked} | Active: {active_inventory}\n"
-                result += f"    - Updated: {updated_at}\n"
-            
-            if room_data:
-                result += f"\n💡 Example: update_inventory('{room_data[0][0]}', 10, 8)"
-            
-            return result.strip()
-            
-        except Exception as e:
-            self._safe_rollback()
-            return f"❌ Error reading available room types: {e}"
-
-    def _parse_inventory_information(self, parsed_data: dict) -> dict:
-        """Accepts structured inventory data and returns it unchanged (no LLM, no prompt logic)."""
-        return parsed_data
-
-    def _create_empty_inventory_template(self,hotel_name: str, inventory_information: str) -> Dict[str, Any]:
-        """Fallback empty template when LLM parsing fails"""
-        # Get hotel context from manager_context.json
-        # context = self._get_hotel_context() # Removed: manager_context.json is no longer used
-        # hotel_name = canonical_key(context.get("hotel_name", "")) # Removed: manager_context.json is no longer used
-        
-        return {
-            "hotel_name": hotel_name, # Removed: manager_context.json is no longer used
-            "room_type": "",
-            "inventory_data": {
-                "total_inventory": 0,
-                "blocked_quantity": 0,
-                "operation": ""
-            },
-            "pricing_data": {
-                "base_price": 0.0,
-                "start_date": "",
-                "end_date": "",
-                "currency": "",
-                "operation": ""
-            },
-            "notes": inventory_information
+def availability(cur, hotel_id, room_type_id, start, end):
+    """{stay_date: {total, blocked, booked, stop_sell, available}} for the nights on file between start and end."""
+    cur.execute(
+        """SELECT n.stay_date, n.total_inventory, n.blocked_quantity, n.stop_sell,
+                  (SELECT COUNT(*) FROM booking_room_night b
+                   WHERE b.room_type_id = n.room_type_id AND b.stay_date = n.stay_date AND b.night_status = ANY(%s)) AS booked
+           FROM room_inventory_nightly n
+           WHERE n.hotel_id = %s AND n.room_type_id = %s AND n.stay_date BETWEEN %s AND %s""",
+        (list(LIVE_NIGHTS), hotel_id, room_type_id, start, end),
+    )
+    nights = {}
+    for row in cur.fetchall():
+        open_rooms = row["total_inventory"] - row["blocked_quantity"] - row["booked"]
+        nights[row["stay_date"]] = {
+            "total": row["total_inventory"], "blocked": row["blocked_quantity"], "booked": int(row["booked"]),
+            "stop_sell": row["stop_sell"], "available": 0 if row["stop_sell"] else max(open_rooms, 0),
         }
-
-    def manage_room_quantity(self, hotel_name: str, manager_name: str, room_type: str, start_date: str, end_date: str, total_quantity: int, blocked_quantity: int) -> str:
-        if not self._ensure_postgres_connection():
-            return "❌ Database connection not available"
-        try:
-            y1, m1, d1 = [int(x) for x in str(start_date).split('-')]
-            y2, m2, d2 = [int(x) for x in str(end_date).split('-')]
-            base_today = datetime.now(timezone.utc).date()
-            start = base_today.replace(year=y1, month=m1, day=d1)
-            end = base_today.replace(year=y2, month=m2, day=d2)
-        except Exception:
-            return "❌ Invalid date format. Use YYYY-MM-DD."
-        results = []
-        current = start
-        conn = self.postgres_conn
-        while current <= end:
-            date_str = current.isoformat()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        SELECT 1 FROM room_inventory_nightly
-                        WHERE hotel_name = %s AND room_type = %s AND stay_date = %s
-                    """, (canonical_key(hotel_name), canonical_key(room_type), canonical_key(date_str)))
-                    exists = cur.fetchone() is not None
-                    if not exists:
-                        # Insert new row
-                        cur.execute("""
-                            INSERT INTO room_inventory_nightly (hotel_name, room_type, stay_date, total_inventory, blocked_quantity, updated_at, updated_by)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s)
-                        """, (canonical_key(hotel_name), canonical_key(room_type), canonical_key(date_str), total_quantity, blocked_quantity, datetime.now(timezone.utc), manager_name))
-                        conn.commit()
-                        results.append(f"{date_str}: ✅ Created new inventory row for '{room_type}' at '{hotel_name}'.")
-                    else:
-                        # Update existing row
-                        cur.execute("""
-                            UPDATE room_inventory_nightly
-                            SET total_inventory = %s, blocked_quantity = %s, updated_at = %s, updated_by = %s
-                            WHERE hotel_name = %s AND room_type = %s AND stay_date = %s
-                        """, (total_quantity, blocked_quantity, datetime.now(timezone.utc), manager_name, canonical_key(hotel_name), canonical_key(room_type), canonical_key(date_str)))
-                        conn.commit()
-                        results.append(f"{date_str}: ✅ Updated inventory for '{room_type}' at '{hotel_name}'.")
-            except Exception as e:
-                self.postgres_conn.rollback()
-                results.append(f"{date_str}: ❌ Error: {str(e)}")
-            current += timedelta(days=1)
-        return "\n".join(results)
-
-    def manage_room_price(self, hotel_name: str, manager_name: str, room_type: str, start_date: str, end_date: str, price: float) -> str:
-        try:
-            y1, m1, d1 = [int(x) for x in str(start_date).split('-')]
-            y2, m2, d2 = [int(x) for x in str(end_date).split('-')]
-            base_today = datetime.now(timezone.utc).date()
-            start = base_today.replace(year=y1, month=m1, day=d1)
-            end = base_today.replace(year=y2, month=m2, day=d2)
-        except Exception:
-            return "❌ Invalid date format. Use YYYY-MM-DD."
-        results = []
-        current = start
-        while current <= end:
-            date_str = current.isoformat()
-            result = self.update_room_price(hotel_name, manager_name, room_type, date_str, price)
-            results.append(f"{date_str}: {result}")
-            current += timedelta(days=1)
-        return "\n".join(results)
-
-    def read_inventory_information_from_description(self, hotel_name: str, inventory_information: str) -> str:
-        try:
-            parsed_data = self._parse_inventory_information(inventory_information)
-            result = f"📊 Parsed Inventory Information:\n"
-            result += f"  • Hotel: {parsed_data.get('hotel_name', 'N/A')}\n"
-            result += f"  • Room Type: {parsed_data.get('room_type', 'N/A')}\n"
-            # Inventory data
-            inventory_data = parsed_data.get('inventory_data', {})
-            if inventory_data.get('operation'):
-                result += f"  • Inventory Operation: {inventory_data.get('operation')}\n"
-                result += f"    - Total Rooms: {inventory_data.get('total_inventory', 0)}\n"
-                result += f"    - Blocked Rooms: {inventory_data.get('blocked_quantity', 0)}\n"
-            # Pricing data
-            pricing_data = parsed_data.get('pricing_data', {})
-            if pricing_data.get('operation'):
-                result += f"  • Pricing Operation: {pricing_data.get('operation')}\n"
-                result += f"    - Price: {pricing_data.get('currency', '')} {pricing_data.get('base_price', 0.0):.2f}\n"
-                result += f"    - Period: {pricing_data.get('start_date', 'N/A')} to {pricing_data.get('end_date', 'N/A')}\n"
-            # Notes and validation
-            if parsed_data.get('notes'):
-                result += f"  • Notes: {parsed_data.get('notes')}\n"
-            # Validation status
-            required_fields = ['hotel_name', 'room_type']
-            missing_fields = [field for field in required_fields if not parsed_data.get(field)]
-            if missing_fields:
-                result += f"\n⚠️ Missing Required Fields: {', '.join(missing_fields)}\n"
-                result += f"💡 Please provide complete hotel and room type information"
-            else:
-                result += f"\n✅ All required fields extracted successfully"
-            # Operation recommendations
-            inventory_op = inventory_data.get('operation', '')
-            pricing_op = pricing_data.get('operation', '')
-            if inventory_op:
-                result += f"\n🎯 Ready for: {inventory_op}_inventory tool"
-            if pricing_op:
-                result += f"\n🎯 Ready for: {pricing_op}_pricing tool"
-            return result
-        except Exception as e:
-            return f"❌ Error parsing inventory information: {str(e)}"
-
-    def check_room_pricing(self, hotel_name: str, room_type: str, stay_date: str = None, end_date: str = None) -> str:
-        try:
-            today = datetime.now(timezone.utc).date()
-        except Exception:
-            return "❌ Missing hotel timezone for pricing check"
-        if stay_date:
-            if stay_date.lower() == "today":
-                stay_date = today.isoformat()
-            elif stay_date.lower() == "tomorrow":
-                stay_date = (today + timedelta(days=1)).isoformat()
-        if end_date:
-            if end_date.lower() == "today":
-                end_date = today.isoformat()
-            elif end_date.lower() == "tomorrow":
-                end_date = (today + timedelta(days=1)).isoformat()
-        # If only stay_date is provided, query only that date
-        if stay_date and not end_date:
-            return self.read_room_price(hotel_name, room_type, stay_date, stay_date)
-        return self.read_room_price(hotel_name, room_type, stay_date, end_date)
-
-# Create global instance
-inventory_manager = InventoryManager()
+    return nights
 
 
-# Remove all Pydantic BaseModel classes and tool wrappers that use them
-# Refactor all tool wrappers to use explicit keyword arguments
+def available_rooms(cur, hotel_id, room_type_id, stay_date):
+    """total_inventory - blocked_quantity - live nights of the type; 0 on stop sell; None when the night has no inventory."""
+    day = _day(stay_date)
+    found = availability(cur, hotel_id, room_type_id, day, day).get(day)
+    return found["available"] if found else None
 
-@tool
-def manage_room_price(
-    hotel_name: str,
-    manager_name: str,
-    room_type: str,
-    start_date: str,
-    end_date: str,
-    price: float
-) -> str:
-    """Manage (create/update) room price for a hotel and room type (write operation)"""
-    return inventory_manager.manage_room_price(
-        hotel_name,
-        manager_name,
-        room_type,
-        start_date,
-        end_date,
-        price
+
+def free_rooms(cur, hotel_id, room_type_id, stay_date):
+    """[{'room_id', 'room_number'}] of the type with no live night and no room_block on stay_date."""
+    cur.execute(
+        """SELECT r.room_id, r.room_number FROM room r
+           WHERE r.hotel_id = %s AND r.room_type_id = %s AND r.status = 'active'
+             AND NOT EXISTS (SELECT 1 FROM booking_room_night b
+                             WHERE b.room_id = r.room_id AND b.stay_date = %s AND b.night_status = ANY(%s))
+             AND NOT EXISTS (SELECT 1 FROM room_block k WHERE k.room_id = r.room_id AND %s BETWEEN k.start_date AND k.end_date)
+           ORDER BY r.room_number""",
+        (hotel_id, room_type_id, _day(stay_date), list(LIVE_NIGHTS), _day(stay_date)),
+    )
+    return [dict(row) for row in cur.fetchall()]
+
+
+# ---------- nights a room type sells ----------
+
+def seed_nights(cur, hotel_id, user_id, room_type_id, start, base_price):
+    """Inventory (total = room count) and price rows for HORIZON_DAYS from start. Nights already on file are kept."""
+    days = [start + timedelta(days=offset) for offset in range(HORIZON_DAYS)]
+    total = count_rooms(cur, hotel_id, room_type_id)
+    cur.execute(
+        """INSERT INTO room_inventory_nightly (hotel_id, room_type_id, stay_date, total_inventory, blocked_quantity, updated_by_user_id)
+           SELECT %s, %s, d, %s, 0, %s FROM unnest(%s::date[]) AS d
+           ON CONFLICT (room_type_id, stay_date) DO NOTHING""",
+        (hotel_id, room_type_id, total, user_id, days),
+    )
+    cur.execute(
+        """INSERT INTO daily_pricing (hotel_id, room_type_id, stay_date, base_price, saved_price, updated_by_user_id)
+           SELECT %s, %s, d, %s, %s, %s FROM unnest(%s::date[]) AS d
+           ON CONFLICT (room_type_id, stay_date) DO NOTHING""",
+        (hotel_id, room_type_id, base_price, base_price, user_id, days),
+    )
+    return len(days)
+
+
+def apply_room_count(cur, hotel_id, user_id, room_type_id, start):
+    """From start on, each night's total follows the room count; blocked rooms are capped at it."""
+    total = count_rooms(cur, hotel_id, room_type_id)
+    cur.execute(
+        """UPDATE room_inventory_nightly SET total_inventory = %s, blocked_quantity = LEAST(blocked_quantity, %s),
+                  updated_at = now(), updated_by_user_id = %s
+           WHERE hotel_id = %s AND room_type_id = %s AND stay_date >= %s""",
+        (total, total, user_id, hotel_id, room_type_id, start),
+    )
+    return total
+
+
+def _anchor(cur, hotel_id, room_type_id, days):
+    """Kite pace starts again from now for re-priced nights."""
+    cur.execute(
+        """INSERT INTO kite_price_anchor (hotel_id, room_type_id, stay_date, anchor_at)
+           SELECT %s, %s, d, now() FROM unnest(%s::date[]) AS d
+           ON CONFLICT (room_type_id, stay_date) DO UPDATE SET anchor_at = EXCLUDED.anchor_at""",
+        (hotel_id, room_type_id, days),
     )
 
-@tool
-def parse_inventory_information_tool(hotel_name: str, inventory_information: str) -> None:
-    """Parse unstructured inventory information into structured data using LLM (subagent/tool level). Prints the result directly."""
-    from langchain_openai import ChatOpenAI
-    import os
-    import json
-    from datetime import timedelta
-    llm = ChatOpenAI(
-        model="gpt-4.1-nano",
-        temperature=0.1,
-        openai_api_key=os.getenv('OPENAI_API_KEY')
-    )
-    # Use hotel-local context for example date hints
-    base = datetime.now(timezone.utc)
-    today = base
-    date_context = {
-        'today': today.date().isoformat(),
-        'tomorrow': (today + timedelta(days=1)).date().isoformat(),
-        'next_week': (today + timedelta(days=7)).date().isoformat(),
-        'next_month': (today + timedelta(days=30)).date().isoformat()
-    }
-    extraction_prompt = f"""Parse this inventory/pricing information into structured JSON format:
 
-HOTEL CONTEXT: {hotel_name}
-CURRENT INPUT: \"{inventory_information}\"
+def _type_id(cur, hotel_id, room_type):
+    found = core_refs.room_type_id(cur, hotel_id, room_type)
+    return found, ({} if found else {"error": "Room type " + str(room_type or "").strip().upper() + " was not found"})
 
-Extract and return ONLY valid JSON with this exact structure:
-{{
-    "hotel_name": "{hotel_name}",
-    "room_type": "extracted room type (e.g., Superior Room, Deluxe Suite)",
-    "inventory_data": {{
-        "total_inventory": extracted_total_rooms_as_integer,
-        "blocked_quantity": extracted_blocked_rooms_as_integer,
-        "operation": "create/update/delete - what action is requested"
-    }},
-    "pricing_data": {{
-        "base_price": extracted_price_as_float,
-        "start_date": "extracted start date in YYYY-MM-DD format",
-        "end_date": "extracted end date in YYYY-MM-DD format",
-        "currency": "extracted currency (MYR, SGD, USD, etc.)",
-        "operation": "create/update/delete - what pricing action is requested"
-    }},
-    "notes": "any additional notes or special information"
-}}
 
-RULES:
-- Return ONLY the JSON, no other text
-- Use empty strings "" for missing text fields
-- Use 0 for missing numeric fields
-- Operations: create, update, delete
-- If only inventory mentioned, set pricing_data operation to ""
-- If only pricing mentioned, set inventory_data operation to ""
-- Today's date for reference: {date_context['today']}
-- Common date formats: "tomorrow", "next week", "Dec 15-20", etc."""
-    response = llm.invoke([{"role": "user", "content": extraction_prompt}])
-    response_content = response.content.strip()
-    if response_content.startswith('```json'):
-        response_content = response_content.replace('```json', '').replace('```', '').strip()
-    elif response_content.startswith('```'):
-        response_content = response_content.replace('```', '').strip()
+def night_on_file(hotel_id, room_type, stay_date):
+    """{'room_type', 'day', 'total', 'blocked', 'stop_sell', 'price'} for a night with inventory, or None."""
+    def run(cur):
+        cur.execute(
+            """SELECT t.room_type_name, n.stay_date, n.total_inventory, n.blocked_quantity, n.stop_sell, p.base_price
+               FROM room_inventory_nightly n JOIN room_type t ON t.room_type_id = n.room_type_id
+               LEFT JOIN daily_pricing p ON p.room_type_id = n.room_type_id AND p.stay_date = n.stay_date
+               WHERE n.hotel_id = %s AND t.room_type_name = %s AND n.stay_date = %s""",
+            (hotel_id, str(room_type or "").strip().upper(), _day(stay_date)),
+        )
+        return cur.fetchone()
+    found = db.transaction(run)
+    if not found:
+        return None
+    return {"room_type": found["room_type_name"], "day": found["stay_date"].isoformat(), "total": found["total_inventory"],
+            "blocked": found["blocked_quantity"], "stop_sell": found["stop_sell"],
+            "price": None if found["base_price"] is None else float(found["base_price"])}
+
+
+def update_dates(hotel_id, user_id, room_type, dates, price, quantity):
+    """Price and inventory for many nights in one transaction. Total follows the room count; quantity 0 stops sale, any other
+    quantity reopens it, None keeps it."""
+    days = _days(dates)
+    if days is None:
+        return {"error": "Invalid date"}
+    if not days:
+        return {"error": "dates are required"}
     try:
-        parsed_data = json.loads(response_content)
-        print(parsed_data)
-    except Exception as e:
-        print({
-            "hotel_name": hotel_name,
-            "room_type": "",
-            "inventory_data": {
-                "total_inventory": 0,
-                "blocked_quantity": 0,
-                "operation": ""
-            },
-            "pricing_data": {
-                "base_price": 0.0,
-                "start_date": "",
-                "end_date": "",
-                "currency": "",
-                "operation": ""
-            },
-            "notes": inventory_information
+        amount = float(price)
+    except (TypeError, ValueError):
+        return {"error": "Price is required"}
+    stop = None if quantity is None else int(quantity) == 0
+
+    def run(cur):
+        type_id, missing = _type_id(cur, hotel_id, room_type)
+        if missing:
+            return missing
+        total = count_rooms(cur, hotel_id, type_id)
+        cur.execute(
+            """INSERT INTO room_inventory_nightly (hotel_id, room_type_id, stay_date, total_inventory, blocked_quantity, stop_sell, updated_by_user_id)
+               SELECT %s, %s, d, %s, 0, COALESCE(%s, FALSE), %s FROM unnest(%s::date[]) AS d
+               ON CONFLICT (room_type_id, stay_date) DO UPDATE SET
+                   total_inventory = EXCLUDED.total_inventory,
+                   blocked_quantity = LEAST(room_inventory_nightly.blocked_quantity, EXCLUDED.total_inventory),
+                   stop_sell = COALESCE(%s, room_inventory_nightly.stop_sell),
+                   updated_at = now(), updated_by_user_id = EXCLUDED.updated_by_user_id""",
+            (hotel_id, type_id, total, stop, user_id, days, stop),
+        )
+        cur.execute(
+            """INSERT INTO daily_pricing (hotel_id, room_type_id, stay_date, base_price, saved_price, updated_by_user_id)
+               SELECT %s, %s, d, %s, %s, %s FROM unnest(%s::date[]) AS d
+               ON CONFLICT (room_type_id, stay_date) DO UPDATE SET
+                   base_price = EXCLUDED.base_price, saved_price = EXCLUDED.saved_price,
+                   updated_at = now(), updated_by_user_id = EXCLUDED.updated_by_user_id""",
+            (hotel_id, type_id, amount, amount, user_id, days),
+        )
+        _anchor(cur, hotel_id, type_id, days)
+        return {"success": True, "dates": len(days), "rooms": total}
+    return db.transaction(run)
+
+
+def set_prices(hotel_id, user_id, room_type, start_date, end_date, price):
+    """Price every night with inventory from start_date to end_date. Nights without inventory are listed, not created."""
+    try:
+        start, end, amount = _day(start_date), _day(end_date), float(price)
+    except (TypeError, ValueError):
+        return {"error": "start_date, end_date (YYYY-MM-DD) and price are required"}
+    if end < start:
+        return {"error": "End date is before the start date"}
+
+    def run(cur):
+        type_id, missing = _type_id(cur, hotel_id, room_type)
+        if missing:
+            return missing
+        cur.execute("SELECT stay_date FROM room_inventory_nightly WHERE room_type_id = %s AND stay_date BETWEEN %s AND %s",
+                    (type_id, start, end))
+        on_file = sorted(row["stay_date"] for row in cur.fetchall())
+        cur.execute(
+            """INSERT INTO daily_pricing (hotel_id, room_type_id, stay_date, base_price, saved_price, updated_by_user_id)
+               SELECT %s, %s, d, %s, %s, %s FROM unnest(%s::date[]) AS d
+               ON CONFLICT (room_type_id, stay_date) DO UPDATE SET
+                   base_price = EXCLUDED.base_price, saved_price = EXCLUDED.saved_price,
+                   updated_at = now(), updated_by_user_id = EXCLUDED.updated_by_user_id""",
+            (hotel_id, type_id, amount, amount, user_id, on_file),
+        )
+        _anchor(cur, hotel_id, type_id, on_file)
+        priced = set(on_file)
+        wanted = [start + timedelta(days=offset) for offset in range((end - start).days + 1)]
+        return {"success": True, "dates": [day.isoformat() for day in on_file],
+                "missing_inventory": [day.isoformat() for day in wanted if day not in priced]}
+    return db.transaction(run)
+
+
+def update_room_price(hotel_id, user_id, room_type, stay_date, price):
+    """UPDATE one night's price. The night must have inventory."""
+    try:
+        day, amount = _day(stay_date), float(price)
+    except (TypeError, ValueError):
+        return {"error": "stay_date (YYYY-MM-DD) and price are required"}
+
+    def run(cur):
+        type_id, missing = _type_id(cur, hotel_id, room_type)
+        if missing:
+            return missing
+        cur.execute(
+            """SELECT p.base_price FROM room_inventory_nightly n
+               LEFT JOIN daily_pricing p ON p.room_type_id = n.room_type_id AND p.stay_date = n.stay_date
+               WHERE n.room_type_id = %s AND n.stay_date = %s""",
+            (type_id, day),
+        )
+        night = cur.fetchone()
+        if not night:
+            return {"error": "No inventory for " + str(room_type).upper() + " on " + day.isoformat()}
+        cur.execute(
+            """INSERT INTO daily_pricing (hotel_id, room_type_id, stay_date, base_price, saved_price, updated_by_user_id)
+               VALUES (%s, %s, %s, %s, %s, %s)
+               ON CONFLICT (room_type_id, stay_date) DO UPDATE SET
+                   base_price = EXCLUDED.base_price, saved_price = EXCLUDED.saved_price,
+                   updated_at = now(), updated_by_user_id = EXCLUDED.updated_by_user_id""",
+            (hotel_id, type_id, day, amount, amount, user_id),
+        )
+        _anchor(cur, hotel_id, type_id, [day])
+        previous = night["base_price"]
+        return {"success": True, "room_type": str(room_type).upper(), "stay_date": day.isoformat(),
+                "old_price": None if previous is None else float(previous), "price": amount}
+    return db.transaction(run)
+
+
+def update_nightly_inventory(hotel_id, user_id, room_type, stay_date, total_inventory=None, blocked_quantity=None):
+    """UPDATE one night's total and blocked rooms; None keeps the stored value. Blocked cannot exceed the total."""
+    try:
+        day = _day(stay_date)
+    except ValueError:
+        return {"error": "stay_date must be YYYY-MM-DD"}
+
+    def run(cur):
+        type_id, missing = _type_id(cur, hotel_id, room_type)
+        if missing:
+            return missing
+        cur.execute("SELECT total_inventory, blocked_quantity FROM room_inventory_nightly WHERE room_type_id = %s AND stay_date = %s",
+                    (type_id, day))
+        night = cur.fetchone()
+        if not night:
+            return {"error": "No inventory for " + str(room_type).upper() + " on " + day.isoformat()}
+        total = night["total_inventory"] if total_inventory is None else int(total_inventory)
+        blocked = night["blocked_quantity"] if blocked_quantity is None else int(blocked_quantity)
+        if total < 0 or blocked < 0 or blocked > total:
+            return {"error": "Blocked rooms must be between 0 and " + str(total)}
+        cur.execute(
+            """UPDATE room_inventory_nightly SET total_inventory = %s, blocked_quantity = %s, updated_at = now(), updated_by_user_id = %s
+               WHERE room_type_id = %s AND stay_date = %s""",
+            (total, blocked, user_id, type_id, day),
+        )
+        return {"success": True, "room_type": str(room_type).upper(), "stay_date": day.isoformat(),
+                "total": total, "blocked": blocked, "old_blocked": night["blocked_quantity"]}
+    return db.transaction(run)
+
+
+def update_night_rules(hotel_id, user_id, room_type, stay_date, stop_sell, min_stay, closed_to_arrival):
+    """UPDATE restrictions on a night that has inventory."""
+    try:
+        day = _day(stay_date)
+    except ValueError:
+        return {"error": "stay_date must be YYYY-MM-DD"}
+
+    def run(cur):
+        type_id, missing = _type_id(cur, hotel_id, room_type)
+        if missing:
+            return missing
+        cur.execute(
+            """UPDATE room_inventory_nightly SET stop_sell = %s, min_stay = %s, closed_to_arrival = %s, updated_at = now(), updated_by_user_id = %s
+               WHERE room_type_id = %s AND stay_date = %s""",
+            (bool(stop_sell), min_stay, bool(closed_to_arrival), user_id, type_id, day),
+        )
+        if not cur.rowcount:
+            return {"error": "No inventory for " + str(room_type).upper() + " on " + day.isoformat()}
+        return {"success": True}
+    return db.transaction(run)
+
+
+def save_allotment(hotel_id, user_id, channel, room_type, stay_date, rooms_allotted, release_date):
+    """CREATE or UPDATE a channel allotment on a night that has inventory."""
+    name = str(channel or "").strip().upper()
+    if not name:
+        return {"error": "channel is required"}
+    try:
+        day = _day(stay_date)
+        release = None if release_date in (None, "") else _day(release_date)
+    except ValueError:
+        return {"error": "Dates must be YYYY-MM-DD"}
+
+    def run(cur):
+        type_id, missing = _type_id(cur, hotel_id, room_type)
+        if missing:
+            return missing
+        cur.execute("SELECT 1 FROM room_inventory_nightly WHERE room_type_id = %s AND stay_date = %s", (type_id, day))
+        if not cur.fetchone():
+            return {"error": "No inventory for " + str(room_type).upper() + " on " + day.isoformat()}
+        cur.execute(
+            """INSERT INTO room_allotments (hotel_id, room_type_id, channel, stay_date, rooms_allotted, release_date, updated_by_user_id)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT (room_type_id, channel, stay_date) DO UPDATE SET
+                   rooms_allotted = EXCLUDED.rooms_allotted, release_date = EXCLUDED.release_date,
+                   updated_at = now(), updated_by_user_id = EXCLUDED.updated_by_user_id""",
+            (hotel_id, type_id, name, day, int(rooms_allotted), release, user_id),
+        )
+        return {"success": True, "channel": name, "stay_date": day.isoformat(), "rooms_allotted": int(rooms_allotted)}
+    return db.transaction(run)
+
+
+# ---------- reads for the UI ----------
+
+def read_calendar(hotel_id, start_date, end_date):
+    """{'room_types': [{room_type, room_type_id, pricing: [...], quantities: [...]}]} for active room types."""
+    try:
+        start, end = _day(start_date), _day(end_date)
+    except ValueError:
+        return {"room_types": [], "error": "Dates must be YYYY-MM-DD"}
+
+    def run(cur):
+        cur.execute("SELECT room_type_id, room_type_name FROM room_type WHERE hotel_id = %s AND status = 'active' ORDER BY room_type_name",
+                    (hotel_id,))
+        types = cur.fetchall()
+        cur.execute(
+            """SELECT room_type_id, stay_date, base_price, COALESCE(saved_price, base_price) AS saved_price, updated_at
+               FROM daily_pricing WHERE hotel_id = %s AND stay_date BETWEEN %s AND %s ORDER BY stay_date""",
+            (hotel_id, start, end),
+        )
+        prices = cur.fetchall()
+        cur.execute(
+            """SELECT room_type_id, stay_date, total_inventory, blocked_quantity, stop_sell, updated_at
+               FROM room_inventory_nightly WHERE hotel_id = %s AND stay_date BETWEEN %s AND %s ORDER BY stay_date""",
+            (hotel_id, start, end),
+        )
+        return types, prices, cur.fetchall()
+    types, prices, nights = db.transaction(run)
+    by_type = {row["room_type_id"]: {"room_type": row["room_type_name"], "room_type_id": row["room_type_id"], "pricing": [], "quantities": []}
+               for row in types}
+    for row in prices:
+        by_type.get(row["room_type_id"], {"pricing": []})["pricing"].append({
+            "date": row["stay_date"].isoformat(), "price": float(row["base_price"]), "saved_price": float(row["saved_price"]),
+            "updated_at": str(row["updated_at"]),
         })
+    for row in nights:
+        active = 0 if row["stop_sell"] else row["total_inventory"] - row["blocked_quantity"]
+        by_type.get(row["room_type_id"], {"quantities": []})["quantities"].append({
+            "date": row["stay_date"].isoformat(), "total_inventory": row["total_inventory"], "active_inventory": active,
+            "blocked_quantity": row["blocked_quantity"], "stop_sell": row["stop_sell"], "updated_at": str(row["updated_at"]),
+        })
+    return {"room_types": list(by_type.values())}
 
-@tool
-def read_inventory_information_from_description(
-    hotel_name: str,
-    inventory_information: str
-) -> str:
-    """Parse and read inventory/pricing information from unstructured description (read operation)"""
-    return inventory_manager.read_inventory_information_from_description(
-        hotel_name,
-        inventory_information
-    )
 
-@tool
-def check_room_pricing(
-    hotel_name: str,
-    room_type: str,
-    stay_date: str = None,
-    end_date: str = None
-) -> str:
-    """Check room pricing for a hotel and room type for given dates (read operation)"""
-    return inventory_manager.check_room_pricing(
-        hotel_name,
-        room_type,
-        stay_date,
-        end_date
-    )
-
-@tool
-def manage_room_quantity(
-    hotel_name: str,
-    manager_name: str,
-    room_type: str,
-    start_date: str,
-    end_date: str,
-    total_quantity: int,
-    blocked_quantity: int = 0
-) -> str:
-    """Manage room quantity for a hotel and room type (write operation). If stop sell, let blocked_quantity = total_quantity, use read_nightly_inventory to check first"""
-    return inventory_manager.manage_room_quantity(
-        hotel_name,
-        manager_name,
-        room_type,
-        start_date,
-        end_date,
-        total_quantity,
-        blocked_quantity
-    )
-
-@tool
-def read_nightly_inventory(
-    hotel_name: str,
-    room_type: str,
-    stay_date: str
-) -> str:
-    """Read nightly inventory for a specific date (read operation)."""
-    return inventory_manager.read_nightly_inventory(
-        hotel_name,
-        room_type,
-        stay_date
-    )
-
-@tool
-def read_nightly_inventory_range(
-    hotel_name: str,
-    room_type: str,
-    start_date: str,
-    end_date: str
-) -> str:
-    """Read nightly inventory for a date range (read operation)."""
-    data = inventory_manager.read_nightly_inventory_range(
-        hotel_name,
-        room_type,
-        start_date,
-        end_date
-    )
+def read_prices(hotel_id, room_type, start_date, end_date):
+    """{'room_type', 'prices': {date: base_price}} or {'error'}."""
     try:
-        items = data.get("items") if isinstance(data, dict) else []
-        if not items:
-            if isinstance(data, dict) and data.get("error"):
-                return f"❌ {data.get('error')}"
-            return "❌ No inventory found for the specified range"
-        lines = [f"📊 Nightly Inventory for {room_type} at {hotel_name} ({start_date} to {end_date}):"]
-        for it in items:
-            lines.append(
-                f"  • {it.get('date')}: Total {it.get('total_inventory')} | Active {it.get('active_inventory')} (updated {it.get('updated_at')})"
-            )
-        return "\n".join(lines)
-    except Exception as e:
-        return f"❌ Error formatting nightly inventory: {e}"
+        start, end = _day(start_date), _day(end_date)
+    except ValueError:
+        return {"error": "Dates must be YYYY-MM-DD"}
 
-@tool
-def read_available_room_types_tool(hotel_name: str) -> str:
-    """Read available room types that have inventory rows for a hotel (read operation)."""
-    return inventory_manager.read_available_room_types(hotel_name)
+    def run(cur):
+        type_id, missing = _type_id(cur, hotel_id, room_type)
+        if missing:
+            return missing
+        cur.execute("SELECT stay_date, base_price FROM daily_pricing WHERE room_type_id = %s AND stay_date BETWEEN %s AND %s ORDER BY stay_date",
+                    (type_id, start, end))
+        return {"room_type": str(room_type).strip().upper(),
+                "prices": {row["stay_date"].isoformat(): float(row["base_price"]) for row in cur.fetchall()}}
+    return db.transaction(run)
+
+
+def read_availability(hotel_id, room_type, stay_date):
+    """{'total', 'blocked', 'booked', 'stop_sell', 'available'} for one night, or {'error'}."""
+    try:
+        day = _day(stay_date)
+    except ValueError:
+        return {"error": "stay_date must be YYYY-MM-DD"}
+
+    def run(cur):
+        type_id, missing = _type_id(cur, hotel_id, room_type)
+        if missing:
+            return missing
+        return availability(cur, hotel_id, type_id, day, day).get(day) or {
+            "error": "No inventory for " + str(room_type).strip().upper() + " on " + day.isoformat()}
+    return db.transaction(run)
+
+
+def read_free_rooms(hotel_id, room_type, stay_date):
+    """{'available': [room numbers]} free on stay_date, or {'error'}."""
+    try:
+        day = _day(stay_date)
+    except ValueError:
+        return {"error": "stay_date must be YYYY-MM-DD"}
+
+    def run(cur):
+        type_id, missing = _type_id(cur, hotel_id, room_type)
+        if missing:
+            return missing
+        return {"available": [row["room_number"] for row in free_rooms(cur, hotel_id, type_id, day)]}
+    return db.transaction(run)
+
+
+def read_hotel_analytics(hotel_id, zone, days=30):
+    """Occupancy and room revenue (sold nights' sell_rate) for the last `days` hotel days, against the period before."""
+    span = max(1, int(days or 30))
+    today = hotel_today(zone)
+    start = today - timedelta(days=span - 1)
+    prev_start = start - timedelta(days=span)
+
+    def run(cur):
+        cur.execute("SELECT COUNT(*) AS n FROM room WHERE hotel_id = %s AND status = 'active'", (hotel_id,))
+        rooms = int(cur.fetchone()["n"])
+        cur.execute(
+            """SELECT n.stay_date, COUNT(*) AS nights, COALESCE(SUM(n.sell_rate), 0) AS revenue FROM booking_room_night n
+               WHERE n.hotel_id = %s AND n.night_status = ANY(%s) AND n.stay_date BETWEEN %s AND %s GROUP BY n.stay_date""",
+            (hotel_id, list(SOLD_NIGHTS), prev_start, today),
+        )
+        by_day = {row["stay_date"]: row for row in cur.fetchall()}
+        cur.execute(
+            """SELECT t.room_type_name, COUNT(*) AS nights, COALESCE(SUM(n.sell_rate), 0) AS revenue
+               FROM booking_room_night n JOIN room_type t ON t.room_type_id = n.room_type_id
+               WHERE n.hotel_id = %s AND n.night_status = ANY(%s) AND n.stay_date BETWEEN %s AND %s
+               GROUP BY t.room_type_name ORDER BY revenue DESC""",
+            (hotel_id, list(SOLD_NIGHTS), start, today),
+        )
+        types = cur.fetchall()
+        cur.execute(
+            """SELECT b.channel, COUNT(DISTINCT b.booking_id) AS bookings
+               FROM booking_room_night n JOIN booking b ON b.booking_id = n.booking_id
+               WHERE n.hotel_id = %s AND n.night_status = ANY(%s) AND n.stay_date BETWEEN %s AND %s
+               GROUP BY b.channel ORDER BY bookings DESC""",
+            (hotel_id, list(SOLD_NIGHTS), start, today),
+        )
+        channels = cur.fetchall()
+        cur.execute(
+            """SELECT COALESCE(g.nationality, 'Unknown') AS country, COUNT(DISTINCT g.guest_id) AS guests
+               FROM booking_room_night n JOIN booking b ON b.booking_id = n.booking_id JOIN guest g ON g.guest_id = b.guest_id
+               WHERE n.hotel_id = %s AND n.night_status = ANY(%s) AND n.stay_date BETWEEN %s AND %s
+               GROUP BY 1 ORDER BY guests DESC""",
+            (hotel_id, list(SOLD_NIGHTS), start, today),
+        )
+        return rooms, by_day, types, channels, cur.fetchall()
+    rooms, by_day, types, channels, countries = db.transaction(run)
+
+    def window(first):
+        dates = [first + timedelta(days=offset) for offset in range(span)]
+        nights = sum(int(by_day[day]["nights"]) for day in dates if day in by_day)
+        revenue = sum(float(by_day[day]["revenue"]) for day in dates if day in by_day)
+        occupancy = nights / (rooms * span) * 100.0 if rooms else 0.0
+        return dates, nights, revenue, occupancy, (revenue / nights if nights else 0.0)
+
+    dates, nights, revenue, occupancy, adr = window(start)
+    _, _, prev_revenue, prev_occupancy, prev_adr = window(prev_start)
+
+    def change(now, before):
+        return round((now - before) / before * 100.0, 1) if before else 0.0
+
+    bookings = sum(int(row["bookings"]) for row in channels) or 1
+    guests = sum(int(row["guests"]) for row in countries) or 1
+    return {
+        "kpis": {
+            "totalRevenue": round(revenue, 2), "occupancyRate": round(occupancy, 1), "adr": round(adr, 2), "guestSatisfaction": None,
+            "roomCount": rooms, "occupiedNights": nights,
+            "changes": {"revenue": change(revenue, prev_revenue), "occupancy": change(occupancy, prev_occupancy),
+                        "adr": change(adr, prev_adr), "satisfaction": 0},
+        },
+        "revenue": [{"date": day.isoformat(), "revenue": round(float(by_day[day]["revenue"]) if day in by_day else 0.0, 2)} for day in dates],
+        "occupancy": [{"date": day.isoformat(),
+                       "occupancy": round(int(by_day[day]["nights"]) / rooms * 100.0, 1) if rooms and day in by_day else 0.0} for day in dates],
+        "roomTypes": [{"type": row["room_type_name"], "revenue": round(float(row["revenue"]), 2), "bookings": int(row["nights"])} for row in types],
+        "bookingSources": [{"source": row["channel"], "bookings": int(row["bookings"]),
+                            "percentage": round(int(row["bookings"]) / bookings * 100, 1)} for row in channels],
+        "demographics": [{"country": row["country"], "guests": int(row["guests"]),
+                          "percentage": round(int(row["guests"]) / guests * 100, 1)} for row in countries],
+    }
+
+
+# `from booking_system.inventory_manager import inventory_manager` keeps working for callers of the old instance.
+inventory_manager = sys.modules[__name__]

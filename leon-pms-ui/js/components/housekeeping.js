@@ -48,7 +48,7 @@
       const rn = div.dataset.roomNumber;
       const cid = div.dataset.cleaningId;
       const current = (div.dataset.status || '').toLowerCase();
-      const next = window.prompt(`Set status for Room ${rn} (assigned|in_progress|quality_check|completed):`, current || 'assigned');
+      const next = window.prompt(`Set status for Room ${rn} (assigned|in_progress|inspected|completed):`, current || 'assigned');
       if (!next) return;
       let staff = div.dataset.assignedTo || '';
       if (!staff || next === 'in_progress') {
@@ -77,7 +77,7 @@
     const colInProg = qs('#col-in-progress') || qs('#col-cleaning');
     const colQC = qs('#col-quality-check') || qs('#col-inspected');
     const colDone = qs('#col-completed') || qs('#col-ready');
-    const cols = { dirty: colDirty, assigned: colAssigned, in_progress: colInProg, quality_check: colQC, completed: colDone };
+    const cols = { dirty: colDirty, assigned: colAssigned, in_progress: colInProg, inspected: colQC, completed: colDone };
     // Adapt legacy headings if present
     const legacyMap = [
       { el: colAssigned, label: 'Assigned' },
@@ -104,7 +104,7 @@
     const countDirty = data.rooms.filter(r=>r.status==='dirty').length;
     const countAssigned = data.rooms.filter(r=>r.status==='assigned').length;
     const countInProg = data.rooms.filter(r=>r.status==='in_progress').length;
-    const countQC = data.rooms.filter(r=>r.status==='quality_check').length;
+    const countQC = data.rooms.filter(r=>r.status==='inspected').length;
     const countDone = data.rooms.filter(r=>r.status==='completed').length;
     const setKpi = (id, val, labelText) => {
       const el = qs('#'+id);
@@ -171,18 +171,18 @@
     try {
       const res = await fetch(`${API_BASE}/api/housekeeping/on_duty?hotel_name=${encodeURIComponent(hotel)}`, { credentials: 'include' });
       const data = await res.json();
-      const onDuty = (data.on_duty || []).map(s => s.staff_phone);
+      const onDuty = (data.on_duty || []).map(s => `${s.staff_id} (${s.staff_name || ''})`);
       let staff = null;
-      if (onDuty.length === 1) staff = onDuty[0];
+      if (onDuty.length === 1) staff = data.on_duty[0].staff_id;
       if (onDuty.length > 1) {
-        staff = window.prompt(`Enter staff phone from on-duty list:\n${onDuty.join('\n')}`, onDuty[0] || '');
+        staff = window.prompt(`Enter staff id from on-duty list:\n${onDuty.join('\n')}`, data.on_duty[0].staff_id || '');
       }
       if (!staff) {
-        // fallback to available housekeeping staff
+        // rostered housekeeping staff not on leave today
         const res2 = await fetch(`${API_BASE}/api/staff/available?hotel_name=${encodeURIComponent(hotel)}&department=housekeeping`, { credentials: 'include' });
         const data2 = await res2.json();
-        const avail = (data2.staff || []).map(s => `${s.staff_phone} (${s.staff_name || ''})`);
-        staff = window.prompt(`Enter staff phone (available):\n${avail.join('\n')}`, (data2.staff && data2.staff[0] && data2.staff[0].staff_phone) || '');
+        const avail = (data2.staff || []).map(s => `${s.staff_id} (${s.staff_name || ''})`);
+        staff = window.prompt(`Enter staff id (available):\n${avail.join('\n')}`, (data2.staff && data2.staff[0] && data2.staff[0].staff_id) || '');
       }
       return staff;
     } catch(_) { return null; }
@@ -192,12 +192,12 @@
     const mapIdToStatus = {
       'col-assigned': 'assigned',
       'col-in-progress': 'in_progress',
-      'col-quality-check': 'quality_check',
+      'col-quality-check': 'inspected',
       'col-completed': 'completed',
       // legacy IDs
       'col-dirty': 'assigned',
       'col-cleaning': 'in_progress',
-      'col-inspected': 'quality_check',
+      'col-inspected': 'inspected',
       'col-ready': 'completed'
     };
     ;['col-assigned','col-in-progress','col-quality-check','col-completed','col-dirty','col-cleaning','col-inspected','col-ready'].forEach(id => {
@@ -257,7 +257,7 @@
       const [assignedRes, inProgRes, qcRes, doneRes, dirtyRes, staffRes, actRes] = await Promise.all([
         fetch(`${API_BASE}/api/housekeeping/by_status?hotel_name=${encodeURIComponent(hotel)}&status=assigned`, { credentials: 'include' }),
         fetch(`${API_BASE}/api/housekeeping/by_status?hotel_name=${encodeURIComponent(hotel)}&status=in_progress`, { credentials: 'include' }),
-        fetch(`${API_BASE}/api/housekeeping/by_status?hotel_name=${encodeURIComponent(hotel)}&status=quality_check`, { credentials: 'include' }),
+        fetch(`${API_BASE}/api/housekeeping/by_status?hotel_name=${encodeURIComponent(hotel)}&status=inspected`, { credentials: 'include' }),
         fetch(`${API_BASE}/api/housekeeping/by_status?hotel_name=${encodeURIComponent(hotel)}&status=completed`, { credentials: 'include' }),
         fetch(`${API_BASE}/api/housekeeping/by_status?hotel_name=${encodeURIComponent(hotel)}&status=dirty`, { credentials: 'include' }),
         fetch(`${API_BASE}/api/housekeeping/staff_workload?hotel_name=${encodeURIComponent(hotel)}`, { credentials: 'include' }),
@@ -270,7 +270,7 @@
       const roomsDirtyArr = (dirty.items || []).map(r => ({ number: String(r.room_number || r.room || '').trim(), type: '—', status: 'dirty', staff: '—', duration: '—', cleaning_id: '' }));
       const roomsAssigned = toRooms(assigned.items, 'assigned');
       const roomsInProg = toRooms(inProg.items, 'in_progress');
-      const roomsQC = toRooms(quality.items, 'quality_check');
+      const roomsQC = toRooms(quality.items, 'inspected');
       const roomsDone = toRooms(done.items, 'completed');
       const allRooms = [...roomsDirtyArr, ...roomsAssigned, ...roomsInProg, ...roomsQC, ...roomsDone];
       kpi('kpi-dirty', roomsDirtyArr.length);
@@ -297,7 +297,7 @@
       if (!hotelName) return;
       const dutyRes = await fetch(`${API_BASE}/api/housekeeping/on_duty`, { credentials: 'include' });
       const duty = dutyRes.ok ? await dutyRes.json() : {};
-      const staff = (duty.on_duty || []).map(s => s.staff_phone).filter(Boolean);
+      const staff = (duty.on_duty || []).map(s => s.staff_id).filter(Boolean);
       if (!staff.length) { alert('No housekeeping staff on duty'); return; }
       const dirtyRes = await fetch(`${API_BASE}/api/housekeeping/by_status?status=dirty`, { credentials: 'include' });
       const dirty = dirtyRes.ok ? await dirtyRes.json() : {};

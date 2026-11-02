@@ -111,7 +111,7 @@
     var terms = qs('rc-terms');
     if (!rules || !terms || !HOTEL) return;
     try {
-      var res = await fetch(API + '/api/property/registration_card?hotel_name=' + encodeURIComponent(HOTEL), { credentials:'include' });
+      var res = await fetch(API + '/api/property/registration_card', { credentials:'include' });
       var data = await res.json();
       if (!res.ok || (data && data.error)) return;
       rules.value = String(data.house_rules || '');
@@ -134,8 +134,7 @@
   async function loadTemplates(){
     const elOut = qs('kw-output'); if (elOut) elOut.textContent = 'Loading...';
     try {
-      const url = API + '/api/property/templates' + (HOTEL?('?hotel_name='+encodeURIComponent(HOTEL)):'');
-      const res = await fetch(url, { credentials:'include' });
+      const res = await fetch(API + '/api/property/templates', { credentials:'include' });
       const data = await res.json();
       if (!res.ok || data.error){ if (elOut) elOut.textContent = 'Failed to load'; return; }
       const kt = data.keywords_template || {}; const ft = data.facilities_template || {}; const at = data.amenities_template || {};
@@ -194,7 +193,7 @@
     if (!HOTEL){ alert('Hotel required'); return; }
     try {
       // Apply templates (template-first flow)
-      var res = await fetch(API + '/api/property/templates/apply', { method:'POST', credentials:'include', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ hotel_name: HOTEL, facilities_template: fac, amenities_template, keywords_template }) });
+      var res = await fetch(API + '/api/property/templates/apply', { method:'POST', credentials:'include', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ facilities_template: fac, amenities_template, keywords_template }) });
       var data = await res.json();
       if (!res.ok || (data && data.error)){ alert((data && data.error) || 'Save failed'); return; }
       await loadTemplates();
@@ -206,7 +205,7 @@
     var out = qs('pol-output'); if (out) out.textContent = 'Loading...';
     try {
       var t = (qs('pol-type')?.value || '').trim();
-      var url = API + '/api/property/policies' + (HOTEL?('?hotel_name='+encodeURIComponent(HOTEL)):'') + (t?(HOTEL?('&'):'?') + 'policy_type='+encodeURIComponent(t):'');
+      var url = API + '/api/property/policies' + (t ? '?policy_type=' + encodeURIComponent(t) : '');
       var res = await fetch(url, { credentials:'include' });
       var data = await res.json();
       // Prefer structured items if available
@@ -224,8 +223,6 @@
               lines.push('  - methods: ' + ((det.methods_allowed || []).join(', ')));
               lines.push('  - deadline: ' + (det.deadline_policy || ''));
             } else if (pt === 'BOOKING'){
-              lines.push('  - checkin: ' + (det.checkin_time || ''));
-              lines.push('  - checkout: ' + (det.checkout_time || ''));
               lines.push('  - max nights: ' + (det.max_stay_nights ?? ''));
               var cp = det.cancellation_policy || {}; lines.push('  - cancellation: ' + (cp.window_hours ?? '') + 'h window, penalty ' + (cp.penalty_nights ?? '') + ' night(s), refund ' + (cp.refund_percent ?? '') + '%');
               var ns = det.no_show_policy || {}; lines.push('  - no-show penalty nights: ' + (ns.penalty_nights ?? ''));
@@ -255,8 +252,6 @@
       notes: "optional"
     };
     if (type === 'booking') return {
-      checkin_time: "15:00",
-      checkout_time: "12:00",
       max_stay_nights: 14,
       cancellation_policy: { window_hours: 48, penalty_nights: 1, refund_percent: 50 },
       no_show_policy: { penalty_nights: 1 },
@@ -287,8 +282,6 @@
   }
   function collectBookingPayload(){
     return {
-      checkin_time: String(qs('bk-checkin')?.value || '15:00'),
-      checkout_time: String(qs('bk-checkout')?.value || '12:00'),
       max_stay_nights: parseInt(qs('bk-max-nights')?.value || '14', 10) || 0,
       cancellation_policy: {
         window_hours: parseInt(qs('bk-cancel-window')?.value || '48', 10) || 0,
@@ -312,9 +305,9 @@
   async function createPolicyFixed(type, details){
     if (!HOTEL){ alert('Hotel required'); return; }
     try {
-      var res = await fetch(API + '/api/property/policies/create', { method:'POST', credentials:'include', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ hotel_name: HOTEL, policy_type: type, policy_details: details }) });
+      var res = await fetch(API + '/api/property/policies/create', { method:'POST', credentials:'include', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ policy_type: type, policy_details: details }) });
       var data = await res.json();
-      if (data && (data.error || (typeof data.result === 'string' && data.result.indexOf('❌') !== -1))){ return false; }
+      if (!res.ok || (data && data.error)){ return false; }
       await loadPolicies();
       return true;
     } catch(e) { return false; }
@@ -323,12 +316,48 @@
   async function updatePolicyFixed(type, updates){
     if (!HOTEL){ alert('Hotel required'); return; }
     try {
-      var res = await fetch(API + '/api/property/policies/update', { method:'POST', credentials:'include', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ hotel_name: HOTEL, policy_type: type, updates: updates }) });
+      var res = await fetch(API + '/api/property/policies/update', { method:'POST', credentials:'include', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ policy_type: type, updates: updates }) });
       var data = await res.json();
-      if (data && (data.error || (typeof data.result === 'string' && data.result.indexOf('❌') !== -1))){ return false; }
+      if (!res.ok || (data && data.error)){ return false; }
       await loadPolicies();
       return true;
     } catch(e) { return false; }
+  }
+
+  async function loadApprovalAuthority(){
+    var box = qs('approval-authority');
+    if (!box) return;
+    try {
+      var res = await fetch(API + '/api/desk/queue', { credentials:'include' });
+      var data = await res.json();
+      if (!res.ok || (data && data.error)) { box.textContent = (data && data.error) || 'Failed to load'; return; }
+      var names = data.executional_names || [];
+      var held = data.desk_require_approval || [];
+      box.textContent = '';
+      names.forEach(function(name){
+        var label = document.createElement('label');
+        label.className = 'flex items-center mt-1';
+        var input = document.createElement('input');
+        input.type = 'checkbox';
+        input.checked = held.indexOf(name) >= 0;
+        input.addEventListener('change', function(){ saveApprovalAuthority(name, input.checked, input); });
+        var span = document.createElement('span');
+        span.className = 'ml-2';
+        span.textContent = String(name).split('_').join(' ');
+        label.appendChild(input);
+        label.appendChild(span);
+        box.appendChild(label);
+      });
+      if (!names.length) box.textContent = 'No actions';
+    } catch(e) { box.textContent = 'Failed to load'; }
+  }
+
+  async function saveApprovalAuthority(name, required, input){
+    try {
+      var res = await fetch(API + '/api/guests/approval', { method:'POST', credentials:'include', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ hotel_name: HOTEL, action: name, require_approval: required }) });
+      var data = await res.json();
+      if (!res.ok || (data && data.error)) input.checked = !required;
+    } catch(e) { input.checked = !required; }
   }
 
   async function init(){
@@ -372,6 +401,7 @@
     loadPolicies();
     loadRatePlans();
     loadRegistrationCard();
+    loadApprovalAuthority();
   }
 
   document.addEventListener('DOMContentLoaded', init);

@@ -110,6 +110,11 @@
       </div>
 
       <div class="space-y-4">
+      <div class="bg-white border rounded p-3">
+        <div class="text-sm font-semibold">Approval authority</div>
+        <p class="text-xs text-gray-500 mt-1">Checked actions wait for a person. Unchecked actions are done by Leon.</p>
+        <div id="approval-authority" class="text-sm mt-2">Loading...</div>
+      </div>
       <!-- Policies -->
       <div class="bg-white border rounded p-3">
         <div class="flex items-center justify-between mb-2">
@@ -163,7 +168,7 @@
       </div>
     </div>
   </main>
-  <script src="js/components/property_setup.js?v=propertysave"></script>
+  <script src="js/components/property_setup.js?v=approval"></script>
   
   <div id="rp-modal" class="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50 hidden">
     <div class="bg-white rounded-lg p-4 w-full max-w-md">
@@ -234,14 +239,6 @@
         <button id="bk-close" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
       </div>
       <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-        <div>
-          <label class="block text-xs text-gray-600 mb-1">checkin_time</label>
-          <input id="bk-checkin" class="border rounded px-2 py-1 text-sm w-full" value="15:00" />
-        </div>
-        <div>
-          <label class="block text-xs text-gray-600 mb-1">checkout_time</label>
-          <input id="bk-checkout" class="border rounded px-2 py-1 text-sm w-full" value="12:00" />
-        </div>
         <div>
           <label class="block text-xs text-gray-600 mb-1">max_stay_nights</label>
           <input id="bk-max-nights" type="number" class="border rounded px-2 py-1 text-sm w-full" value="14" />

@@ -7,93 +7,93 @@ def _limits():
     return {
         "manager": int(os.getenv("LEON_CATALOG_MANAGER_DAILY", "5")),
         "hotel": int(os.getenv("LEON_CATALOG_HOTEL_DAILY", "15")),
-        "tokens": int(os.getenv("LEON_CATALOG_DAILY_TOKENS", "300000")),
+        "tokens": int(os.getenv("LEON_CATALOG_DAILY_TOKENS", "1000000")),
     }
 
 
-def _local_day(hotel_name):
-    from booking_system.timezone_utils import get_hotel_timezone_str, hotel_local_today
+def _local_day(hotel_id):
+    from booking_system.semantic.hotel import hotel_today, hotel_zone
 
-    return get_hotel_timezone_str(hotel_name), hotel_local_today(hotel_name)
+    return hotel_zone(hotel_id), hotel_today(hotel_id)
 
 
-def _note(hotel_name, fingerprint, manager, question):
+def _note(hotel_id, fingerprint, manager, question):
     """Count this occurrence. Returns this manager's count and how many managers have asked this gap."""
     from booking_system.content_store import _with
 
     def run(cur):
         cur.execute(
             """
-            INSERT INTO gap_candidates (hotel_name, gap_fingerprint, manager_name, occurrences, last_question)
+            INSERT INTO gap_candidates (hotel_id, gap_fingerprint, user_id, occurrences, last_question)
             VALUES (%s, %s, %s, 1, %s)
-            ON CONFLICT (hotel_name, gap_fingerprint, manager_name) DO UPDATE
+            ON CONFLICT (hotel_id, gap_fingerprint, user_id) DO UPDATE
             SET occurrences = gap_candidates.occurrences + 1, last_seen = NOW(), last_question = EXCLUDED.last_question
             RETURNING occurrences
             """,
-            (hotel_name, fingerprint, manager, str(question or "")),
+            (hotel_id, fingerprint, manager, str(question or "")),
         )
         mine = int(cur.fetchone()[0])
         cur.execute(
-            "SELECT COUNT(*) FROM gap_candidates WHERE hotel_name = %s AND gap_fingerprint = %s",
-            (hotel_name, fingerprint),
+            "SELECT COUNT(*) FROM gap_candidates WHERE hotel_id = %s AND gap_fingerprint = %s",
+            (hotel_id, fingerprint),
         )
         return mine, int(cur.fetchone()[0])
 
     return _with(run)
 
 
-def _mark(hotel_name, fingerprint, manager, status, reason):
+def _mark(hotel_id, fingerprint, manager, status, reason):
     from booking_system.content_store import _with
 
     def run(cur):
         cur.execute(
             """
             UPDATE gap_candidates SET status = %s, reason = %s
-            WHERE hotel_name = %s AND gap_fingerprint = %s AND manager_name = %s
+            WHERE hotel_id = %s AND gap_fingerprint = %s AND user_id = %s
             """,
-            (status, reason, hotel_name, fingerprint, manager),
+            (status, reason, hotel_id, fingerprint, manager),
         )
 
     _with(run)
 
 
-def _spent(hotel_name, manager):
+def _spent(hotel_id, manager):
     """New investigations today for this manager and this hotel, and today's catalog and reviewer tokens from managers' gaps."""
     from booking_system.content_store import _with
 
-    zone, today = _local_day(hotel_name)
+    zone, today = _local_day(hotel_id)
 
     def run(cur):
         cur.execute(
             """
-            SELECT COUNT(*) FILTER (WHERE manager_name = %s), COUNT(*) FILTER (WHERE manager_name <> '')
+            SELECT COUNT(*) FILTER (WHERE user_id = %s), COUNT(*) FILTER (WHERE user_id <> '')
             FROM investigations
-            WHERE hotel_name = %s AND (created_at AT TIME ZONE %s)::date = %s
+            WHERE hotel_id = %s AND (created_at AT TIME ZONE %s)::date = %s
             """,
-            (manager, hotel_name, zone, today),
+            (manager, hotel_id, zone, today),
         )
         mine, hotel = cur.fetchone()
         cur.execute(
             """
             SELECT COALESCE(SUM(input_tokens + output_tokens), 0) FROM agent_usage
-            WHERE hotel_name = %s AND usage_date = %s AND origin = 'manager'
+            WHERE hotel_id = %s AND usage_date = %s AND origin = 'manager'
             """,
-            (hotel_name, today),
+            (hotel_id, today),
         )
         return {"manager": int(mine), "hotel": int(hotel), "tokens": int(cur.fetchone()[0])}
 
     return _with(run)
 
 
-def admit(hotel_name, manager, fingerprint, learn, question, free_only=False):
+def admit(hotel_id, manager, fingerprint, learn, question, free_only=False):
     """Returns the decision and the investigation fingerprint. A learned recipe is the asking manager's own,
     so each manager has their own investigation of a gap, and a REJECT cools down only that manager.
     attach: this manager's investigation already holds the gap, free and not counted. queue: open a new one.
     Anything else is the reason nothing is queued; the turn is still answered live."""
     from booking_system.semantic.registry import attachable_investigation
 
-    hotel = str(hotel_name or "").upper()
-    name = str(manager or "").upper()
+    hotel = str(hotel_id or "")
+    name = str(manager or "")
     owned = fingerprint + "|" + name
     if learn != "recurring":
         return learn or "not_recurring", owned
@@ -123,7 +123,7 @@ def admit(hotel_name, manager, fingerprint, learn, question, free_only=False):
 
 
 def investigation_cap():
-    return int(os.getenv("LEON_CATALOG_INVESTIGATION_TOKENS", "150000"))
+    return int(os.getenv("LEON_CATALOG_INVESTIGATION_TOKENS", "250000"))
 
 
 def over_investigation_budget(trace_id):
@@ -133,7 +133,7 @@ def over_investigation_budget(trace_id):
 
     def run(cur):
         cur.execute(
-            "SELECT tokens_used, hotel_name, manager_name FROM investigations WHERE trace_id = %s ORDER BY investigation_id DESC LIMIT 1",
+            "SELECT tokens_used, hotel_id, user_id FROM investigations WHERE trace_id = %s ORDER BY investigation_id DESC LIMIT 1",
             (int(trace_id),),
         )
         return cur.fetchone()
@@ -150,7 +150,7 @@ def capability_key(name):
     return "capability|" + "_".join(str(name or "").lower().split())
 
 
-def known_capabilities(hotel_name):
+def known_capabilities(hotel_id):
     """Recurring capabilities this hotel has asked for, newest first, so the spec reuses one name for the same gap."""
     from booking_system.content_store import _with
 
@@ -158,10 +158,10 @@ def known_capabilities(hotel_name):
         cur.execute(
             """
             SELECT gap_fingerprint, MAX(last_question), MAX(last_seen) AS seen FROM gap_candidates
-            WHERE hotel_name = %s AND gap_fingerprint LIKE 'capability|%%'
+            WHERE hotel_id = %s AND gap_fingerprint LIKE 'capability|%%'
             GROUP BY gap_fingerprint ORDER BY seen DESC LIMIT 50
             """,
-            (str(hotel_name or "").upper(),),
+            (str(hotel_id or ""),),
         )
         return [{"name": row[0].split("|", 1)[1], "example": row[1]} for row in cur.fetchall()]
 
@@ -173,7 +173,7 @@ def record_usage(trace, agent, input_tokens, output_tokens):
     from booking_system.content_store import _with
     from booking_system.semantic.definitions import trace_manager
 
-    hotel = str((trace or {}).get("hotel_name") or "").upper()
+    hotel = str((trace or {}).get("hotel_id") or "")
     if not hotel:
         return
     _zone, today = _local_day(hotel)
@@ -182,9 +182,9 @@ def record_usage(trace, agent, input_tokens, output_tokens):
     def run(cur):
         cur.execute(
             """
-            INSERT INTO agent_usage (hotel_name, usage_date, origin, agent, calls, input_tokens, output_tokens)
+            INSERT INTO agent_usage (hotel_id, usage_date, origin, agent, calls, input_tokens, output_tokens)
             VALUES (%s, %s, %s, %s, 1, %s, %s)
-            ON CONFLICT (hotel_name, usage_date, origin, agent) DO UPDATE
+            ON CONFLICT (hotel_id, usage_date, origin, agent) DO UPDATE
             SET calls = agent_usage.calls + 1,
                 input_tokens = agent_usage.input_tokens + EXCLUDED.input_tokens,
                 output_tokens = agent_usage.output_tokens + EXCLUDED.output_tokens

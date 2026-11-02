@@ -3,17 +3,27 @@
 import json
 
 
+FIXTURE_HOTEL = "SANDBOX HOTEL"
+ISOLATION_HOTEL = "SANDBOX ANNEX"
+
 _CONFIRMED_SQL = (
     "SELECT COUNT(*)::int AS confirmed_reservations "
-    "FROM room_bookings "
-    "WHERE UPPER(hotel_name) = UPPER(%(hotel_name)s) "
+    "FROM booking "
+    "WHERE hotel_id = %(hotel_id)s "
     "AND booking_status = 'confirmed'"
+)
+_CANCELLED_SQL = (
+    "SELECT COUNT(*)::int AS cancelled_reservations "
+    "FROM booking "
+    "WHERE hotel_id = %(hotel_id)s "
+    "AND booking_status = 'cancelled'"
 )
 
 
 def validate_publication(catalog_id, body, resolved_dates=None):
     """Safety, fixture, hotel isolation, and related pages. A failed gate stays unpublished."""
     from booking_system.semantic.context_engine import parameter_names, parameter_values
+    from booking_system.semantic.hotel import session_hotel_id
     from booking_system.semantic.query import accepted_reads, execute_reads, read_rejection
 
     aliases = [str(item or "").strip() for item in (body.get("aliases") or body.get("keyphrases") or []) if str(item or "").strip()]
@@ -26,10 +36,8 @@ def validate_publication(catalog_id, body, resolved_dates=None):
         kept = accepted_reads([sql])
         if not kept:
             return {"ok": False, "error": "sql_template is not a hotel-scoped read: " + read_rejection([sql])}
-        validation = body.get("validation") or {}
-        hotel = str(validation.get("hotel_name") or "JACKHOTEL")
-        expected = str(validation.get("expected_value") or "")
-        values, missing = parameter_values(hotel, resolved_dates or [], parameter_names(body))
+        expected = str((body.get("validation") or {}).get("expected_value") or "")
+        values, missing = parameter_values(session_hotel_id(FIXTURE_HOTEL), resolved_dates or [], parameter_names(body))
         if missing:
             return {"ok": False, "error": "missing parameter " + " ".join(missing)}
         primary = execute_reads(kept, values)
@@ -42,7 +50,7 @@ def validate_publication(catalog_id, body, resolved_dates=None):
         if absent:
             return {"ok": False, "error": "outputs not returned by the read: " + " ".join(absent)}
         other_values = dict(values)
-        other_values["hotel_name"] = "LITTLE COVE"
+        other_values["hotel_id"] = session_hotel_id(ISOLATION_HOTEL)
         other = execute_reads(kept, other_values)
         if other.get("error"):
             return {"ok": False, "error": other["error"]}
@@ -70,21 +78,21 @@ def _related_pages(skip_id):
     from booking_system.semantic.registry import active_body
 
     def run(cur):
-        cur.execute("SELECT catalog_id, hotel_name, expected_value FROM knowledge_tests")
+        cur.execute("SELECT catalog_id, hotel_id, expected_value FROM knowledge_tests")
         return cur.fetchall()
 
     try:
         tests = _with(run) or []
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
-    for catalog_id, hotel_name, expected in tests:
+    for catalog_id, hotel_id, expected in tests:
         if str(catalog_id) == str(skip_id or ""):
             continue
         body = active_body(catalog_id) or {}
         sql = str(((body.get("solution") or {}).get("sql_template")) or "").strip()
         if not sql:
             continue
-        result = execute_reads([sql], {"hotel_name": hotel_name})
+        result = execute_reads([sql], {"hotel_id": hotel_id})
         if result.get("error") or str(expected) not in json.dumps(result.get("rows") or []):
             return {"ok": False, "error": "related page failed " + str(catalog_id)}
     return {"ok": True, "error": ""}
@@ -93,6 +101,7 @@ def _related_pages(skip_id):
 def _publish_template(catalog_id, sql, expected, method):
     """Activate one validated template. The previous version stays in the registry."""
     from booking_system.content_store import _transaction
+    from booking_system.semantic.hotel import session_hotel_id
     from booking_system.semantic.registry import active_body, refresh_page_index
     from booking_system.semantic import catalog as seed
     from psycopg2.extras import Json
@@ -103,7 +112,7 @@ def _publish_template(catalog_id, sql, expected, method):
     published = dict(body)
     published["aliases"] = list(seed.ALIASES.get(catalog_id) or body.get("aliases") or [])
     published["solution"] = {"sql_template": sql, "method": method}
-    published["validation"] = {"hotel_name": "JACKHOTEL", "expected_value": str(expected)}
+    published["validation"] = {"expected_value": str(expected)}
     report = validate_publication(catalog_id, published)
     if not report.get("ok"):
         return report
@@ -135,11 +144,11 @@ def _publish_template(catalog_id, sql, expected, method):
         )
         cur.execute(
             """
-            INSERT INTO knowledge_tests (catalog_id, hotel_name, expected_value)
-            VALUES (%s, 'JACKHOTEL', %s)
-            ON CONFLICT (catalog_id, hotel_name) DO UPDATE SET expected_value = EXCLUDED.expected_value
+            INSERT INTO knowledge_tests (catalog_id, hotel_id, expected_value)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (catalog_id, hotel_id) DO UPDATE SET expected_value = EXCLUDED.expected_value
             """,
-            (catalog_id, str(expected)),
+            (catalog_id, session_hotel_id(FIXTURE_HOTEL), str(expected)),
         )
         cur.execute(
             """
@@ -154,22 +163,19 @@ def _publish_template(catalog_id, sql, expected, method):
     return _transaction(run)
 
 
-def ensure_confirmed_page():
-    """Publish validated templates for the known reservation counts."""
+def ensure_confirmed_page(confirmed_expected="", cancelled_expected=""):
+    """Publish validated templates for the reservation counts. The expected values are the fixture hotel's counts."""
     confirmed = _publish_template(
         "B01a",
         _CONFIRMED_SQL,
-        "89",
-        "Count confirmed room_bookings for the hotel.",
+        confirmed_expected,
+        "Count confirmed bookings for the hotel.",
     )
     cancelled = _publish_template(
         "B01c",
-        "SELECT COUNT(*)::int AS cancelled_reservations "
-        "FROM room_bookings "
-        "WHERE UPPER(hotel_name) = UPPER(%(hotel_name)s) "
-        "AND booking_status = 'cancelled'",
-        "4",
-        "Count cancelled room_bookings for the hotel.",
+        _CANCELLED_SQL,
+        cancelled_expected,
+        "Count cancelled bookings for the hotel.",
     )
     return {"confirmed": confirmed, "cancelled": cancelled}
 
@@ -220,21 +226,30 @@ def prepare_read(question):
     return {
         "use_desk": parsed.get("use_desk") is True,
         "page_ids": ids,
-        "resolved_dates": [],
+        "resolved_dates": {"resolutions": []},
         "shortlist": shortlist,
         "search_ms": search_ms,
         "choice_ms": choice_ms,
     }
 
 
-def answer_prepared(hotel, question, prepared):
-    """Run each chosen page on its own and combine the results. A miss is two exploratory reads."""
+def _rows_reply(rows, limitation=""):
+    lines = []
+    for row in rows or []:
+        parts = [str(key) + " " + str(value) for key, value in row.items() if key != "hotel_name" and value is not None]
+        if parts:
+            lines.append(" ".join(parts))
+    body = "\n".join(lines) if lines else "No rows returned"
+    note = str(limitation or "").strip()
+    return body + "\n" + note if note else body
+
+
+def answer_prepared(hotel_id, question, prepared):
+    """Run each chosen page's stored template. A page without one is not answered by writing SQL."""
     from booking_system.semantic.query import execute_reads
     from booking_system.semantic.registry import active_body
-    from booking_system.semantic.sql_agent import _rows_reply, answer_question
     import time
-    hotel_name = str(hotel or "").upper()
-    resolved = list((prepared or {}).get("resolved_dates") or [])
+    hotel_id = str(hotel_id or "")
     ids = list((prepared or {}).get("page_ids") or [])
     shortlist = (prepared or {}).get("shortlist") or []
     parts = []
@@ -242,49 +257,43 @@ def answer_prepared(hotel, question, prepared):
     error = ""
     fetch_ms = 0
     sql_ms = 0
-    if ids:
-        for page_id in ids:
-            started = time.monotonic()
-            body = active_body(page_id) or {}
-            fetch_ms += int((time.monotonic() - started) * 1000)
-            sql = str(((body.get("solution") or {}).get("sql_template")) or "").strip()
-            if sql:
-                started = time.monotonic()
-                result = execute_reads([sql], {"hotel_name": hotel_name})
-                sql_ms += int((time.monotonic() - started) * 1000)
-                error = error or result.get("error") or ""
-                page_rows = result.get("rows") or []
-                rows.extend(page_rows)
-                parts.append(_rows_reply(page_rows))
-                continue
-            started = time.monotonic()
-            found = answer_question(hotel_name, question, [page_id], resolved_dates=resolved)
-            sql_ms += int((time.monotonic() - started) * 1000)
-            error = error or found.get("error") or ""
-            rows.extend(found.get("rows") or [])
-            if found.get("reply"):
-                parts.append(found["reply"])
-            if found.get("stall_reason"):
-                found["shortlist"] = shortlist
-                found["fetch_ms"] = fetch_ms
-                found["sql_ms"] = sql_ms
-                return found
-        reply = "\n".join(part for part in parts if part) or "No rows returned"
+    ran = False
+    for page_id in ids:
+        started = time.monotonic()
+        body = active_body(page_id) or {}
+        fetch_ms += int((time.monotonic() - started) * 1000)
+        sql = str(((body.get("solution") or {}).get("sql_template")) or "").strip()
+        if not sql:
+            continue
+        ran = True
+        started = time.monotonic()
+        result = execute_reads([sql], {"hotel_id": hotel_id})
+        sql_ms += int((time.monotonic() - started) * 1000)
+        error = error or result.get("error") or ""
+        page_rows = result.get("rows") or []
+        rows.extend(page_rows)
+        parts.append(_rows_reply(page_rows))
+    if not ran:
         return {
-            "reply": reply,
-            "rows": rows,
-            "error": error,
+            "reply": "",
+            "rows": [],
+            "error": "no suitable recipe",
+            "statements": [],
             "stall_reason": "",
             "trace_id": None,
             "page_ids": ids,
             "fetch_ms": fetch_ms,
             "sql_ms": sql_ms,
+            "shortlist": shortlist,
         }
-    started = time.monotonic()
-    found = answer_question(hotel_name, question, [], resolved_dates=resolved)
-    found["fetch_ms"] = fetch_ms
-    found["sql_ms"] = int((time.monotonic() - started) * 1000)
-    found["shortlist"] = shortlist
-    if not found.get("stall_reason"):
-        found["stall_reason"] = "knowledge_gap_detected"
-    return found
+    reply = "\n".join(part for part in parts if part) or "No rows returned"
+    return {
+        "reply": reply,
+        "rows": rows,
+        "error": error,
+        "stall_reason": "",
+        "trace_id": None,
+        "page_ids": ids,
+        "fetch_ms": fetch_ms,
+        "sql_ms": sql_ms,
+    }

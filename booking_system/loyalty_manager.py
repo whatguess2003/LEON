@@ -1,493 +1,189 @@
-#!/usr/bin/env python3
-"""
-Loyalty Manager - Database Operations Only
-Handles database operations for loyalty program management
-"""
+"""Loyalty on loyalty_tier, loyalty_member, loyalty_reward, loyalty_points (a signed ledger) and guest_occasion. A member's balance
+is the sum of their ledger; their tier is the highest tier whose min_points the balance reaches. Each writer is one transaction that
+reads first; a refusal returns {'error': reason}."""
 
-import os
-import json
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any
-from decimal import Decimal
-import psycopg2
-from psycopg2.extras import RealDictCursor
-import pymongo
-from pymongo import MongoClient
-import redis
-from dotenv import load_dotenv
+import sys
+from datetime import date
 
-load_dotenv()
+from booking_system import db
+from booking_system.guest_manager import Refused, _guest_id_by_phone, run
+from booking_system.hotel_registry import new_id
 
-# Database connections
-REDIS_URL = os.getenv('REDIS_URL')
-MONGO_URL = os.getenv('MONGO_URL')
-DATABASE_URL = os.getenv('DATABASE_URL')
 
-class LoyaltyManager:
-    """Manages loyalty program database operations"""
-    
-    def __init__(self):
-        self.redis_client = redis.from_url(REDIS_URL) if REDIS_URL else None
-        self.mongo_client = MongoClient(MONGO_URL) if MONGO_URL else None
-        # Use the same database as guest_manager.py
-        self.mongo_db = self.mongo_client['leon_hotel_memory'] if self.mongo_client else None
-        # All loyalty program data should be in 'loyalty_program' collection within 'leon_hotel_memory'
-        
-    def get_db_connection(self):
-        """Get PostgreSQL database connection"""
-        return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+def _guest_id(cur, hotel_id, guest_phone):
+    guest_id = _guest_id_by_phone(cur, hotel_id, guest_phone)
+    if not guest_id:
+        raise Refused("Guest profile not found")
+    return guest_id
 
-    def check_loyalty_status(self, guest_id: str) -> dict:
-        """Check guest's current loyalty program status and benefits"""
-        try:
-            with self.get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    # Get guest's loyalty information
-                    cur.execute("""
-                        SELECT g.guest_id, g.guest_name, lm.membership_tier, lm.points_balance,
-                               lm.lifetime_points, lm.member_since, lm.tier_expiry_date,
-                               lm.next_tier_points_needed, lm.membership_status
-                        FROM guests g
-                        LEFT JOIN loyalty_members lm ON g.guest_id = lm.guest_id
-                        WHERE g.guest_id = %s
-                    """, (guest_id,))
-                    
-                    member = cur.fetchone()
-                    if not member:
-                        return {'success': False, 'error': f"Guest {guest_id} not found in system"}
-                    
-                    if not member['membership_tier']:
-                        return {
-                            'success': True,
-                            'is_member': False,
-                            'guest_name': member['guest_name'],
-                            'guest_id': guest_id
-                        }
 
-                    # Get recent activity
-                    cur.execute("""
-                        SELECT activity_type, points_earned, points_redeemed, 
-                               activity_date, description
-                        FROM loyalty_transactions
-                        WHERE guest_id = %s
-                        ORDER BY activity_date DESC
-                        LIMIT 5
-                    """, (guest_id,))
-                    
-                    recent_activity = cur.fetchall()
-                    
-                    return {
-                        'success': True,
-                        'is_member': True,
-                        'member_data': dict(member),
-                        'recent_activity': [dict(row) for row in recent_activity]
-                    }
-                    
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
+def _member(cur, hotel_id, guest_phone, lock=False):
+    """The active member row of the guest with this phone, with balance and tier."""
+    guest_id = _guest_id(cur, hotel_id, guest_phone)
+    cur.execute("SELECT member_id, status FROM loyalty_member WHERE hotel_id = %s AND guest_id = %s" + (" FOR UPDATE" if lock else ""),
+                (hotel_id, guest_id))
+    member = cur.fetchone()
+    if not member or member["status"] != "active":
+        raise Refused("Guest is not a loyalty member")
+    cur.execute(
+        """SELECT COALESCE(SUM(points), 0) AS balance,
+                  (SELECT tier_name FROM loyalty_tier WHERE hotel_id = %s AND min_points <= COALESCE(SUM(p.points), 0)
+                   ORDER BY min_points DESC LIMIT 1) AS tier_name
+           FROM loyalty_points p WHERE p.member_id = %s""",
+        (hotel_id, member["member_id"]))
+    found = cur.fetchone()
+    return {"member_id": member["member_id"], "guest_id": guest_id, "balance": int(found["balance"]), "tier_name": found["tier_name"]}
 
-    def enroll_loyalty_member(self, guest_id: str, enrollment_tier: str = "BRONZE") -> dict:
-        """Enroll a guest in the loyalty program"""
-        try:
-            with self.get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    # Check if guest exists
-                    cur.execute("SELECT guest_id, guest_name FROM guests WHERE guest_id = %s", (guest_id,))
-                    guest = cur.fetchone()
-                    
-                    if not guest:
-                        return {'success': False, 'error': f"Guest {guest_id} not found. Please ensure guest is registered first."}
-                    
-                    # Check if already enrolled
-                    cur.execute("SELECT guest_id FROM loyalty_members WHERE guest_id = %s", (guest_id,))
-                    existing = cur.fetchone()
-                    
-                    if existing:
-                        return {'success': False, 'error': f"Guest {guest_id} is already enrolled in the loyalty program"}
-                    
-                    # Generate membership number
-                    membership_number = f"LM{guest_id[-6:]}{datetime.now().strftime('%Y%m')}"
-                    
-                    # Calculate tier expiry (1 year from enrollment)
-                    tier_expiry = datetime.now() + timedelta(days=365)
-                    
-                    # Points needed for next tier
-                    next_tier_points = {
-                        'BRONZE': 5000,
-                        'SILVER': 10000,
-                        'GOLD': 25000,
-                        'PLATINUM': None
-                    }
-                    
-                    # Enroll member
-                    cur.execute("""
-                        INSERT INTO loyalty_members (
-                            guest_id, membership_number, membership_tier, points_balance,
-                            lifetime_points, member_since, tier_expiry_date, 
-                            next_tier_points_needed, membership_status
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """, (guest_id, membership_number, enrollment_tier, 0, 0,
-                          datetime.now(), tier_expiry, next_tier_points[enrollment_tier], 'ACTIVE'))
-                    
-                    # Give welcome bonus
-                    welcome_points = 500
-                    cur.execute("""
-                        INSERT INTO loyalty_transactions (
-                            transaction_id, guest_id, activity_type, points_earned,
-                            activity_date, description, staff_id
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    """, (f"{guest_id}welcome{datetime.now().strftime('%Y%m%d%H%M%S')}",
-                          guest_id, 'WELCOME_BONUS', welcome_points, datetime.now(),
-                          'Welcome bonus for joining loyalty program', 'system'))
-                    
-                    # Update points balance
-                    cur.execute("""
-                        UPDATE loyalty_members 
-                        SET points_balance = points_balance + %s,
-                            lifetime_points = lifetime_points + %s
-                        WHERE guest_id = %s
-                    """, (welcome_points, welcome_points, guest_id))
-                    
-                    # Store member profile in MongoDB
-                    if self.mongo_db is not None:
-                        member_profile = {
-                            "guest_id": guest_id,
-                            "membership_number": membership_number,
-                            "enrollment_date": datetime.now(),
-                            "enrollment_tier": enrollment_tier,
-                            "preferences": {
-                                "communication_method": "email",
-                                "newsletter_subscription": True,
-                                "promotional_offers": True
-                            },
-                            "special_occasions": [],
-                            "redemption_history": []
-                        }
-                        self.mongo_db.member_profiles.insert_one(member_profile)
-                    
-                    conn.commit()
-                    
-                    return {
-                        'success': True,
-                        'guest_name': guest['guest_name'],
-                        'membership_number': membership_number,
-                        'enrollment_tier': enrollment_tier,
-                        'welcome_points': welcome_points,
-                        'tier_expiry': tier_expiry
-                    }
-                    
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
 
-    def award_loyalty_points(self, guest_id: str, points_amount: int, activity_description: str, activity_type: str = "STAY") -> dict:
-        """Award loyalty points to a member for various activities"""
-        try:
-            with self.get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    # Check if member exists
-                    cur.execute("""
-                        SELECT membership_tier, points_balance, lifetime_points,
-                               next_tier_points_needed, membership_status
-                        FROM loyalty_members 
-                        WHERE guest_id = %s
-                    """, (guest_id,))
-                    
-                    member = cur.fetchone()
-                    if not member:
-                        return {'success': False, 'error': f"Guest {guest_id} is not a loyalty member. Please enroll first."}
-                    
-                    if member['membership_status'] != 'ACTIVE':
-                        return {'success': False, 'error': f"Member {guest_id} has {member['membership_status']} status. Cannot award points."}
-                    
-                    # Record transaction
-                    transaction_id = f"{guest_id}{activity_type.lower()}{datetime.now().strftime('%Y%m%d%H%M%S')}"
-                    
-                    cur.execute("""
-                        INSERT INTO loyalty_transactions (
-                            transaction_id, guest_id, activity_type, points_earned,
-                            activity_date, description, staff_id
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    """, (transaction_id, guest_id, activity_type, points_amount,
-                          datetime.now(), activity_description, 'staff'))
-                    
-                    # Update member points
-                    new_balance = member['points_balance'] + points_amount
-                    new_lifetime = member['lifetime_points'] + points_amount
-                    
-                    cur.execute("""
-                        UPDATE loyalty_members 
-                        SET points_balance = %s, lifetime_points = %s
-                        WHERE guest_id = %s
-                    """, (new_balance, new_lifetime, guest_id))
-                    
-                    # Check for tier upgrade
-                    current_tier = member['membership_tier']
-                    tier_thresholds = {
-                        'BRONZE': 0,
-                        'SILVER': 5000,
-                        'GOLD': 15000,
-                        'PLATINUM': 30000
-                    }
-                    
-                    new_tier = current_tier
-                    for tier, threshold in tier_thresholds.items():
-                        if new_lifetime >= threshold:
-                            new_tier = tier
-                    
-                    tier_upgraded = False
-                    if new_tier != current_tier:
-                        # Update tier
-                        tier_expiry = datetime.now() + timedelta(days=365)
-                        next_tier_points = {
-                            'BRONZE': 5000,
-                            'SILVER': 15000,
-                            'GOLD': 30000,
-                            'PLATINUM': None
-                        }
-                        
-                        cur.execute("""
-                            UPDATE loyalty_members 
-                            SET membership_tier = %s, tier_expiry_date = %s,
-                                next_tier_points_needed = %s
-                            WHERE guest_id = %s
-                        """, (new_tier, tier_expiry, 
-                              next_tier_points[new_tier] - new_lifetime if next_tier_points[new_tier] else None,
-                              guest_id))
-                        
-                        tier_upgraded = True
-                    
-                    conn.commit()
-                    
-                    return {
-                        'success': True,
-                        'transaction_id': transaction_id,
-                        'guest_id': guest_id,
-                        'activity_description': activity_description,
-                        'points_amount': points_amount,
-                        'activity_type': activity_type,
-                        'previous_balance': member['points_balance'],
-                        'new_balance': new_balance,
-                        'new_lifetime': new_lifetime,
-                        'current_tier': current_tier,
-                        'new_tier': new_tier,
-                        'tier_upgraded': tier_upgraded
-                    }
-                    
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
+def tiers(hotel_id):
+    return db.rows("SELECT tier_name, min_points FROM loyalty_tier WHERE hotel_id = %s ORDER BY min_points", (hotel_id,))
 
-    def redeem_loyalty_rewards(self, guest_id: str, reward_type: str, points_cost: int) -> dict:
-        """Process loyalty points redemption for rewards"""
-        try:
-            with self.get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    # Check member balance
-                    cur.execute("""
-                        SELECT membership_tier, points_balance, membership_status
-                        FROM loyalty_members 
-                        WHERE guest_id = %s
-                    """, (guest_id,))
-                    
-                    member = cur.fetchone()
-                    if not member:
-                        return {'success': False, 'error': f"Guest {guest_id} is not a loyalty member"}
-                    
-                    if member['membership_status'] != 'ACTIVE':
-                        return {'success': False, 'error': f"Member {guest_id} has {member['membership_status']} status"}
-                    
-                    if member['points_balance'] < points_cost:
-                        return {
-                            'success': False,
-                            'error': 'insufficient_points',
-                            'current_balance': member['points_balance'],
-                            'required_points': points_cost,
-                            'shortage': points_cost - member['points_balance']
-                        }
-                    
-                    # Process redemption
-                    transaction_id = f"{guest_id}redeem{datetime.now().strftime('%Y%m%d%H%M%S')}"
-                    
-                    cur.execute("""
-                        INSERT INTO loyalty_transactions (
-                            transaction_id, guest_id, activity_type, points_redeemed,
-                            activity_date, description, staff_id
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    """, (transaction_id, guest_id, 'REDEMPTION', points_cost,
-                          datetime.now(), f"Redeemed {reward_type}", 'staff'))
-                    
-                    # Update balance
-                    new_balance = member['points_balance'] - points_cost
-                    cur.execute("""
-                        UPDATE loyalty_members 
-                        SET points_balance = %s
-                        WHERE guest_id = %s
-                    """, (new_balance, guest_id))
-                    
-                    # Generate reward voucher
-                    voucher_code = f"RWD{guest_id[-4:]}{datetime.now().strftime('%m%d%H%M')}"
-                    
-                    cur.execute("""
-                        INSERT INTO loyalty_rewards (
-                            voucher_code, guest_id, reward_type, points_redeemed,
-                            issue_date, expiry_date, reward_status, transaction_id
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    """, (voucher_code, guest_id, reward_type, points_cost,
-                          datetime.now(), datetime.now() + timedelta(days=365),
-                          'ISSUED', transaction_id))
-                    
-                    # Store in MongoDB for detailed tracking
-                    if self.mongo_db is not None:
-                        reward_doc = {
-                            "voucher_code": voucher_code,
-                            "guest_id": guest_id,
-                            "reward_type": reward_type,
-                            "points_redeemed": points_cost,
-                            "issue_date": datetime.now(),
-                            "expiry_date": datetime.now() + timedelta(days=365),
-                            "usage_instructions": f"Present voucher code {voucher_code} at time of service",
-                            "terms_conditions": "Valid for 12 months from issue date. Cannot be exchanged for cash."
-                        }
-                        self.mongo_db.issued_rewards.insert_one(reward_doc)
-                    
-                    conn.commit()
-                    
-                    return {
-                        'success': True,
-                        'voucher_code': voucher_code,
-                        'guest_id': guest_id,
-                        'reward_type': reward_type,
-                        'points_cost': points_cost,
-                        'previous_balance': member['points_balance'],
-                        'new_balance': new_balance,
-                        'transaction_id': transaction_id,
-                        'expiry_date': datetime.now() + timedelta(days=365)
-                    }
-                    
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
 
-    def check_available_rewards(self, guest_id: str) -> dict:
-        """Show available rewards based on member's point balance and tier"""
-        try:
-            with self.get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    # Get member details
-                    cur.execute("""
-                        SELECT membership_tier, points_balance
-                        FROM loyalty_members 
-                        WHERE guest_id = %s
-                    """, (guest_id,))
-                    
-                    member = cur.fetchone()
-                    if not member:
-                        return {'success': False, 'error': f"Guest {guest_id} is not a loyalty member"}
-                    
-                    points_balance = member['points_balance']
-                    tier = member['membership_tier']
-                    
-                    # Define available rewards by tier
-                    rewards_catalog = {
-                        'BRONZE': [
-                            {'name': 'Late Checkout (2 PM)', 'points': 500, 'type': 'late_checkout_2pm'},
-                            {'name': 'Welcome Drink Voucher', 'points': 750, 'type': 'welcome_drink'},
-                            {'name': '$25 Dining Credit', 'points': 1500, 'type': 'dining_credit_25'}
-                        ],
-                        'SILVER': [
-                            {'name': 'Late Checkout (3 PM)', 'points': 500, 'type': 'late_checkout_3pm'},
-                            {'name': 'Room Upgrade', 'points': 2000, 'type': 'room_upgrade'},
-                            {'name': '$50 Dining Credit', 'points': 2500, 'type': 'dining_credit_50'},
-                            {'name': 'Spa Treatment (60 min)', 'points': 4000, 'type': 'spa_60min'}
-                        ],
-                        'GOLD': [
-                            {'name': 'Late Checkout (4 PM)', 'points': 500, 'type': 'late_checkout_4pm'},
-                            {'name': 'Suite Upgrade', 'points': 3000, 'type': 'suite_upgrade'},
-                            {'name': '$100 Dining Credit', 'points': 4000, 'type': 'dining_credit_100'},
-                            {'name': 'Spa Package (90 min)', 'points': 6000, 'type': 'spa_90min'},
-                            {'name': 'Airport Transfer', 'points': 3500, 'type': 'airport_transfer'}
-                        ],
-                        'PLATINUM': [
-                            {'name': 'Late Checkout (6 PM)', 'points': 500, 'type': 'late_checkout_6pm'},
-                            {'name': 'Presidential Suite Upgrade', 'points': 5000, 'type': 'presidential_upgrade'},
-                            {'name': '$200 Dining Credit', 'points': 7000, 'type': 'dining_credit_200'},
-                            {'name': 'Full Day Spa Package', 'points': 10000, 'type': 'spa_full_day'},
-                            {'name': 'Free Night Stay', 'points': 15000, 'type': 'free_night'},
-                            {'name': 'Weekend Getaway Package', 'points': 25000, 'type': 'weekend_package'}
-                        ]
-                    }
-                    
-                    available_rewards = rewards_catalog.get(tier, [])
-                    
-                    return {
-                        'success': True,
-                        'guest_id': guest_id,
-                        'tier': tier,
-                        'points_balance': points_balance,
-                        'available_rewards': available_rewards
-                    }
-                    
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
+def save_tier(hotel_id, tier_name, min_points):
+    """READ the tier; update its threshold or create it."""
+    name = str(tier_name or "").strip().upper()
+    if not name or int(min_points) < 0:
+        return {"error": "tier_name and min_points >= 0 are required"}
 
-    def manage_special_occasions(self, guest_id: str, occasion_type: str, occasion_date: str, notes: str = "") -> dict:
-        """Manage special occasions for loyalty members"""
-        try:
-            with self.get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    # Check if member exists
-                    cur.execute("SELECT membership_tier FROM loyalty_members WHERE guest_id = %s", (guest_id,))
-                    member = cur.fetchone()
-                    
-                    if not member:
-                        return {'success': False, 'error': f"Guest {guest_id} is not a loyalty member"}
-                    
-                    # Store special occasion
-                    occasion_id = f"{guest_id}{occasion_type}{datetime.now().strftime('%Y%m%d%H%M%S')}"
-                    
-                    cur.execute("""
-                        INSERT INTO member_special_occasions (
-                            occasion_id, guest_id, occasion_type, occasion_date,
-                            notes, created_date, notification_enabled
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    """, (occasion_id, guest_id, occasion_type, occasion_date,
-                          notes, datetime.now(), True))
-                    
-                    # Store in MongoDB for rich data
-                    if self.mongo_db is not None:
-                        occasion_doc = {
-                            "occasion_id": occasion_id,
-                            "guest_id": guest_id,
-                            "occasion_type": occasion_type,
-                            "occasion_date": datetime.strptime(occasion_date, '%Y-%m-%d'),
-                            "notes": notes,
-                            "preferences": {
-                                "room_decoration": True,
-                                "special_amenities": True,
-                                "surprise_gift": True
-                            },
-                            "history": []
-                        }
-                        self.mongo_db.special_occasions.insert_one(occasion_doc)
-                    
-                    # Calculate days until occasion
-                    occasion_dt = datetime.strptime(occasion_date, '%Y-%m-%d')
-                    days_until = (occasion_dt - datetime.now()).days
-                    
-                    conn.commit()
-                    
-                    return {
-                        'success': True,
-                        'occasion_id': occasion_id,
-                        'guest_id': guest_id,
-                        'occasion_type': occasion_type,
-                        'occasion_date': occasion_dt,
-                        'notes': notes,
-                        'days_until': days_until
-                    }
-                    
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
+    def write(cur):
+        cur.execute("SELECT min_points FROM loyalty_tier WHERE hotel_id = %s AND tier_name = %s FOR UPDATE", (hotel_id, name))
+        if cur.fetchone():
+            cur.execute("UPDATE loyalty_tier SET min_points = %s WHERE hotel_id = %s AND tier_name = %s", (int(min_points), hotel_id, name))
+            return {"tier_name": name, "min_points": int(min_points), "result": "updated"}
+        cur.execute("INSERT INTO loyalty_tier (hotel_id, tier_name, min_points) VALUES (%s, %s, %s)", (hotel_id, name, int(min_points)))
+        return {"tier_name": name, "min_points": int(min_points), "result": "created"}
+    return run(write)
 
-if __name__ == "__main__":
-    # Test the manager
-    manager = LoyaltyManager()
-    print("🌟 Loyalty Manager initialized successfully!")
+
+def member_status(hotel_id, guest_phone):
+    """{'member_id', 'balance', 'tier_name', 'history'} of the member with this phone."""
+    def read(cur):
+        member = _member(cur, hotel_id, guest_phone)
+        cur.execute(
+            """SELECT p.entry_id, p.points, p.reason, p.booking_id, r.reward_name, p.recorded_at FROM loyalty_points p
+               LEFT JOIN loyalty_reward r ON r.reward_id = p.reward_id WHERE p.member_id = %s ORDER BY p.recorded_at DESC LIMIT 50""",
+            (member["member_id"],))
+        history = [dict(row, recorded_at=row["recorded_at"].isoformat()) for row in cur.fetchall()]
+        return {key: member[key] for key in ("member_id", "balance", "tier_name")} | {"history": history}
+    return run(read)
+
+
+def enroll(hotel_id, user_id, guest_phone):
+    """READ the guest's membership; reopen a closed one, keep an active one, or create it."""
+    def write(cur):
+        guest_id = _guest_id(cur, hotel_id, guest_phone)
+        cur.execute("SELECT member_id, status FROM loyalty_member WHERE hotel_id = %s AND guest_id = %s FOR UPDATE", (hotel_id, guest_id))
+        found = cur.fetchone()
+        if found and found["status"] == "active":
+            return {"member_id": found["member_id"], "result": "already a member"}
+        if found:
+            cur.execute("UPDATE loyalty_member SET status = 'active' WHERE member_id = %s", (found["member_id"],))
+            return {"member_id": found["member_id"], "result": "reopened"}
+        member_id = new_id("lym")
+        cur.execute("INSERT INTO loyalty_member (member_id, hotel_id, guest_id, status, enrolled_by_user_id) VALUES (%s, %s, %s, 'active', %s)",
+                    (member_id, hotel_id, guest_id, user_id))
+        return {"member_id": member_id, "result": "enrolled"}
+    return run(write)
+
+
+def award(hotel_id, user_id, guest_phone, points, reason, booking_id=None):
+    """Add positive points to the member's ledger. A booking must be the guest's own."""
+    if int(points) <= 0 or not str(reason or "").strip():
+        return {"error": "points > 0 and reason are required"}
+
+    def write(cur):
+        member = _member(cur, hotel_id, guest_phone, lock=True)
+        if booking_id:
+            cur.execute("SELECT 1 AS own FROM booking WHERE hotel_id = %s AND booking_id = %s AND guest_id = %s",
+                        (hotel_id, booking_id, member["guest_id"]))
+            if not cur.fetchone():
+                raise Refused("Booking " + str(booking_id) + " is not this guest's")
+        entry_id = new_id("lyp")
+        cur.execute(
+            """INSERT INTO loyalty_points (entry_id, hotel_id, member_id, points, reason, booking_id, recorded_by_user_id)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+            (entry_id, hotel_id, member["member_id"], int(points), str(reason).strip()[:255], booking_id or None, user_id))
+        return {"entry_id": entry_id, "balance": member["balance"] + int(points)}
+    return run(write)
+
+
+def rewards(hotel_id):
+    return db.rows("SELECT reward_id, reward_name, points_cost, status FROM loyalty_reward WHERE hotel_id = %s ORDER BY points_cost, reward_name",
+                   (hotel_id,))
+
+
+def save_reward(hotel_id, reward_name, points_cost, status="active"):
+    """READ the reward by name; update its cost and status or create it."""
+    name = str(reward_name or "").strip().upper()
+    if not name or int(points_cost) <= 0 or status not in ("active", "inactive"):
+        return {"error": "reward_name, points_cost > 0 and status active|inactive are required"}
+
+    def write(cur):
+        cur.execute("SELECT reward_id FROM loyalty_reward WHERE hotel_id = %s AND reward_name = %s FOR UPDATE", (hotel_id, name))
+        found = cur.fetchone()
+        if found:
+            cur.execute("UPDATE loyalty_reward SET points_cost = %s, status = %s WHERE reward_id = %s", (int(points_cost), status, found["reward_id"]))
+            return {"reward_id": found["reward_id"], "result": "updated"}
+        reward_id = new_id("lyr")
+        cur.execute("INSERT INTO loyalty_reward (reward_id, hotel_id, reward_name, points_cost, status) VALUES (%s, %s, %s, %s, %s)",
+                    (reward_id, hotel_id, name, int(points_cost), status))
+        return {"reward_id": reward_id, "result": "created"}
+    return run(write)
+
+
+def redeem(hotel_id, user_id, guest_phone, reward_name):
+    """Spend the reward's points when the balance covers them."""
+    def write(cur):
+        member = _member(cur, hotel_id, guest_phone, lock=True)
+        cur.execute("SELECT reward_id, reward_name, points_cost FROM loyalty_reward WHERE hotel_id = %s AND reward_name = %s AND status = 'active'",
+                    (hotel_id, str(reward_name or "").strip().upper()))
+        reward = cur.fetchone()
+        if not reward:
+            raise Refused("Reward " + str(reward_name or "") + " not found")
+        if member["balance"] < reward["points_cost"]:
+            raise Refused("Balance " + str(member["balance"]) + " is below " + str(reward["points_cost"]))
+        entry_id = new_id("lyp")
+        cur.execute(
+            """INSERT INTO loyalty_points (entry_id, hotel_id, member_id, points, reason, reward_id, recorded_by_user_id)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+            (entry_id, hotel_id, member["member_id"], -reward["points_cost"], "redeemed " + reward["reward_name"], reward["reward_id"], user_id))
+        return {"entry_id": entry_id, "reward_name": reward["reward_name"], "balance": member["balance"] - reward["points_cost"]}
+    return run(write)
+
+
+def save_occasion(hotel_id, user_id, guest_phone, occasion, occasion_date, notes=None):
+    """READ the guest's occasion on that date; update its notes or create it."""
+    name = str(occasion or "").strip().lower()
+    try:
+        day = date.fromisoformat(str(occasion_date or "")[:10])
+    except ValueError:
+        return {"error": "occasion_date must be YYYY-MM-DD"}
+    if not name:
+        return {"error": "occasion is required"}
+
+    def write(cur):
+        guest_id = _guest_id(cur, hotel_id, guest_phone)
+        cur.execute("SELECT occasion_id FROM guest_occasion WHERE guest_id = %s AND occasion = %s AND occasion_date = %s FOR UPDATE",
+                    (guest_id, name, day))
+        found = cur.fetchone()
+        if found:
+            cur.execute("UPDATE guest_occasion SET notes = %s WHERE occasion_id = %s", (notes, found["occasion_id"]))
+            return {"occasion_id": found["occasion_id"], "result": "updated"}
+        occasion_id = new_id("goc")
+        cur.execute(
+            """INSERT INTO guest_occasion (occasion_id, hotel_id, guest_id, occasion, occasion_date, notes, recorded_by_user_id)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+            (occasion_id, hotel_id, guest_id, name, day, notes, user_id))
+        return {"occasion_id": occasion_id, "result": "created"}
+    return run(write)
+
+
+def occasions(hotel_id, guest_phone):
+    def read(cur):
+        cur.execute("SELECT occasion_id, occasion, occasion_date, notes FROM guest_occasion WHERE hotel_id = %s AND guest_id = %s ORDER BY occasion_date",
+                    (hotel_id, _guest_id(cur, hotel_id, guest_phone)))
+        return {"occasions": [dict(row, occasion_date=row["occasion_date"].isoformat()) for row in cur.fetchall()]}
+    return run(read)
+
+
+loyalty_manager = sys.modules[__name__]

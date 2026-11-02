@@ -1,330 +1,105 @@
-"""Channel manager reservation list.
+"""Channel manager reservation list (channel_reservations, keyed by reservation_id; one row per hotel, direction and channel
+reference). The bookings themselves are core bookings written by aiosell_reservation."""
 
-The list lives in Postgres. A failed Aiosell poll records the error and leaves the rows in place.
-"""
+from booking_system import booking_manager, db
+from booking_system.hotel_registry import new_id, read_hotel_by_code
 
-from datetime import datetime
-
-from booking_system.booking_manager import booking_manager
+DIRECTIONS = ("reservation_in", "reservation_out")
 
 
-def ensure_tables():
-    booking_manager._ensure_postgres_connection()
-    with booking_manager.postgres_lock:
-        booking_manager._clear_transaction()
-        cur = booking_manager.postgres_conn.cursor()
-        try:
+def store_reservation(hotel_id, direction, channel_booking_ref, booking_id, source, action, guest_phone, guest_name, room_types,
+                      check_in, check_out, booking_status, message):
+    """READ by hotel, direction and channel reference; update the row when found, otherwise create it."""
+    fields = (booking_id, source, action, guest_phone or None, guest_name or None, room_types or None, check_in, check_out,
+              booking_status, message or None)
+
+    def write(cur):
+        cur.execute("SELECT reservation_id FROM channel_reservations WHERE hotel_id = %s AND direction = %s AND channel_booking_ref = %s",
+                    (hotel_id, direction, channel_booking_ref))
+        found = cur.fetchone()
+        if found:
             cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS channel_reservations (
-                    hotel_name VARCHAR(255) NOT NULL,
-                    booking_id VARCHAR(255) NOT NULL,
-                    source VARCHAR(32) NOT NULL,
-                    direction VARCHAR(32) NOT NULL,
-                    action VARCHAR(32) NOT NULL,
-                    guest_phone VARCHAR(64) NULL,
-                    room_type VARCHAR(255) NULL,
-                    checkin DATE NULL,
-                    checkout DATE NULL,
-                    booking_status VARCHAR(32) NOT NULL,
-                    message TEXT NULL,
-                    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (hotel_name, booking_id)
-                )
-                """
-            )
-            cur.execute("ALTER TABLE channel_reservations ADD COLUMN IF NOT EXISTS direction VARCHAR(32)")
-            cur.execute("ALTER TABLE channel_reservations ADD COLUMN IF NOT EXISTS guest_name VARCHAR(255)")
-            cur.execute(
-                """
-                UPDATE channel_reservations
-                SET direction = 'reservation_in'
-                WHERE source = 'PMS' AND COALESCE(direction, '') = ''
-                """
-            )
-            cur.execute(
-                """
-                UPDATE channel_reservations
-                SET direction = 'reservation_out'
-                WHERE COALESCE(direction, '') = ''
-                """
-            )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS channel_reservation_sync (
-                    hotel_name VARCHAR(255) PRIMARY KEY,
-                    hotel_code VARCHAR(64) NULL,
-                    start_date DATE NULL,
-                    end_date DATE NULL,
-                    synced_at TIMESTAMP NULL,
-                    last_error TEXT NULL
-                )
-                """
-            )
-            booking_manager.postgres_conn.commit()
-        finally:
-            cur.close()
+                """UPDATE channel_reservations SET booking_id = %s, source = %s, action = %s, guest_phone = %s, guest_name = %s,
+                          room_types = %s, check_in = %s, check_out = %s, booking_status = %s, message = %s, updated_at = now()
+                   WHERE reservation_id = %s""",
+                fields + (found["reservation_id"],))
+            return found["reservation_id"]
+        reservation_id = new_id("chr")
+        cur.execute(
+            """INSERT INTO channel_reservations (reservation_id, hotel_id, direction, channel_booking_ref, booking_id, source, action,
+                                                 guest_phone, guest_name, room_types, check_in, check_out, booking_status, message)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            (reservation_id, hotel_id, direction, channel_booking_ref) + fields)
+        return reservation_id
+    return read_reservation(db.transaction(write))
 
 
-def _day(value):
-    text = str(value or "").strip()[:10]
-    if not text:
-        return None
-    try:
-        return datetime.strptime(text, "%Y-%m-%d").date()
-    except ValueError:
-        return None
-
-
-def _span(stay_dates):
-    days = []
-    for value in stay_dates or []:
-        day = _day(value)
-        if day and day not in days:
-            days.append(day)
-    if not days:
-        return None, None
-    days.sort()
-    return days[0], days[-1]
-
-
-def store_reservation(hotel_name: str, booking_id: str, source: str, direction: str, action: str, guest_phone: str, guest_name: str, room_type: str, checkin, checkout, booking_status: str, message: str) -> dict:
-    """Insert the reservation, or update it when hotel_name and booking_id already exist."""
-    ensure_tables()
-    with booking_manager.postgres_lock:
-        booking_manager._clear_transaction()
-        cur = booking_manager.postgres_conn.cursor()
-        try:
-            cur.execute(
-                "SELECT booking_id FROM channel_reservations WHERE hotel_name = %s AND booking_id = %s",
-                (hotel_name, booking_id),
-            )
-            existing = cur.fetchone()
-            if existing:
-                cur.execute(
-                    """
-                    UPDATE channel_reservations
-                    SET source = %s, direction = %s, action = %s, guest_phone = %s, guest_name = %s, room_type = %s,
-                        checkin = %s, checkout = %s, booking_status = %s, message = %s,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE hotel_name = %s AND booking_id = %s
-                    """,
-                    (source, direction, action, guest_phone, guest_name, room_type, checkin, checkout, booking_status, message, hotel_name, booking_id),
-                )
-            else:
-                cur.execute(
-                    """
-                    INSERT INTO channel_reservations (
-                        hotel_name, booking_id, source, direction, action, guest_phone, guest_name, room_type,
-                        checkin, checkout, booking_status, message
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (hotel_name, booking_id, source, direction, action, guest_phone, guest_name, room_type, checkin, checkout, booking_status, message),
-                )
-            booking_manager.postgres_conn.commit()
-        finally:
-            cur.close()
-    return read_reservation(hotel_name, booking_id)
-
-
-def read_reservation(hotel_name: str, booking_id: str) -> dict:
-    ensure_tables()
-    with booking_manager.postgres_lock:
-        booking_manager._clear_transaction()
-        cur = booking_manager.postgres_conn.cursor()
-        try:
-            cur.execute(
-                """
-                SELECT source, direction, action, guest_phone, guest_name, room_type, checkin, checkout, booking_status, message
-                FROM channel_reservations
-                WHERE hotel_name = %s AND booking_id = %s
-                """,
-                (hotel_name, booking_id),
-            )
-            row = cur.fetchone()
-        finally:
-            cur.close()
-            booking_manager._safe_rollback()
+def read_reservation(reservation_id):
+    row = db.row("SELECT * FROM channel_reservations WHERE reservation_id = %s", (reservation_id,))
     if not row:
         return {}
+    return dict(row, check_in=row["check_in"].isoformat() if row["check_in"] else "",
+                check_out=row["check_out"].isoformat() if row["check_out"] else "", updated_at=row["updated_at"].isoformat())
+
+
+def read_list(hotel_id, direction):
+    """The reservations listed for this hotel in one direction, newest first."""
+    rows = db.rows(
+        """SELECT channel_booking_ref, booking_id, source, action, booking_status, message, updated_at, guest_name
+           FROM channel_reservations WHERE hotel_id = %s AND direction = %s ORDER BY updated_at DESC, channel_booking_ref""",
+        (hotel_id, direction))
+    latest = max((row["updated_at"] for row in rows), default=None)
     return {
-        "hotel_name": hotel_name,
-        "booking_id": booking_id,
-        "source": row[0],
-        "direction": row[1],
-        "action": row[2],
-        "guest_phone": row[3] or "",
-        "guest_name": row[4] or "",
-        "room_type": row[5] or "",
-        "checkin": row[6].isoformat() if row[6] else "",
-        "checkout": row[7].isoformat() if row[7] else "",
-        "booking_status": row[8],
-        "message": row[9] or "",
+        "hotel_id": hotel_id, "direction": direction, "synced_at": latest.isoformat(timespec="seconds") if latest else "",
+        "reservations": [{"bookingId": row["channel_booking_ref"], "booking_id": row["booking_id"] or "", "source": row["source"],
+                          "action": row["action"], "success": row["booking_status"] != "rejected", "message": row["message"] or "",
+                          "guest_name": row["guest_name"] or "", "direction": direction} for row in rows],
     }
 
 
-def read_list(hotel_name: str, direction: str) -> dict:
-    """Return the reservations stored from the Aiosell webhook or from the PMS."""
-    ensure_tables()
-    with booking_manager.postgres_lock:
-        booking_manager._clear_transaction()
-        cur = booking_manager.postgres_conn.cursor()
-        try:
-            cur.execute(
-                """
-                SELECT hotel_code, start_date, end_date, synced_at, last_error
-                FROM channel_reservation_sync WHERE hotel_name = %s
-                """,
-                (hotel_name,),
-            )
-            sync = cur.fetchone()
-            cur.execute(
-                """
-                SELECT booking_id, source, action, booking_status, message, updated_at, guest_name
-                FROM channel_reservations
-                WHERE hotel_name = %s AND direction = %s
-                ORDER BY updated_at DESC, booking_id
-                """,
-                (hotel_name, direction),
-            )
-            rows = cur.fetchall()
-        finally:
-            cur.close()
-            booking_manager._safe_rollback()
-    reservations = []
-    latest = None
-    for row in rows:
-        reservations.append({
-            "bookingId": row[0],
-            "source": row[1],
-            "action": row[2],
-            "success": row[3] != "rejected",
-            "message": row[4] or "",
-            "guest_name": row[6] or "",
-            "direction": direction,
-        })
-        if latest is None or (row[5] and row[5] > latest):
-            latest = row[5]
-    if direction == "reservation_in":
-        return {
-            "hotel_name": hotel_name,
-            "direction": "reservation_in",
-            "endpoint": "/reservation-in",
-            "synced_at": latest.isoformat(timespec="seconds") if latest else "",
-            "reservations": reservations,
-        }
-    if not sync:
-        return {
-            "hotel_name": hotel_name,
-            "hotel_code": "",
-            "direction": "reservation_out",
-            "endpoint": "/update_reservation",
-            "start_date": "",
-            "end_date": "",
-            "synced_at": "",
-            "error": "",
-            "reservations": reservations,
-        }
-    return {
-        "hotel_name": hotel_name,
-        "hotel_code": sync[0] or "",
-        "direction": "reservation_out",
-        "endpoint": "/update_reservation",
-        "start_date": sync[1].isoformat() if sync[1] else "",
-        "end_date": sync[2].isoformat() if sync[2] else "",
-        "synced_at": sync[3].isoformat(timespec="seconds") if sync[3] else "",
-        "error": sync[4] or "",
-        "reservations": reservations,
-    }
-
-
-def accept_pms_booking(body: dict) -> dict:
-    """Store one booking the PMS created. The channel manager list is the record."""
-    hotel_name = str((body or {}).get("hotel_name") or "").strip().upper()
+def accept_pms_booking(body):
+    """List one booking the PMS created as reservation_in. The booking must exist at that hotel."""
+    hotel_id = str((body or {}).get("hotel_id") or "").strip()
     booking_id = str((body or {}).get("booking_id") or "").strip()
-    if not hotel_name or not booking_id:
-        return {"error": "hotel_name and booking_id are required"}
-    stay_dates = (body or {}).get("stay_dates") or []
-    checkin, checkout = _span(stay_dates)
-    guest_phone = str((body or {}).get("guest_phone") or "").strip()
-    guest_name = str((body or {}).get("guest_name") or "").strip()
-    room_type = str((body or {}).get("room_type") or "").strip()
-    status = str((body or {}).get("booking_status") or "").strip() or "confirmed"
+    if not hotel_id or not booking_id:
+        return {"error": "hotel_id and booking_id are required"}
+    if not db.row("SELECT 1 AS found FROM booking WHERE hotel_id = %s AND booking_id = %s", (hotel_id, booking_id)):
+        return {"error": "Booking " + booking_id + " not found"}
+    stay = booking_manager.stay_range(body.get("stay_dates") or [])
+    if stay.get("error"):
+        return stay
     stored = store_reservation(
-        hotel_name,
-        booking_id,
-        "PMS",
-        "reservation_in",
-        "book",
-        guest_phone,
-        guest_name,
-        room_type,
-        checkin,
-        checkout,
-        status,
-        "Reservation in",
-    )
+        hotel_id, "reservation_in", booking_id, booking_id, "PMS", "book", str(body.get("guest_phone") or "").strip(),
+        str(body.get("guest_name") or "").strip(), str(body.get("room_type") or "").strip(), stay["check_in"], stay["check_out"],
+        "confirmed", "Reservation in")
     return {"success": True, "reservation": stored}
 
 
-def record_aiosell_reservation(hotel_name: str, payload: dict, outcome: dict) -> None:
-    """Write one Aiosell reservation onto the reservation-out list."""
+def record_aiosell_reservation(hotel_id, payload, outcome):
+    """List one Aiosell delivery as reservation_out."""
     from booking_system.aiosell_reservation import _guest_name, _guest_phone, _stay_day
 
-    booking_id = str((payload or {}).get("bookingId") or "").strip()
-    hotel = str(hotel_name or "").strip().upper()
-    if not hotel or not booking_id:
+    ref = str(payload.get("bookingId") or "").strip()
+    if not ref:
         return
-    action = str((payload or {}).get("action") or "").strip().lower()
-    status = "cancelled" if action == "cancel" else ("confirmed" if outcome.get("success") else "rejected")
-    phone = _guest_phone(payload)
-    guest_name = _guest_name(payload)
-    room_type = ""
-    if outcome.get("success"):
-        with booking_manager.postgres_lock:
-            booking_manager._clear_transaction()
-            cur = booking_manager.postgres_conn.cursor()
-            try:
-                cur.execute(
-                    "SELECT room_type FROM room_bookings WHERE hotel_name = %s AND booking_id = %s",
-                    (hotel, booking_id),
-                )
-                found = cur.fetchone()
-                room_type = str(found[0] or "") if found else ""
-            finally:
-                cur.close()
-                booking_manager._safe_rollback()
+    action = str(payload.get("action") or "").strip().lower() or "book"
+    status = ("cancelled" if action == "cancel" else "confirmed") if outcome.get("success") else "rejected"
     store_reservation(
-        hotel,
-        booking_id,
-        "AIOSSELL",
-        "reservation_out",
-        action or "book",
-        phone,
-        guest_name,
-        room_type,
-        _day(_stay_day((payload or {}).get("checkin"))),
-        _day(_stay_day((payload or {}).get("checkout"))),
-        status,
-        str(outcome.get("message") or ""),
-    )
+        hotel_id, "reservation_out", ref, outcome.get("booking_id"), "AIOSELL", action, _guest_phone(payload), _guest_name(payload),
+        ", ".join(outcome.get("room_types") or []), _stay_day(payload.get("checkin")) or None, _stay_day(payload.get("checkout")) or None,
+        status, str(outcome.get("message") or ""))
 
 
-def accept_webhook(payload: dict) -> dict:
-    """Apply one reservation Aiosell posts and store it. The caller answers Aiosell before any inventory push."""
-    from booking_system.aiosell_reservation import handle_reservation, _hotel_name
+def accept_webhook(payload):
+    """Apply one reservation Aiosell posts to the hotel its hotelCode is linked to, and list it. The caller answers Aiosell before
+    any inventory push."""
+    from booking_system.aiosell_reservation import handle_reservation
 
     body = payload if isinstance(payload, dict) else {}
-    outcome = handle_reservation(body, push=False)
-    public = {"success": bool(outcome.get("success")), "message": str(outcome.get("message") or "")}
-    booking_manager._ensure_postgres_connection()
-    db = booking_manager.mongo_db
-    hotel_name = ""
-    if db is not None:
-        hotel_name, _error = _hotel_name(db, str(body.get("hotelCode") or "").strip())
-    if hotel_name:
-        record_aiosell_reservation(hotel_name, body, outcome)
-        public["hotel_name"] = hotel_name
-        public["stay_dates"] = list(outcome.get("stay_dates") or [])
-    return public
-
+    hotel = read_hotel_by_code(str(body.get("hotelCode") or "").strip())
+    if not hotel:
+        return {"success": False, "message": "Hotel code is not linked"}
+    outcome = handle_reservation(hotel, body)
+    record_aiosell_reservation(hotel["hotel_id"], body, outcome)
+    return {"success": bool(outcome.get("success")), "message": str(outcome.get("message") or ""), "hotel_name": hotel["hotel_name"],
+            "hotel_id": hotel["hotel_id"], "booking_id": outcome.get("booking_id"), "stay_dates": list(outcome.get("stay_dates") or [])}

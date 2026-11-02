@@ -100,6 +100,7 @@
     ].forEach(function(li){ nav.appendChild(makeLink(li)); });
     var groups = [
       {id:'operations', label:'Operations', icon:'fa-tasks', color:'#3b82f6', items:[
+        {href:'desk.html', icon:'fa-comments', label:'LEON', color:'#2563eb'},
         {href:'operations.html', icon:'fa-calendar-day', label:"Today's", color:'#3b82f6'},
         {href:'assignments.html', icon:'fa-clipboard-list', label:'Stay View', color:'#a855f7'},
         {href:'housekeeping.html', icon:'fa-broom', label:'Housekeeping', color:'#f97316'},
@@ -116,6 +117,7 @@
         {href:'activities.html', icon:'fa-clock', label:'Activity Logs', color:'#64748b'}
       ]},
       {id:'settings', label:'Settings', icon:'fa-cog', color:'#0ea5e9', items:[
+        {href:'onboard.html?v=account', icon:'fa-door-open', label:'Onboarding', color:'#0ea5e9'},
         {href:'rooms.html', icon:'fa-bed', label:'Rooms Setup', color:'#10b981'},
         {href:'property_setup.html', icon:'fa-building', label:'Property Setup', color:'#0ea5e9'},
         {href:'ota_mapping.html', icon:'fa-random', label:'OTA Mapping', color:'#2563eb'}

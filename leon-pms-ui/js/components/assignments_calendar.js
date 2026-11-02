@@ -287,10 +287,10 @@ async function fetchAvailableRoomsCached(hotel, roomType, stayDate) {
 					</div>
 				<div id="pane-assign">
 					<div class="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
-						<div>Booking ID: <span id="det-booking-id" class="font-medium"></span></div>
-						<div>Status: <span id="det-booking-status"></span></div>
+								<div>Booking ID: <span id="det-booking-id" class="font-medium"></span></div>
+								<div>Status: <span id="det-booking-status"></span></div>
 						<div>Room: <span id="det-room-number"></span></div>
-						<div>Room Type: <span id="det-room-type"></span></div>
+								<div>Room Type: <span id="det-room-type"></span></div>
 						<div class="col-span-2">Stay: <span id="assign-stayrange"></span></div>
 						<div>Nights: <span id="det-nights"></span> · Rooms: <span id="det-rooms"></span></div>
 						<div>Rate Plan: <span id="sum-rate-plan"></span></div>
@@ -299,13 +299,13 @@ async function fetchAvailableRoomsCached(hotel, roomType, stayDate) {
 						<div>Payment: <span id="det-payment-status"></span></div>
 						<div>Paid: <span id="det-amount-paid"></span></div>
 						<div>Remaining: <span id="det-remaining"></span></div>
-					</div>
+							</div>
 					<div class="mt-4 flex items-center justify-between gap-2 flex-wrap">
 						<div class="flex gap-2">
 							<button id="assign-checkin" class="hidden bg-green-600 text-white px-3 py-1 rounded hover:bg-green-700">Check In</button>
 							<button id="assign-undo-checkin" class="hidden bg-gray-600 text-white px-3 py-1 rounded hover:bg-gray-700">Undo Check-in</button>
 							<button id="assign-checkout" class="hidden bg-yellow-700 text-white px-3 py-1 rounded hover:bg-yellow-800">Check Out</button>
-						</div>
+							</div>
 						<div class="flex gap-2 flex-wrap justify-end">
 							<button id="doc-registration" type="button" class="bg-gray-700 text-white px-3 py-1 rounded hover:bg-gray-800">Registration Card</button>
 							<button id="doc-invoice" type="button" class="bg-gray-700 text-white px-3 py-1 rounded hover:bg-gray-800">Invoice</button>
@@ -331,24 +331,24 @@ async function fetchAvailableRoomsCached(hotel, roomType, stayDate) {
 					</div>
 				</div>
 				<div id="pane-stay" class="hidden text-sm">
-					<div class="flex items-center justify-between">
+							<div class="flex items-center justify-between">
 						<div>Status: <span id="det-stay-status-detail"></span></div>
-						<button id="det-stay-secondary" class="bg-blue-600 text-white px-2 py-1 rounded hover:bg-blue-700 text-xs"></button>
-					</div>
+									<button id="det-stay-secondary" class="bg-blue-600 text-white px-2 py-1 rounded hover:bg-blue-700 text-xs"></button>
+                                </div>
 					<div>Room Number: <span id="det-room-number-detail"></span></div>
-					<div>Assigned At: <span id="det-assigned-at"></span></div>
-					<div>Checked In At: <span id="det-checked-in-at"></span></div>
-					<div>Checked Out At: <span id="det-checked-out-at"></span></div>
-				</div>
+							<div>Assigned At: <span id="det-assigned-at"></span></div>
+							<div>Checked In At: <span id="det-checked-in-at"></span></div>
+							<div>Checked Out At: <span id="det-checked-out-at"></span></div>
+						</div>
 				<!-- Booking Pane -->
 				<div id="pane-booking" class="hidden">
 					<div class="text-sm mb-3">
 						<div>Rate Plan:
 							<select id="det-rate-plan" class="border rounded px-1 py-0.5 ml-1"></select>
-						</div>
+							</div>
 						<div id="det-rate-plan-note" class="text-xs text-gray-500"></div>
 						<label for="assign-notes" class="font-medium mt-2 block">Notes</label>
-						<textarea id="assign-notes" class="w-full border rounded p-2 mt-1" rows="3" placeholder="Update booking notes..."></textarea>
+							<textarea id="assign-notes" class="w-full border rounded p-2 mt-1" rows="3" placeholder="Update booking notes..."></textarea>
 						<div class="flex justify-end mt-2">
 							<button id="assign-save-rate" class="bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700">Save</button>
 						</div>
@@ -970,7 +970,7 @@ function wireStayDocuments(modal) {
             const s = staySheet(modal);
             let clauses = '';
             try {
-                const resp = await fetch(`${apiBase}/property/registration_card?hotel_name=${encodeURIComponent(s.hotel)}`, { credentials: 'include' });
+                const resp = await fetch(`${apiBase}/property/registration_card`, { credentials: 'include' });
                 const body = await resp.json().catch(() => ({}));
                 if (body.house_rules) clauses += `<h2>House Rules</h2><p>${cardText(body.house_rules)}</p>`;
                 if (body.terms) clauses += `<h2>Terms and Conditions</h2><p>${cardText(body.terms)}</p>`;
@@ -1255,7 +1255,7 @@ async function openEditModal(bookingId, initialStatus, stayDate, currentRoomType
                         // ensure no status text is concatenated anywhere in the header
                     }
                 } catch(_) {}
-                try { const prev = modal.querySelector('#det-status-menu'); if (prev && prev.parentNode) prev.parentNode.removeChild(prev); } catch(_) {}
+                        try { const prev = modal.querySelector('#det-status-menu'); if (prev && prev.parentNode) prev.parentNode.removeChild(prev); } catch(_) {}
             // Populate Stay Status card fields
                 const detRoomNo = modal.querySelector('#det-room-number');
                 if (detRoomNo) {
@@ -1813,7 +1813,8 @@ async function openEditModal(bookingId, initialStatus, stayDate, currentRoomType
 						const hotel = String(data.hotel_name || '').toUpperCase();
 						const apiRoot = apiBase.replace('/api','');
 						const results = await Promise.all(dates.map(d => fetch(`${apiRoot}/api/availability?hotel_name=${encodeURIComponent(hotel)}&room_type=${encodeURIComponent(room_type)}&stay_date=${encodeURIComponent(d)}`, { credentials:'include' }).then(r=>r.json()).catch(()=>({ available:0 }))));
-						const priceResults = await Promise.all(dates.map(d => fetch(`${apiRoot}/api/hotels/${encodeURIComponent(hotel.replace(/\s+/g,'_'))}/pricing?room_type=${encodeURIComponent(room_type)}&start_date=${encodeURIComponent(d)}`, { credentials:'include' }).then(r=>r.json()).catch(()=>({ price:0 }))));
+						const hotelId = await window.leonHotelId();
+						const priceResults = await Promise.all(dates.map(d => fetch(`${apiRoot}/api/hotels/${encodeURIComponent(hotelId)}/pricing?room_type=${encodeURIComponent(room_type)}&start_date=${encodeURIComponent(d)}`, { credentials:'include' }).then(r=>r.json()).catch(()=>({ price:0 }))));
 						let minAvail = null;
 						const inputs = Array.from(stayWrap.querySelectorAll('.nb-date'));
 						inputs.forEach((input, idx) => {
@@ -1892,7 +1893,7 @@ async function openEditModal(bookingId, initialStatus, stayDate, currentRoomType
 					}
 				} catch(_) {}
 			} catch(_) {}
-			const todayIso = toLocalISODate(new Date());
+		const todayIso = toLocalISODate(new Date());
 			const cinDay = String(data.check_in_date || '').slice(0, 10);
 			const coutDay = String(data.check_out_date || '').slice(0, 10);
 			const stayIncludesToday = !!(cinDay && coutDay && cinDay <= todayIso && todayIso < coutDay);
@@ -1909,7 +1910,7 @@ async function openEditModal(bookingId, initialStatus, stayDate, currentRoomType
 					? check.checked_in_at
 					: (roomStatus === 'assigned' && check.assigned_at)
 						? check.assigned_at
-						: '';
+							: '';
 				// Header status is hidden; do not append timeHint here
 			} catch(_) {}
 			// Wire actions once
@@ -2062,7 +2063,7 @@ async function openEditModal(bookingId, initialStatus, stayDate, currentRoomType
 		const box = `viewBox="0 0 24 24" width="${px}" height="${px}" aria-hidden="true"`;
 		const glyphs = {
 			clean: `<svg ${box}><path fill="currentColor" d="M12 1.6l3.1 6.4 7 .9-5.1 4.9 1.3 6.9L12 17.4 5.7 20.7l1.3-6.9L1.9 8.9l7-.9L12 1.6z"/></svg>`,
-			occupied: `<svg ${box}><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2.6"/><path d="M6.6 17.4L17.4 6.6" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></svg>`,
+			inspected: `<svg ${box}><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2.6"/><path d="M7.5 12.5l3 3 6-6.5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
 			cleaning: `<svg ${box} fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12"/><path d="M6 21h12"/><path d="M16.5 21v-3.2a2 2 0 0 0-.6-1.4L12 12l-3.9 4.4a2 2 0 0 0-.6 1.4V21"/><path d="M7.5 3v3.2a2 2 0 0 0 .6 1.4L12 12l3.9-4.4a2 2 0 0 0 .6-1.4V3"/></svg>`,
 			dirty: `<svg ${box}><path fill="currentColor" d="M11 1.5h2V12h-2z"/><path fill="currentColor" d="M5.5 12h13l-1.6 3.2H7.1L5.5 12z"/><path fill="currentColor" d="M7.4 16.2h1.6l.35 6.2H7.7zm2.7 0h1.6l.2 6.2H9.9zm2.7 0h1.6l.05 6.2h-1.7zm2.7 0h1.6l-.15 6.2h-1.6z"/></svg>`
 		};
@@ -2122,7 +2123,7 @@ async function openEditModal(bookingId, initialStatus, stayDate, currentRoomType
 
 	function askMarkOldRoomClean() {
 		return new Promise((resolve) => {
-			const overlay = document.createElement('div');
+		const overlay = document.createElement('div');
 			overlay.style.position = 'fixed';
 			overlay.style.left = '0';
 			overlay.style.top = '0';
@@ -2182,7 +2183,7 @@ async function openEditModal(bookingId, initialStatus, stayDate, currentRoomType
 			_dragStay = data;
 			_dragStayEl = el;
 			try {
-				ev.dataTransfer.effectAllowed = 'move';
+                        ev.dataTransfer.effectAllowed = 'move';
 				ev.dataTransfer.setData('text/plain', JSON.stringify(data));
 			} catch (_) {}
 			document.querySelectorAll('.stay-bar').forEach((bar) => {
@@ -2709,13 +2710,13 @@ async function openEditModal(bookingId, initialStatus, stayDate, currentRoomType
                     menu.style.boxShadow = '0 4px 10px rgba(0,0,0,0.08)';
                     menu.style.padding = '6px';
                     menu.style.zIndex = '9999';
-                    const opts = ['clean','dirty','cleaning','occupied'];
+                    const opts = ['clean','inspected','dirty','cleaning'];
                     const colorForStatus = (s) => {
                         s = String(s||'').toLowerCase();
                         if (s === 'clean') return '#10b981';
+                        if (s === 'inspected') return '#0ea5e9';
                         if (s === 'dirty') return '#f97316';
                         if (s === 'cleaning') return '#f59e0b';
-                        if (s === 'occupied') return '#ef4444';
                         return '#374151';
                     };
                     opts.forEach(st => {
@@ -2934,9 +2935,9 @@ async function openEditModal(bookingId, initialStatus, stayDate, currentRoomType
                 const colorFor = (s) => {
                     s = String(s||'').toLowerCase();
                     if (s === 'clean') return '#10b981'; // green
+                    if (s === 'inspected') return '#0ea5e9'; // blue
                     if (s === 'dirty') return '#f97316'; // orange
                     if (s === 'cleaning') return '#f59e0b'; // yellow
-                    if (s === 'occupied') return '#ef4444'; // red
                     return '#9ca3af';
                 };
                 const rowsLive = tbody.querySelectorAll('tr[data-room-index]');
@@ -3004,7 +3005,7 @@ async function openEditModal(bookingId, initialStatus, stayDate, currentRoomType
 		const cal = document.getElementById('calendar');
 		if (!silent) {
 			parkDateTools();
-			cal.innerHTML = '<div class=\"p-4 text-gray-500\">Loading...</div>';
+		cal.innerHTML = '<div class=\"p-4 text-gray-500\">Loading...</div>';
 		}
 		try {
 			await loadRoomLabels(params.hotel_name);

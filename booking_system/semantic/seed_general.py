@@ -3,57 +3,52 @@
 SOURCE = "general_seed"
 PARENT = "B01"
 ACTIVE = "NOT IN ('cancelled', 'no_show')"
+LIVE = "IN ('booked', 'checked_in', 'checked_out')"
+SOLD = "b.booking_status " + ACTIVE + " AND n.night_status " + LIVE
 
 
 def _scope(alias=""):
-    return "UPPER(" + alias + "hotel_name) = UPPER(%(hotel_name)s)"
+    return alias + "hotel_id = %(hotel_id)s"
 
 
 def _local(column):
-    """A stored UTC timestamp as the hotel-local date; the session TimeZone is the hotel's configured zone."""
-    return "(" + column + " AT TIME ZONE 'UTC' AT TIME ZONE current_setting('TimeZone'))::date"
+    """A stored timestamptz as the hotel-local date; the session TimeZone is the hotel's configured zone."""
+    return "(" + column + " AT TIME ZONE current_setting('TimeZone'))::date"
 
+
+_NIGHTS = "booking_room_night n JOIN booking b ON b.booking_id = n.booking_id AND " + _scope("b.")
+_ARRIVING = "booking_summary s JOIN booking b ON b.booking_id = s.booking_id AND " + _scope("b.")
 
 _PERIODS = """periods AS (
-    SELECT to_char(CURRENT_DATE + g.n, 'YYYY-MM-DD') AS period, CURRENT_DATE + g.n AS period_start, CURRENT_DATE + g.n AS period_end
-    FROM generate_series(-7, 7) AS g(n)
-    UNION ALL
-    SELECT r.period, r.period_start, r.period_end FROM (VALUES
-        ('last_7_days', CURRENT_DATE - 7, CURRENT_DATE - 1),
-        ('next_7_days', CURRENT_DATE + 1, CURRENT_DATE + 7),
-        ('last_30_days', CURRENT_DATE - 30, CURRENT_DATE - 1),
-        ('next_30_days', CURRENT_DATE + 1, CURRENT_DATE + 30),
-        ('this_week', date_trunc('week', CURRENT_DATE)::date, date_trunc('week', CURRENT_DATE)::date + 6),
-        ('last_week', date_trunc('week', CURRENT_DATE)::date - 7, date_trunc('week', CURRENT_DATE)::date - 1),
-        ('next_week', date_trunc('week', CURRENT_DATE)::date + 7, date_trunc('week', CURRENT_DATE)::date + 13),
-        ('month_to_date', date_trunc('month', CURRENT_DATE)::date, CURRENT_DATE),
-        ('this_month', date_trunc('month', CURRENT_DATE)::date, (date_trunc('month', CURRENT_DATE) + interval '1 month')::date - 1),
-        ('last_month', (date_trunc('month', CURRENT_DATE) - interval '1 month')::date, date_trunc('month', CURRENT_DATE)::date - 1),
-        ('next_month', (date_trunc('month', CURRENT_DATE) + interval '1 month')::date, (date_trunc('month', CURRENT_DATE) + interval '2 month')::date - 1),
-        ('year_to_date', date_trunc('year', CURRENT_DATE)::date, CURRENT_DATE)
-    ) AS r(period, period_start, period_end)
+    SELECT CASE
+        WHEN to_date(%(start)s, 'MM/DD/YYYY') = to_date(%(end)s, 'MM/DD/YYYY')
+        THEN to_char(to_date(%(start)s, 'MM/DD/YYYY'), 'YYYY-MM-DD')
+        ELSE to_char(to_date(%(start)s, 'MM/DD/YYYY'), 'YYYY-MM-DD') || '/' || to_char(to_date(%(end)s, 'MM/DD/YYYY'), 'YYYY-MM-DD')
+    END AS period,
+    to_date(%(start)s, 'MM/DD/YYYY') AS period_start,
+    to_date(%(end)s, 'MM/DD/YYYY') AS period_end
 ),
 span AS (
-    SELECT generate_series(MIN(period_start), MAX(period_end), interval '1 day')::date AS d FROM periods
+    SELECT generate_series(to_date(%(start)s, 'MM/DD/YYYY'), to_date(%(end)s, 'MM/DD/YYYY'), interval '1 day')::date AS d
 )"""
 
 _PERIOD_NAMES = (
-    "each date from 7 days before through 7 days after the hotel-local today (period is that date, YYYY-MM-DD), "
-    "last_7_days, next_7_days, last_30_days, next_30_days, this_week, last_week, next_week (weeks start Monday), "
-    "month_to_date, this_month, last_month, next_month, year_to_date"
+    "the one span from start through end, inclusive. A single day is that span with start equal to end, and its period is that date as YYYY-MM-DD. "
+    "start and end are MM/DD/YYYY strings bound into the template and read with to_date(that string, 'MM/DD/YYYY')"
 )
 
+_DATE_PARAMETERS = ["hotel_id", "start", "end"]
+
 _HOTEL_CURRENCY = (
-    "hotel_currency AS (SELECT MAX(body->>'hotel_currency') AS code FROM content_document "
-    "WHERE collection_name = 'manager_collection' AND UPPER(body->>'hotel_name') = UPPER(%(hotel_name)s))"
+    "hotel_currency AS (SELECT btrim(currency) AS code FROM hotel WHERE hotel_id = %(hotel_id)s)"
 )
 
 # Per-date CTEs: (sql, columns where no row means zero, columns where no row means unknown).
 _FACTS = {
     "hotel_currency": (_HOTEL_CURRENCY, [], []),
     "guest_counts": (
-        "guest_counts AS (SELECT DISTINCT ON (booking_id) booking_id, guest_count FROM booking_guest_counts "
-        "WHERE " + _scope() + " ORDER BY booking_id, recorded_at DESC)",
+        "guest_counts AS (SELECT booking_id, adults + COALESCE(children, 0) AS guest_count FROM booking "
+        "WHERE " + _scope() + " AND adults IS NOT NULL)",
         [], [],
     ),
     "inventory": (
@@ -63,82 +58,89 @@ _FACTS = {
         [], ["inventory_rooms", "sellable_rooms"],
     ),
     "nightly": (
-        "nightly AS (SELECT stay_date AS d, "
-        "SUM(rooms_booked) FILTER (WHERE booking_status " + ACTIVE + ") AS sold_active, "
-        "SUM(rooms_booked) FILTER (WHERE booking_status = 'confirmed') AS sold_confirmed, "
-        "SUM(rooms_booked) FILTER (WHERE booking_status = 'cancelled') AS cancelled_room_nights, "
-        "COUNT(DISTINCT booking_id) FILTER (WHERE booking_status " + ACTIVE + ") AS stay_bookings_active "
-        "FROM booking_stays WHERE " + _scope() + " GROUP BY stay_date)",
+        "nightly AS (SELECT n.stay_date AS d, "
+        "COUNT(*) FILTER (WHERE " + SOLD + ") AS sold_active, "
+        "COUNT(*) FILTER (WHERE b.booking_status = 'confirmed' AND n.night_status " + LIVE + ") AS sold_confirmed, "
+        "COUNT(*) FILTER (WHERE b.booking_status = 'cancelled') AS cancelled_room_nights, "
+        "COUNT(DISTINCT n.booking_id) FILTER (WHERE " + SOLD + ") AS stay_bookings_active "
+        "FROM " + _NIGHTS + " WHERE " + _scope("n.") + " GROUP BY n.stay_date)",
         ["sold_active", "sold_confirmed", "cancelled_room_nights", "stay_bookings_active"], [],
     ),
     "header": (
-        "header AS (SELECT b.check_in_date + k.i AS d, "
-        "SUM(b.rooms_booked) FILTER (WHERE b.booking_status " + ACTIVE + ") AS header_active "
-        "FROM room_bookings b CROSS JOIN LATERAL generate_series(0, b.nights - 1) AS k(i) "
-        "WHERE " + _scope("b.") + " GROUP BY 1)",
+        "header AS (SELECT s.check_in_date + k.i AS d, "
+        "SUM(s.rooms_booked) FILTER (WHERE s.booking_status " + ACTIVE + ") AS header_active "
+        "FROM booking_summary s CROSS JOIN LATERAL generate_series(0, s.check_out_date - s.check_in_date - 1) AS k(i) "
+        "WHERE " + _scope("s.") + " GROUP BY 1)",
         ["header_active"], [],
     ),
     "checked": (
-        "checked AS (SELECT stay_date AS d, COUNT(*) AS checked_in_rooms FROM room_stay WHERE " + _scope() + " "
+        "checked AS (SELECT stay_date AS d, COUNT(*) AS checked_in_rooms FROM booking_room_night WHERE " + _scope() + " "
         "AND checked_in_at IS NOT NULL AND (checked_out_at IS NULL OR " + _local("checked_out_at") + " > stay_date) GROUP BY stay_date)",
         ["checked_in_rooms"], [],
     ),
     "guests_night": (
-        "guests_night AS (SELECT n.stay_date AS d, SUM(g.guest_count) AS guests_known_active, "
+        "guests_night AS (SELECT k.stay_date AS d, SUM(g.guest_count) AS guests_known_active, "
         "COUNT(*) FILTER (WHERE g.booking_id IS NULL) AS bookings_missing_guest_count, "
-        "SUM(g.guest_count) FILTER (WHERE n.checked_in) AS guests_known_checked_in "
-        "FROM (SELECT s.stay_date, s.booking_id, BOOL_OR(r.checked_in_at IS NOT NULL AND (r.checked_out_at IS NULL OR "
-        + _local("r.checked_out_at") + " > s.stay_date)) AS checked_in "
-        "FROM booking_stays s LEFT JOIN room_stay r ON r.booking_id = s.booking_id AND r.stay_date = s.stay_date AND " + _scope("r.") + " "
-        "WHERE " + _scope("s.") + " AND s.booking_status " + ACTIVE + " GROUP BY s.stay_date, s.booking_id) n "
-        "LEFT JOIN guest_counts g ON g.booking_id = n.booking_id GROUP BY n.stay_date)",
+        "SUM(g.guest_count) FILTER (WHERE k.checked_in) AS guests_known_checked_in "
+        "FROM (SELECT n.stay_date, n.booking_id, BOOL_OR(n.checked_in_at IS NOT NULL AND (n.checked_out_at IS NULL OR "
+        + _local("n.checked_out_at") + " > n.stay_date)) AS checked_in "
+        "FROM " + _NIGHTS + " WHERE " + _scope("n.") + " AND " + SOLD + " GROUP BY n.stay_date, n.booking_id) k "
+        "LEFT JOIN guest_counts g ON g.booking_id = k.booking_id GROUP BY k.stay_date)",
         ["guests_known_active", "bookings_missing_guest_count", "guests_known_checked_in"], [],
     ),
+    "still_in": (
+        "still_in AS (SELECT span.d, COUNT(k.booking_id) AS still_in_bookings, COALESCE(SUM(g.guest_count), 0) AS still_in_guests_known, "
+        "COUNT(k.booking_id) FILTER (WHERE g.booking_id IS NULL) AS still_in_missing_guest_count "
+        "FROM span LEFT JOIN (SELECT booking_id, MIN(" + _local("checked_in_at") + ") AS first_in, "
+        "BOOL_OR(checked_out_at IS NULL) AS open_room, MAX(" + _local("checked_out_at") + ") AS last_out "
+        "FROM booking_room_night WHERE " + _scope() + " AND checked_in_at IS NOT NULL GROUP BY booking_id) k "
+        "ON k.first_in <= span.d AND (k.open_room OR k.last_out > span.d) "
+        "LEFT JOIN guest_counts g ON g.booking_id = k.booking_id WHERE span.d <= CURRENT_DATE GROUP BY span.d)",
+        [], ["still_in_bookings", "still_in_guests_known", "still_in_missing_guest_count"],
+    ),
     "revenue": (
-        "stay_amounts AS (SELECT s.stay_date, s.rooms_booked, dp.base_price, dp.saved_price, b.currency, "
-        "b.total_amount * s.rooms_booked / NULLIF(SUM(s.rooms_booked) OVER (PARTITION BY s.booking_id), 0) AS booking_total_share, "
-        "t.total_amount * s.rooms_booked / NULLIF(SUM(s.rooms_booked) OVER (PARTITION BY s.booking_id), 0) AS tracking_total_share "
-        "FROM booking_stays s JOIN room_bookings b ON b.booking_id = s.booking_id AND " + _scope("b.") + " "
-        "LEFT JOIN daily_pricing dp ON dp.room_type = s.room_type AND dp.stay_date = s.stay_date AND " + _scope("dp.") + " "
-        "LEFT JOIN payment_tracking t ON t.booking_id = s.booking_id "
-        "WHERE " + _scope("s.") + " AND s.booking_status " + ACTIVE + "),\n"
+        "stay_amounts AS (SELECT n.stay_date, dp.base_price, dp.saved_price, b.currency, n.currency AS night_currency, n.sell_rate, "
+        "b.gross_amount / COUNT(*) OVER (PARTITION BY n.booking_id) AS booking_total_share "
+        "FROM " + _NIGHTS + " "
+        "LEFT JOIN daily_pricing dp ON dp.room_type_id = n.room_type_id AND dp.stay_date = n.stay_date AND " + _scope("dp.") + " "
+        "WHERE " + _scope("n.") + " AND " + SOLD + "),\n"
         "revenue AS (SELECT stay_date AS d, "
-        "SUM(rooms_booked * base_price) AS rate_card_base, SUM(rooms_booked) FILTER (WHERE base_price IS NOT NULL) AS nights_rate_card, "
-        "SUM(rooms_booked * base_price) FILTER (WHERE base_price > 0) AS rate_card_base_nonzero, "
-        "SUM(rooms_booked) FILTER (WHERE base_price > 0) AS nights_rate_card_nonzero, "
-        "SUM(rooms_booked * saved_price) AS rate_card_saved, "
-        "SUM(booking_total_share) AS rev_booking_total, SUM(rooms_booked) FILTER (WHERE booking_total_share IS NOT NULL) AS nights_booking_total, "
-        "SUM(tracking_total_share) AS rev_tracking_total, SUM(rooms_booked) FILTER (WHERE tracking_total_share IS NOT NULL) AS nights_tracking_total, "
-        "SUM(rooms_booked) FILTER (WHERE currency <> (SELECT code FROM hotel_currency)) AS nights_foreign_currency, "
-        "SUM(rooms_booked) FILTER (WHERE currency IS NULL) AS nights_unknown_currency, "
-        "SUM(rooms_booked) FILTER (WHERE base_price > 0 AND tracking_total_share > 10 * rooms_booked * base_price) AS nights_implausible_tracking "
+        "SUM(base_price) AS rate_card_base, COUNT(base_price) AS nights_rate_card, "
+        "SUM(base_price) FILTER (WHERE base_price > 0) AS rate_card_base_nonzero, "
+        "COUNT(*) FILTER (WHERE base_price > 0) AS nights_rate_card_nonzero, "
+        "SUM(saved_price) AS rate_card_saved, "
+        "SUM(booking_total_share) AS rev_booking_total, COUNT(booking_total_share) AS nights_booking_total, "
+        "SUM(sell_rate) AS rev_tracking_total, COUNT(sell_rate) AS nights_tracking_total, "
+        "COUNT(*) FILTER (WHERE currency <> (SELECT code FROM hotel_currency) OR night_currency <> (SELECT code FROM hotel_currency)) AS nights_foreign_currency, "
+        "COUNT(*) FILTER (WHERE currency IS NULL) AS nights_unknown_currency, "
+        "COUNT(*) FILTER (WHERE base_price > 0 AND sell_rate > 10 * base_price) AS nights_implausible_tracking "
         "FROM stay_amounts GROUP BY stay_date)",
         ["nights_rate_card", "nights_rate_card_nonzero", "nights_booking_total", "nights_tracking_total",
          "nights_foreign_currency", "nights_unknown_currency", "nights_implausible_tracking"],
         ["rate_card_base", "rate_card_base_nonzero", "rate_card_saved", "rev_booking_total", "rev_tracking_total"],
     ),
     "arrivals": (
-        "arrivals AS (SELECT b.check_in_date AS d, "
-        "COUNT(*) FILTER (WHERE b.booking_status = 'confirmed') AS arr_bookings_confirmed, "
-        "COUNT(*) FILTER (WHERE b.booking_status " + ACTIVE + ") AS arr_bookings_active, "
-        "SUM(b.rooms_booked) FILTER (WHERE b.booking_status " + ACTIVE + ") AS arr_rooms_active, "
-        "SUM(g.guest_count) FILTER (WHERE b.booking_status " + ACTIVE + ") AS arr_guests_known_active, "
-        "COUNT(*) FILTER (WHERE b.booking_status " + ACTIVE + " AND g.booking_id IS NULL) AS arr_missing_guest_count, "
-        "SUM(b.nights) FILTER (WHERE b.booking_status = 'confirmed') AS arr_nights_confirmed, "
-        "SUM(b.nights) FILTER (WHERE b.booking_status " + ACTIVE + ") AS arr_nights_active, "
-        "SUM(b.nights * b.rooms_booked) FILTER (WHERE b.booking_status " + ACTIVE + ") AS arr_room_nights_active, "
-        "SUM(b.check_in_date - " + _local("b.created_at") + ") FILTER (WHERE b.booking_status " + ACTIVE + " AND b.check_in_date >= " + _local("b.created_at") + ") AS lead_days_active, "
-        "COUNT(*) FILTER (WHERE b.booking_status " + ACTIVE + " AND b.check_in_date >= " + _local("b.created_at") + ") AS lead_bookings_active, "
-        "COUNT(*) FILTER (WHERE b.booking_status " + ACTIVE + " AND b.check_in_date < " + _local("b.created_at") + ") AS negative_lead_bookings, "
-        "SUM(b.check_in_date - " + _local("b.created_at") + ") FILTER (WHERE b.check_in_date >= " + _local("b.created_at") + ") AS lead_days_all, "
-        "COUNT(*) FILTER (WHERE b.check_in_date >= " + _local("b.created_at") + ") AS lead_bookings_all, "
-        "COUNT(*) FILTER (WHERE b.booking_status = 'cancelled') AS cancelled_by_arrival, "
-        "COUNT(*) FILTER (WHERE b.booking_status = 'no_show' OR b.no_show_at IS NOT NULL) AS no_show_by_arrival, "
-        "COUNT(*) FILTER (WHERE b.booking_status " + ACTIVE + " AND b.no_show_at IS NULL AND b.check_in_date < CURRENT_DATE "
-        "AND NOT EXISTS (SELECT 1 FROM room_stay r WHERE r.booking_id = b.booking_id AND " + _scope("r.") + " "
+        "arrivals AS (SELECT s.check_in_date AS d, "
+        "COUNT(*) FILTER (WHERE s.booking_status = 'confirmed') AS arr_bookings_confirmed, "
+        "COUNT(*) FILTER (WHERE s.booking_status " + ACTIVE + ") AS arr_bookings_active, "
+        "SUM(s.rooms_booked) FILTER (WHERE s.booking_status " + ACTIVE + ") AS arr_rooms_active, "
+        "SUM(g.guest_count) FILTER (WHERE s.booking_status " + ACTIVE + ") AS arr_guests_known_active, "
+        "COUNT(*) FILTER (WHERE s.booking_status " + ACTIVE + " AND g.booking_id IS NULL) AS arr_missing_guest_count, "
+        "SUM(s.nights) FILTER (WHERE s.booking_status = 'confirmed') AS arr_nights_confirmed, "
+        "SUM(s.nights) FILTER (WHERE s.booking_status " + ACTIVE + ") AS arr_nights_active, "
+        "SUM(s.nights * s.rooms_booked) FILTER (WHERE s.booking_status " + ACTIVE + ") AS arr_room_nights_active, "
+        "SUM(s.check_in_date - " + _local("s.booked_at") + ") FILTER (WHERE s.booking_status " + ACTIVE + " AND s.check_in_date >= " + _local("s.booked_at") + ") AS lead_days_active, "
+        "COUNT(*) FILTER (WHERE s.booking_status " + ACTIVE + " AND s.check_in_date >= " + _local("s.booked_at") + ") AS lead_bookings_active, "
+        "COUNT(*) FILTER (WHERE s.booking_status " + ACTIVE + " AND s.check_in_date < " + _local("s.booked_at") + ") AS negative_lead_bookings, "
+        "SUM(s.check_in_date - " + _local("s.booked_at") + ") FILTER (WHERE s.check_in_date >= " + _local("s.booked_at") + ") AS lead_days_all, "
+        "COUNT(*) FILTER (WHERE s.check_in_date >= " + _local("s.booked_at") + ") AS lead_bookings_all, "
+        "COUNT(*) FILTER (WHERE s.booking_status = 'cancelled') AS cancelled_by_arrival, "
+        "COUNT(*) FILTER (WHERE s.booking_status = 'no_show' OR b.no_show_at IS NOT NULL) AS no_show_by_arrival, "
+        "COUNT(*) FILTER (WHERE s.booking_status " + ACTIVE + " AND b.no_show_at IS NULL AND s.check_in_date < CURRENT_DATE "
+        "AND NOT EXISTS (SELECT 1 FROM booking_room_night r WHERE r.booking_id = s.booking_id AND " + _scope("r.") + " "
         "AND r.checked_in_at IS NOT NULL)) AS past_arrivals_never_checked_in "
-        "FROM room_bookings b LEFT JOIN guest_counts g ON g.booking_id = b.booking_id "
-        "WHERE " + _scope("b.") + " GROUP BY b.check_in_date)",
+        "FROM " + _ARRIVING + " LEFT JOIN guest_counts g ON g.booking_id = s.booking_id "
+        "WHERE " + _scope("s.") + " GROUP BY s.check_in_date)",
         ["arr_bookings_confirmed", "arr_bookings_active", "arr_rooms_active", "arr_guests_known_active", "arr_missing_guest_count",
          "arr_nights_confirmed", "arr_nights_active", "arr_room_nights_active", "lead_days_active", "lead_bookings_active",
          "negative_lead_bookings", "lead_days_all", "lead_bookings_all", "cancelled_by_arrival", "no_show_by_arrival",
@@ -147,46 +149,46 @@ _FACTS = {
     ),
     "actual_in": (
         "actual_in AS (SELECT " + _local("checked_in_at") + " AS d, COUNT(DISTINCT booking_id) AS actual_checkins "
-        "FROM room_stay WHERE " + _scope() + " AND checked_in_at IS NOT NULL GROUP BY 1)",
+        "FROM booking_room_night WHERE " + _scope() + " AND checked_in_at IS NOT NULL GROUP BY 1)",
         ["actual_checkins"], [],
     ),
     "actual_out": (
         "actual_out AS (SELECT " + _local("checked_out_at") + " AS d, COUNT(DISTINCT booking_id) AS actual_checkouts "
-        "FROM room_stay WHERE " + _scope() + " AND checked_out_at IS NOT NULL GROUP BY 1)",
+        "FROM booking_room_night WHERE " + _scope() + " AND checked_out_at IS NOT NULL GROUP BY 1)",
         ["actual_checkouts"], [],
     ),
     "departures": (
-        "departures AS (SELECT b.check_in_date + b.nights AS d, "
-        "COUNT(*) FILTER (WHERE b.booking_status = 'confirmed') AS dep_bookings_confirmed, "
-        "COUNT(*) FILTER (WHERE b.booking_status " + ACTIVE + ") AS dep_bookings_active, "
-        "SUM(b.rooms_booked) FILTER (WHERE b.booking_status " + ACTIVE + ") AS dep_rooms_active, "
-        "SUM(g.guest_count) FILTER (WHERE b.booking_status " + ACTIVE + ") AS dep_guests_known_active, "
-        "COUNT(*) FILTER (WHERE b.booking_status " + ACTIVE + " AND g.booking_id IS NULL) AS dep_missing_guest_count "
-        "FROM room_bookings b LEFT JOIN guest_counts g ON g.booking_id = b.booking_id "
-        "WHERE " + _scope("b.") + " GROUP BY 1)",
+        "departures AS (SELECT s.check_out_date AS d, "
+        "COUNT(*) FILTER (WHERE s.booking_status = 'confirmed') AS dep_bookings_confirmed, "
+        "COUNT(*) FILTER (WHERE s.booking_status " + ACTIVE + ") AS dep_bookings_active, "
+        "SUM(s.rooms_booked) FILTER (WHERE s.booking_status " + ACTIVE + ") AS dep_rooms_active, "
+        "SUM(g.guest_count) FILTER (WHERE s.booking_status " + ACTIVE + ") AS dep_guests_known_active, "
+        "COUNT(*) FILTER (WHERE s.booking_status " + ACTIVE + " AND g.booking_id IS NULL) AS dep_missing_guest_count "
+        "FROM booking_summary s LEFT JOIN guest_counts g ON g.booking_id = s.booking_id "
+        "WHERE " + _scope("s.") + " GROUP BY 1)",
         ["dep_bookings_confirmed", "dep_bookings_active", "dep_rooms_active", "dep_guests_known_active", "dep_missing_guest_count"], [],
     ),
     "created": (
-        "created AS (SELECT " + _local("created_at") + " AS d, COUNT(*) AS created_all, "
+        "created AS (SELECT " + _local("booked_at") + " AS d, COUNT(*) AS created_all, "
         "COUNT(*) FILTER (WHERE booking_status " + ACTIVE + ") AS created_active, "
         "COUNT(*) FILTER (WHERE booking_status = 'cancelled') AS created_cancelled_since, "
         "SUM(rooms_booked * nights) FILTER (WHERE booking_status " + ACTIVE + ") AS created_room_nights_active "
-        "FROM room_bookings WHERE " + _scope() + " AND created_at IS NOT NULL GROUP BY 1)",
+        "FROM booking_summary WHERE " + _scope() + " GROUP BY 1)",
         ["created_all", "created_active", "created_cancelled_since", "created_room_nights_active"], [],
     ),
-    "cancel_updates": (
-        "cancel_updates AS (SELECT " + _local("updated_at") + " AS d, COUNT(*) AS cancelled_by_last_update "
-        "FROM room_bookings WHERE " + _scope() + " AND booking_status = 'cancelled' AND updated_at IS NOT NULL GROUP BY 1)",
-        ["cancelled_by_last_update"], [],
+    "cancel_dates": (
+        "cancel_dates AS (SELECT " + _local("cancelled_at") + " AS d, COUNT(*) AS cancelled_on_date "
+        "FROM booking WHERE " + _scope() + " AND booking_status = 'cancelled' GROUP BY 1)",
+        ["cancelled_on_date"], [],
     ),
-    "cancel_messages": (
-        "cancel_messages AS (SELECT " + _local("updated_at") + " AS d, COUNT(DISTINCT booking_id) AS cancel_messages "
-        "FROM channel_reservations WHERE " + _scope() + " AND action = 'cancel' AND updated_at IS NOT NULL GROUP BY 1)",
-        ["cancel_messages"], [],
+    "channel_cancels": (
+        "channel_cancels AS (SELECT " + _local("cancelled_at") + " AS d, COUNT(*) AS channel_cancels "
+        "FROM booking WHERE " + _scope() + " AND booking_status = 'cancelled' AND channel_booking_ref IS NOT NULL GROUP BY 1)",
+        ["channel_cancels"], [],
     ),
     "no_show_marks": (
         "no_show_marks AS (SELECT " + _local("no_show_at") + " AS d, COUNT(*) AS no_show_marked_on_date "
-        "FROM room_bookings WHERE " + _scope() + " AND no_show_at IS NOT NULL GROUP BY 1)",
+        "FROM booking WHERE " + _scope() + " AND no_show_at IS NOT NULL GROUP BY 1)",
         ["no_show_marked_on_date"], [],
     ),
 }
@@ -206,7 +208,7 @@ def _period_sql(facts, columns):
     )
     return (
         "WITH " + ",\n".join([_PERIODS] + ctes + [daily]) + "\n"
-        "SELECT UPPER(%(hotel_name)s) AS hotel_name, p.period, p.period_start, p.period_end, "
+        "SELECT (SELECT hotel_name FROM hotel WHERE hotel_id = %(hotel_id)s) AS hotel_name, p.period, p.period_start, p.period_end, "
         "p.period_end - p.period_start + 1 AS days_in_period,\n    "
         + ",\n    ".join(expr + " AS " + name for name, expr in columns) + "\n"
         "FROM periods p JOIN daily x ON x.d BETWEEN p.period_start AND p.period_end\n"
@@ -239,8 +241,10 @@ def _days(col):
 _PERIOD_KEYS = ["hotel_name", "period", "period_start", "period_end", "days_in_period"]
 _COMMON_LIMITS = [
     "Rows cover only these hotel-local periods: " + _PERIOD_NAMES + ". Another calendar date or range is not answered by this recipe.",
-    "active means booking_status is neither cancelled nor no_show; confirmed means booking_status = 'confirmed'. A NULL status is in no status reading.",
-    "Stored timestamps (created_at, updated_at, checked_in_at, checked_out_at, no_show_at, payment_date) are UTC without a zone; each is converted to the hotel's configured time zone before its date is taken.",
+    "active means booking.booking_status is neither cancelled nor no_show; confirmed means booking_status = 'confirmed'. "
+    "A sold room night is a booking_room_night row of an active booking whose night_status is booked, checked_in, or checked_out; "
+    "cancelled and released nights are not sold.",
+    "Stored timestamps (booked_at, cancelled_at, checked_in_at, checked_out_at, no_show_at, paid_at) are read in the hotel's configured time zone before their date is taken.",
     "Every reading reflects the current recorded state, not a snapshot taken on that date.",
 ]
 _INVENTORY_LIMIT = (
@@ -249,9 +253,9 @@ _INVENTORY_LIMIT = (
 )
 _MONEY_LIMITS = [
     "Amounts are in each booking's currency as recorded. hotel_currency is the hotel's configured currency; mixed_currency is true when "
-    "any counted night belongs to a booking in another currency, and unknown_currency_room_nights counts nights whose booking has no recorded currency. "
+    "any counted night belongs to a booking, or carries a sell_rate, in another currency, and unknown_currency_room_nights counts nights whose booking has no recorded currency. "
     "Do not state a total as one currency when mixed_currency is true.",
-    "implausible_tracking_room_nights counts nights whose payment_tracking share is more than 10 times that night's rate-card base_price.",
+    "implausible_tracking_room_nights counts nights whose sell_rate is more than 10 times that night's rate-card base_price.",
     "No reading is net of OTA commission. Taxes, fees, and non-room charges are not separated.",
 ]
 _MONEY_FLAGS = [
@@ -263,9 +267,17 @@ _MONEY_FLAGS = [
 ]
 
 
-def _recipe(catalog_id, title, problem, keyphrases, default, concepts, columns, limitations, facts=None, sql=None, grain="night", keys=None):
+def _readings(rows):
+    """Which columns are alternative readings of one figure: each column's population (which bookings or guests count) and unit
+    (what is counted). A manager definition picks a population; the question picks the unit."""
+    return {column: {"population": population, "unit": unit} for column, population, unit in rows}
+
+
+def _recipe(catalog_id, title, problem, keyphrases, default, concepts, columns, limitations, facts=None, sql=None, grain="night", keys=None,
+            readings=None):
     outputs = list(keys or _PERIOD_KEYS) + [name for name, _expr in columns]
-    return {
+    extra = {"readings": _readings(readings)} if readings else {}
+    return extra | {
         "catalog_id": catalog_id,
         "parent": PARENT,
         "title": title,
@@ -273,11 +285,13 @@ def _recipe(catalog_id, title, problem, keyphrases, default, concepts, columns, 
         "problem": problem,
         "preconditions": [
             "The hotel has a configured time zone; CURRENT_DATE is the hotel-local today.",
-            "Only hotel_name is bound. Select the row whose period is the requested day or range.",
+            "Only the session hotel is bound; the read filters hotel_id = %(hotel_id)s. "
+            "start and end are MM/DD/YYYY strings bound into the template. The read returns the one span from start through end inclusive.",
         ],
         "inputs": {
-            "hotel_name": "bound by the platform",
-            "date_or_range": "chosen by row: period, period_start, period_end (inclusive hotel-local dates)",
+            "hotel_id": "bound by the platform from the session hotel",
+            "start": "MM/DD/YYYY inclusive start, bound as %(start)s and read with to_date(start, 'MM/DD/YYYY')",
+            "end": "MM/DD/YYYY inclusive end, bound as %(end)s and read with to_date(end, 'MM/DD/YYYY')",
         },
         "output_grain": grain,
         "outputs": outputs,
@@ -289,26 +303,24 @@ def _recipe(catalog_id, title, problem, keyphrases, default, concepts, columns, 
         "concepts": [{"name": name, "formula": formula, "tables": tables} for name, formula, tables in concepts],
         "solution": {
             "sql_template": sql or _period_sql(facts, columns),
-            "parameters": ["hotel_name"],
+            "parameters": list(_DATE_PARAMETERS),
             "method": SOURCE,
         },
-        "validation": {"hotel_name": "JACKHOTEL", "expected_value": ""},
+        "validation": {"expected_value": ""},
     }
 
 
 _CHANNEL_SQL = (
     "WITH " + _PERIODS + ",\n"
-    "ch_nights AS (SELECT COALESCE(NULLIF(b.channel, ''), 'UNKNOWN') AS channel, s.stay_date, s.rooms_booked "
-    "FROM booking_stays s JOIN room_bookings b ON b.booking_id = s.booking_id AND " + _scope("b.") + " "
-    "WHERE " + _scope("s.") + " AND s.booking_status " + ACTIVE + "),\n"
-    "ch_created AS (SELECT COALESCE(NULLIF(channel, ''), 'UNKNOWN') AS channel, " + _local("created_at") + " AS created_on "
-    "FROM room_bookings WHERE " + _scope() + " AND booking_status " + ACTIVE + " AND created_at IS NOT NULL),\n"
-    "channels AS (SELECT DISTINCT COALESCE(NULLIF(channel, ''), 'UNKNOWN') AS channel FROM room_bookings WHERE " + _scope() + "),\n"
+    "ch_nights AS (SELECT b.channel, n.stay_date FROM " + _NIGHTS + " WHERE " + _scope("n.") + " AND " + SOLD + "),\n"
+    "ch_created AS (SELECT channel, " + _local("booked_at") + " AS created_on "
+    "FROM booking WHERE " + _scope() + " AND booking_status " + ACTIVE + "),\n"
+    "channels AS (SELECT DISTINCT channel FROM booking WHERE " + _scope() + "),\n"
     "counts AS (SELECT p.period, p.period_start, p.period_end, c.channel, "
-    "COALESCE((SELECT SUM(n.rooms_booked) FROM ch_nights n WHERE n.channel = c.channel AND n.stay_date BETWEEN p.period_start AND p.period_end), 0) AS room_nights_active, "
+    "(SELECT COUNT(*) FROM ch_nights n WHERE n.channel = c.channel AND n.stay_date BETWEEN p.period_start AND p.period_end) AS room_nights_active, "
     "(SELECT COUNT(*) FROM ch_created k WHERE k.channel = c.channel AND k.created_on BETWEEN p.period_start AND p.period_end) AS bookings_created_active "
     "FROM periods p CROSS JOIN channels c)\n"
-    "SELECT UPPER(%(hotel_name)s) AS hotel_name, period, period_start, period_end, period_end - period_start + 1 AS days_in_period, channel, "
+    "SELECT (SELECT hotel_name FROM hotel WHERE hotel_id = %(hotel_id)s) AS hotel_name, period, period_start, period_end, period_end - period_start + 1 AS days_in_period, channel, "
     "ROUND(100.0 * room_nights_active / NULLIF(SUM(room_nights_active) OVER (PARTITION BY period), 0), 2) AS room_nights_share_pct, "
     "room_nights_active, bookings_created_active, "
     "ROUND(100.0 * bookings_created_active / NULLIF(SUM(bookings_created_active) OVER (PARTITION BY period), 0), 2) AS bookings_created_share_pct\n"
@@ -317,40 +329,63 @@ _CHANNEL_SQL = (
 
 _BALANCE_SQL = (
     "WITH " + _PERIODS + ",\n" + _HOTEL_CURRENCY + ",\n"
-    "balances AS (SELECT b.booking_id, b.check_in_date, b.currency, t.booking_id IS NOT NULL AS tracked, "
-    "t.total_amount, t.remaining_balance, "
-    "(SELECT SUM(l.payment_amount) FROM payment_ledger l WHERE l.booking_id = b.booking_id AND " + _scope("l.") + " "
-    "AND l.payment_status = 'received') AS ledger_received "
-    "FROM room_bookings b LEFT JOIN payment_tracking t ON t.booking_id = b.booking_id "
-    "WHERE " + _scope("b.") + " AND b.booking_status " + ACTIVE + "),\n"
-    "windows AS (SELECT period, period_start, period_end, period_end - period_start + 1 AS days_in_period FROM periods "
-    "UNION ALL SELECT 'all_open', MIN(check_in_date), MAX(check_in_date), NULL FROM balances)\n"
-    "SELECT UPPER(%(hotel_name)s) AS hotel_name, w.period, w.period_start, w.period_end, w.days_in_period, "
-    "SUM(b.remaining_balance) AS outstanding_tracking_remaining, "
-    "SUM(b.total_amount - COALESCE(b.ledger_received, 0)) AS outstanding_total_less_ledger, "
-    "COUNT(*) FILTER (WHERE b.remaining_balance > 0) AS bookings_with_balance, "
-    "SUM(b.ledger_received) AS ledger_received, "
-    "COUNT(b.booking_id) AS bookings, COUNT(b.booking_id) FILTER (WHERE NOT b.tracked) AS bookings_without_tracking, "
-    "SUM(b.total_amount) AS tracking_total_amount, "
+    "balances AS (SELECT s.booking_id, s.check_in_date, s.currency, s.gross_amount, k.amount_paid, k.balance_due, "
+    "(SELECT SUM(n.sell_rate) FROM booking_room_night n WHERE n.booking_id = s.booking_id AND " + _scope("n.") + " "
+    "AND n.night_status " + LIVE + ") AS night_rate_total "
+    "FROM booking_summary s JOIN booking_balance k ON k.booking_id = s.booking_id AND " + _scope("k.") + " "
+    "WHERE " + _scope("s.") + " AND s.booking_status " + ACTIVE + "),\n"
+    "windows AS (SELECT period, period_start, period_end, period_end - period_start + 1 AS days_in_period FROM periods)\n"
+    "SELECT (SELECT hotel_name FROM hotel WHERE hotel_id = %(hotel_id)s) AS hotel_name, w.period, w.period_start, w.period_end, w.days_in_period, "
+    "SUM(b.balance_due) AS outstanding_tracking_remaining, "
+    "SUM(b.night_rate_total - b.amount_paid) AS outstanding_total_less_ledger, "
+    "COUNT(*) FILTER (WHERE b.balance_due > 0) AS bookings_with_balance, "
+    "SUM(b.amount_paid) AS ledger_received, "
+    "COUNT(b.booking_id) AS bookings, COUNT(b.booking_id) FILTER (WHERE b.gross_amount IS NULL) AS bookings_without_tracking, "
+    "SUM(b.gross_amount) AS tracking_total_amount, "
     "(SELECT code FROM hotel_currency) AS hotel_currency, "
     "COUNT(*) FILTER (WHERE b.currency <> (SELECT code FROM hotel_currency)) > 0 AS mixed_currency, "
     "COUNT(*) FILTER (WHERE b.currency <> (SELECT code FROM hotel_currency)) AS foreign_currency_bookings, "
     "COUNT(*) FILTER (WHERE b.booking_id IS NOT NULL AND b.currency IS NULL) AS unknown_currency_bookings\n"
-    "FROM windows w LEFT JOIN balances b ON w.period = 'all_open' OR b.check_in_date BETWEEN w.period_start AND w.period_end\n"
+    "FROM windows w LEFT JOIN balances b ON b.check_in_date BETWEEN w.period_start AND w.period_end\n"
     "GROUP BY w.period, w.period_start, w.period_end, w.days_in_period\n"
-    "ORDER BY w.period = 'all_open', w.period_end - w.period_start, w.period_start"
+    "ORDER BY w.period_end - w.period_start, w.period_start"
 )
 
 _REVENUE_CONCEPTS = [
-    ("revenue_tracking_total", "SUM(payment_tracking.total_amount * night rooms / booking rooms) over active nights", ["booking_stays", "payment_tracking", "room_bookings"]),
-    ("rate_card_value_base", "SUM(booking_stays.rooms_booked * daily_pricing.base_price) over active nights; a price list value, not revenue", ["booking_stays", "daily_pricing"]),
+    ("revenue_tracking_total", "SUM(booking_room_night.sell_rate) over sold room nights", ["booking_room_night", "booking"]),
+    ("rate_card_value_base", "SUM(daily_pricing.base_price) over sold room nights, by room_type_id and stay_date; a price list value, not revenue", ["booking_room_night", "daily_pricing"]),
 ]
 _REVENUE_FACTS = ["hotel_currency", "revenue"]
 _REVENUE_LIMIT = (
-    "revenue_tracking_total spreads payment_tracking.total_amount over the booking's active nights by rooms; revenue_booking_total does the same "
-    "with room_bookings.total_amount and is NULL where that amount is not recorded. rate_card_value_* multiply rooms by the daily_pricing price list "
-    "for that room type and night; they are what the nights would cost at list price, not money taken. NULL means no source amount, not zero."
+    "revenue_tracking_total sums each sold night's recorded booking_room_night.sell_rate and is NULL for nights without one; revenue_booking_total "
+    "spreads booking.gross_amount evenly over the booking's sold nights and is NULL where that amount is not recorded. rate_card_value_* add the "
+    "daily_pricing price list for that room type and night; they are what the nights would cost at list price, not money taken. NULL means no source amount, not zero."
 )
+
+_ROOMS_LEFT_SQL = (
+    "WITH nights AS (SELECT generate_series(to_date(%(start)s, 'MM/DD/YYYY'), to_date(%(end)s, 'MM/DD/YYYY'), interval '1 day')::date AS stay_date),\n"
+    "sold AS (SELECT n.room_type_id, n.stay_date, COUNT(*) AS rooms_booked FROM " + _NIGHTS + " WHERE " + _scope("n.") + " AND " + SOLD + " "
+    "GROUP BY n.room_type_id, n.stay_date)\n"
+    "SELECT (SELECT hotel_name FROM hotel WHERE " + _scope() + ") AS hotel_name, to_char(d.stay_date, 'YYYY-MM-DD') AS period, d.stay_date, "
+    "t.room_type_name AS room_type, i.total_inventory, i.blocked_quantity, COALESCE(s.rooms_booked, 0) AS rooms_booked, "
+    "CASE WHEN i.stop_sell THEN 0 ELSE i.total_inventory - COALESCE(i.blocked_quantity, 0) - COALESCE(s.rooms_booked, 0) END AS rooms_left, "
+    "i.total_inventory - COALESCE(i.blocked_quantity, 0) - COALESCE(s.rooms_booked, 0) AS sellable_left, "
+    "i.stop_sell, i.closed_to_arrival, i.min_stay\n"
+    "FROM nights d JOIN room_inventory_nightly i ON i.stay_date = d.stay_date AND " + _scope("i.") + "\n"
+    "JOIN room_type t ON t.room_type_id = i.room_type_id AND " + _scope("t.") + "\n"
+    "LEFT JOIN sold s ON s.room_type_id = i.room_type_id AND s.stay_date = d.stay_date\n"
+    "ORDER BY d.stay_date < CURRENT_DATE, d.stay_date, t.room_type_name"
+)
+
+
+def _nightly(*args, **kwargs):
+    """One row per night from start through end inclusive. A span is those two dates, not a fixed week."""
+    body = _recipe(*args, **kwargs)
+    body["limitations"] = [
+        "Each row is one hotel-local night from start through end inclusive (period is that date, YYYY-MM-DD). A total across the span is not this recipe."
+    ] + body["limitations"][1:]
+    return body
+
 
 RECIPES = [
     _recipe(
@@ -358,7 +393,7 @@ RECIPES = [
         "Occupancy rate for a hotel-local day or range: active room nights sold as a share of room nights in inventory, with confirmed, sellable, and checked-in readings.",
         ["occupancy rate", "occupancy", "occupancy percentage", "how full are we", "hotel occupancy yesterday", "occupancy today", "occupancy this month"],
         "occupancy_pct_active",
-        [("occupancy_pct_active", "100 * active booking_stays room nights / room_inventory_nightly.total_inventory, on dates with inventory", ["booking_stays", "room_inventory_nightly"])],
+        [("occupancy_pct_active", "100 * sold booking_room_night rows / room_inventory_nightly.total_inventory, on dates with inventory", ["booking_room_night", "booking", "room_inventory_nightly"])],
         [
             ("days_with_inventory", _days("inventory_rooms")),
             ("inventory_room_nights", _sum("inventory_rooms")),
@@ -372,7 +407,7 @@ RECIPES = [
             ("occupancy_pct_checked_in", _inv_rate("checked_in_rooms", "inventory_rooms", "100.0")),
         ],
         [_INVENTORY_LIMIT,
-         "sellable subtracts blocked_quantity. checked_in counts room_stay nights with checked_in_at set and no check-out before that night.",
+         "sellable subtracts blocked_quantity. checked_in counts booking_room_night rows with checked_in_at set and no check-out before that night.",
          "Physical room counts and booking-header nights are not occupancy readings here; room nights by booking header are in daily_room_nights_sold."],
         ["inventory", "nightly", "checked"],
     ),
@@ -381,20 +416,21 @@ RECIPES = [
         "Room nights sold for a hotel-local day or range, as active, confirmed, booking-header, and checked-in readings.",
         ["room nights sold", "room nights", "rooms sold", "how many rooms did we sell", "sold rooms"],
         "sold_room_nights_active",
-        [("sold_room_nights_active", "SUM(booking_stays.rooms_booked) where booking_status is active", ["booking_stays"])],
+        [("sold_room_nights_active", "COUNT(booking_room_night) where the booking is active and the night is booked, checked_in, or checked_out", ["booking_room_night", "booking"])],
         [
             ("sold_room_nights_active", _sum("sold_active")),
             ("sold_room_nights_confirmed", _sum("sold_confirmed")),
             ("sold_room_nights_header_active", _sum("header_active")),
             ("checked_in_room_nights", _sum("checked_in_rooms")),
         ],
-        ["sold reads booking_stays nights; header reads room_bookings check_in_date for nights nights. They can disagree when a booking was moved.",
-         "checked_in counts room_stay nights with checked_in_at set and no check-out before that night."],
+        ["sold counts booking_room_night rows; header spreads booking_summary.rooms_booked over every date from check_in_date to the day before check_out_date. "
+         "They disagree when a booking has released nights, gaps between nights, or a different room count per night.",
+         "checked_in counts booking_room_night rows with checked_in_at set and no check-out before that night."],
         ["nightly", "header", "checked"],
     ),
     _recipe(
         "daily_room_revenue", "Room revenue by period",
-        "Total room revenue (room sales) for a hotel-local day or range by stay night, from booking amounts, with rate-card values as separate columns and currency flags.",
+        "Total room revenue (room sales) for a hotel-local day or range by stay night, from nightly sell rates and booking amounts, with rate-card values as separate columns and currency flags.",
         ["room revenue", "total revenue", "room sales", "sales", "revenue yesterday", "how much did we make"],
         "revenue_tracking_total",
         _REVENUE_CONCEPTS,
@@ -411,10 +447,10 @@ RECIPES = [
     ),
     _recipe(
         "daily_adr", "ADR by period",
-        "ADR, average daily rate, for a hotel-local day or range: room revenue per sold room night from booking amounts, with rate-card readings and currency flags.",
+        "ADR, average daily rate, for a hotel-local day or range: room revenue per sold room night from nightly sell rates and booking amounts, with rate-card readings and currency flags.",
         ["adr", "average daily rate", "average room rate", "average rate per room night"],
         "adr_tracking_total",
-        _REVENUE_CONCEPTS + [("adr_tracking_total", "revenue_tracking_total / room nights with a payment_tracking amount", ["booking_stays", "payment_tracking"])],
+        _REVENUE_CONCEPTS + [("adr_tracking_total", "revenue_tracking_total / sold room nights with a sell_rate", ["booking_room_night"])],
         [
             ("adr_tracking_total", _rate("rev_tracking_total", "nights_tracking_total")),
             ("adr_booking_total", _rate("rev_booking_total", "nights_booking_total")),
@@ -434,7 +470,7 @@ RECIPES = [
         "RevPAR, room revenue per available room night, for a hotel-local day or range, counting only dates with inventory, with rate-card readings and currency flags.",
         ["revpar", "revenue per available room", "rev par"],
         "revpar_tracking_total",
-        _REVENUE_CONCEPTS + [("revpar_tracking_total", "revenue_tracking_total on dates with inventory / inventory room nights", ["payment_tracking", "room_inventory_nightly"])],
+        _REVENUE_CONCEPTS + [("revpar_tracking_total", "revenue_tracking_total on dates with inventory / inventory room nights", ["booking_room_night", "room_inventory_nightly"])],
         [
             ("days_with_inventory", _days("inventory_rooms")),
             ("inventory_room_nights", _sum("inventory_rooms")),
@@ -448,28 +484,28 @@ RECIPES = [
     ),
     _recipe(
         "daily_channel_mix", "Channel mix",
-        "Channel mix for a hotel-local day or range: one row per period and booking channel with active room nights by stay night and active bookings by creation date, and each channel's share.",
+        "Channel mix for a hotel-local day or range: one row per period and booking channel with active room nights by stay night and active bookings by booking date, and each channel's share.",
         ["channel mix", "booking sources", "share by channel", "ota vs direct", "where do bookings come from", "channel share"],
         "room_nights_share_pct",
-        [("room_nights_share_pct", "channel active room nights / all channels' active room nights in the period", ["booking_stays", "room_bookings"])],
+        [("room_nights_share_pct", "channel sold room nights / all channels' sold room nights in the period", ["booking_room_night", "booking"])],
         [("channel", ""), ("room_nights_share_pct", ""), ("room_nights_active", ""), ("bookings_created_active", ""), ("bookings_created_share_pct", "")],
-        ["Every channel the hotel has a booking from is listed in every period, including channels with only cancelled bookings, at zero. A blank channel is UNKNOWN.",
+        ["Every channel the hotel has a booking from is listed in every period, including channels with only cancelled bookings, at zero. channel is booking.channel as stored.",
          "No commission or revenue mix."],
         sql=_CHANNEL_SQL, grain="channel",
     ),
     _recipe(
         "daily_bookings_made", "Bookings made by period",
-        "Bookings made (created) on a hotel-local day or range, by creation date, with all, active, and since-cancelled readings and active room nights booked.",
+        "Bookings made (created) on a hotel-local day or range, by booking date, with all, active, and since-cancelled readings and active room nights booked.",
         ["bookings made", "new bookings", "bookings created", "reservations made", "how many bookings did we get"],
         "bookings_created_active",
-        [("bookings_created_active", "COUNT(room_bookings) by hotel-local created_at date where booking_status is active", ["room_bookings"])],
+        [("bookings_created_active", "COUNT(booking) by hotel-local booked_at date where booking_status is active", ["booking", "booking_summary"])],
         [
             ("bookings_created_active", _sum("created_active")),
             ("bookings_created_all", _sum("created_all")),
             ("bookings_created_cancelled_since", _sum("created_cancelled_since")),
             ("room_nights_created_active", _sum("created_room_nights_active")),
         ],
-        ["Bookings without created_at are not counted."],
+        ["Bookings are counted by booked_at. Room nights booked are booking_summary.rooms_booked times nights. A booking with no nights is not counted."],
         ["created"],
     ),
     _recipe(
@@ -477,7 +513,7 @@ RECIPES = [
         "Arrivals for a hotel-local day or range: active and confirmed bookings, rooms, and known guests scheduled to arrive by check_in_date, and actual check-ins by check-in time.",
         ["arrivals", "check-ins", "arriving guests", "expected arrivals"],
         "arrivals_bookings_active",
-        [("arrivals_bookings_active", "COUNT(room_bookings) by check_in_date where booking_status is active", ["room_bookings"])],
+        [("arrivals_bookings_active", "COUNT(booking_summary) by check_in_date where booking_status is active", ["booking_summary", "booking"])],
         [
             ("arrivals_bookings_active", _sum("arr_bookings_active")),
             ("arrivals_bookings_confirmed", _sum("arr_bookings_confirmed")),
@@ -486,16 +522,23 @@ RECIPES = [
             ("arrivals_missing_guest_count", _sum("arr_missing_guest_count")),
             ("actual_checkins", _sum("actual_checkins")),
         ],
-        ["arrivals_guests_known_active sums booking_guest_counts and skips bookings without a count (arrivals_missing_guest_count).",
-         "actual_checkins counts bookings by the hotel-local date of room_stay.checked_in_at. The first booking_stays night is not a separate reading."],
+        ["check_in_date is the booking's first night on booking_room_night. arrivals_guests_known_active sums booking.adults plus children and skips bookings without adults (arrivals_missing_guest_count).",
+         "actual_checkins counts bookings by the hotel-local date of booking_room_night.checked_in_at."],
         ["guest_counts", "arrivals", "actual_in"],
+        readings=[
+            ("arrivals_bookings_active", "active", "bookings"),
+            ("arrivals_bookings_confirmed", "confirmed", "bookings"),
+            ("arrivals_rooms_active", "active", "rooms"),
+            ("arrivals_guests_known_active", "active", "guests"),
+            ("actual_checkins", "actually_checked_in", "bookings"),
+        ],
     ),
     _recipe(
         "daily_departure_counts", "Departures by period",
-        "Departures for a hotel-local day or range: active and confirmed bookings, rooms, and known guests due to check out by check_in_date plus nights, and actual check-outs by check-out time.",
+        "Departures for a hotel-local day or range: active and confirmed bookings, rooms, and known guests due to check out on check_out_date, and actual check-outs by check-out time.",
         ["departures", "check-outs", "checkouts", "departing guests"],
         "departures_bookings_active",
-        [("departures_bookings_active", "COUNT(room_bookings) by check_in_date + nights where booking_status is active", ["room_bookings"])],
+        [("departures_bookings_active", "COUNT(booking_summary) by check_out_date where booking_status is active", ["booking_summary"])],
         [
             ("departures_bookings_active", _sum("dep_bookings_active")),
             ("departures_bookings_confirmed", _sum("dep_bookings_confirmed")),
@@ -504,15 +547,22 @@ RECIPES = [
             ("departures_missing_guest_count", _sum("dep_missing_guest_count")),
             ("actual_checkouts", _sum("actual_checkouts")),
         ],
-        ["actual_checkouts counts bookings by the hotel-local date of room_stay.checked_out_at. The day after the last booking_stays night is not a separate reading."],
+        ["check_out_date is the morning after the booking's last night. actual_checkouts counts bookings by the hotel-local date of booking_room_night.checked_out_at."],
         ["guest_counts", "departures", "actual_out"],
+        readings=[
+            ("departures_bookings_active", "active", "bookings"),
+            ("departures_bookings_confirmed", "confirmed", "bookings"),
+            ("departures_rooms_active", "active", "rooms"),
+            ("departures_guests_known_active", "active", "guests"),
+            ("actual_checkouts", "actually_checked_out", "bookings"),
+        ],
     ),
     _recipe(
         "daily_in_house_counts", "In-house by period",
-        "In-house rooms, bookings, and known guests for a hotel-local night or range (summed per night for a range), by active booking_stays nights and by checked-in room_stay records.",
+        "In-house rooms, bookings, and known guests for a hotel-local night or range (summed per night for a range), by sold booking_room_night rows, by checked-in nights, and by bookings checked in and not yet checked out.",
         ["in house", "in-house guests", "guests staying", "occupied rooms", "house count"],
         "in_house_rooms_active",
-        [("in_house_rooms_active", "SUM(booking_stays.rooms_booked) for active bookings that night", ["booking_stays"])],
+        [("in_house_rooms_active", "COUNT(booking_room_night) sold that night", ["booking_room_night", "booking"])],
         [
             ("in_house_rooms_active", _sum("sold_active")),
             ("in_house_bookings_active", _sum("stay_bookings_active")),
@@ -520,38 +570,57 @@ RECIPES = [
             ("in_house_bookings_missing_guest_count", _sum("bookings_missing_guest_count")),
             ("in_house_rooms_checked_in", _sum("checked_in_rooms")),
             ("in_house_guests_known_checked_in", _sum("guests_known_checked_in")),
+            ("still_in_house_bookings", _sum("still_in_bookings")),
+            ("still_in_house_guests_known", _sum("still_in_guests_known")),
+            ("still_in_house_missing_guest_count", _sum("still_in_missing_guest_count")),
         ],
         ["A night is the stay_date; a guest arriving today and leaving tomorrow is in house on today's row. For a range every column is a sum of nights (room nights, guest nights).",
-         "Checked-in readings count room_stay nights with checked_in_at set and no check-out before that night, whatever the current stay_status."],
-        ["guest_counts", "nightly", "checked", "guests_night"],
+         "Checked-in readings count booking_room_night rows with checked_in_at set and no check-out before that night, whatever the current night_status; "
+         "a guest whose last night was last night is not on today's row even before checking out. "
+         "Guests are booking.adults plus children; a booking without adults is counted in in_house_bookings_missing_guest_count.",
+         "still_in_house readings count bookings checked in on or before the date and not checked out by the end of it: a booking with a room "
+         "whose checked_out_at is empty, or whose last check-out is after the date. On today's row this is everyone checked in and not yet checked out "
+         "right now, including a guest due to leave today who has not checked out. Dates after today are empty, because nobody has checked in for them yet. "
+         "Bookings without adults are counted in still_in_house_missing_guest_count."],
+        ["guest_counts", "nightly", "checked", "guests_night", "still_in"],
+        readings=[
+            ("in_house_rooms_active", "sold_tonight", "rooms"),
+            ("in_house_bookings_active", "sold_tonight", "bookings"),
+            ("in_house_guests_known_active", "sold_tonight", "guests"),
+            ("in_house_rooms_checked_in", "checked_in_tonight", "rooms"),
+            ("in_house_guests_known_checked_in", "checked_in_tonight", "guests"),
+            ("still_in_house_bookings", "checked_in_not_checked_out", "bookings"),
+            ("still_in_house_guests_known", "checked_in_not_checked_out", "guests"),
+        ],
     ),
     _recipe(
         "daily_cancellation_counts", "Cancellations by period",
-        "Cancellations for a hotel-local day or range, by scheduled arrival date, by cancelled stay night, by the booking's last update date, and by channel cancel message date.",
+        "Cancellations for a hotel-local day or range, by scheduled arrival date, by cancelled stay night, by the date the booking was cancelled, and channel cancellations by that date.",
         ["cancellations", "cancelled bookings", "how many cancellations", "cancels"],
         "cancelled_bookings_by_arrival_date",
-        [("cancelled_bookings_by_arrival_date", "COUNT(room_bookings) where booking_status = 'cancelled' by check_in_date", ["room_bookings"])],
+        [("cancelled_bookings_by_arrival_date", "COUNT(booking_summary) where booking_status = 'cancelled' by check_in_date", ["booking_summary"])],
         [
             ("cancelled_bookings_by_arrival_date", _sum("cancelled_by_arrival")),
             ("cancelled_room_nights_by_stay_date", _sum("cancelled_room_nights")),
-            ("cancelled_bookings_by_last_update_date", _sum("cancelled_by_last_update")),
-            ("cancel_messages_by_message_date", _sum("cancel_messages")),
+            ("cancelled_bookings_by_last_update_date", _sum("cancelled_on_date")),
+            ("cancel_messages_by_message_date", _sum("channel_cancels")),
         ],
-        ["No cancellation timestamp is recorded. last_update_date is room_bookings.updated_at of a cancelled booking, which a later edit moves; cancel messages come from channel_reservations and cover channel bookings only."],
-        ["guest_counts", "arrivals", "nightly", "cancel_updates", "cancel_messages"],
+        ["cancelled_bookings_by_last_update_date counts cancelled bookings by the hotel-local date of booking.cancelled_at. "
+         "cancel_messages_by_message_date counts the same for bookings that carry a channel_booking_ref; the channel's own message time is not read."],
+        ["guest_counts", "arrivals", "nightly", "cancel_dates", "channel_cancels"],
     ),
     _recipe(
         "daily_no_show_counts", "No-shows by period",
         "No-shows for a hotel-local day or range: bookings marked no-show by arrival date and by the date they were marked, and past active arrivals never checked in.",
         ["no shows", "no-shows", "noshow", "guests who did not arrive", "did not show up"],
         "no_shows_by_arrival_date",
-        [("no_shows_by_arrival_date", "COUNT(room_bookings) with booking_status = 'no_show' or no_show_at set, by check_in_date", ["room_bookings"])],
+        [("no_shows_by_arrival_date", "COUNT(booking) with booking_status = 'no_show' or no_show_at set, by check_in_date", ["booking", "booking_summary"])],
         [
             ("no_shows_by_arrival_date", _sum("no_show_by_arrival")),
             ("no_shows_marked_on_date", _sum("no_show_marked_on_date")),
             ("past_arrivals_never_checked_in", _sum("past_arrivals_never_checked_in")),
         ],
-        ["past_arrivals_never_checked_in counts active bookings whose arrival date has passed with no no_show mark and no room_stay checked_in_at; it is a candidate count, not a confirmed no-show."],
+        ["past_arrivals_never_checked_in counts active bookings whose arrival date has passed with no no_show mark and no booking_room_night checked_in_at; it is a candidate count, not a confirmed no-show."],
         ["guest_counts", "arrivals", "no_show_marks"],
     ),
     _recipe(
@@ -559,7 +628,7 @@ RECIPES = [
         "Average length of stay for bookings arriving on a hotel-local day or range: per active booking, per confirmed booking, and room-weighted.",
         ["average length of stay", "alos", "length of stay", "how long do guests stay", "average nights"],
         "alos_active",
-        [("alos_active", "SUM(nights) / COUNT(bookings) for active arrivals", ["room_bookings"])],
+        [("alos_active", "SUM(nights) / COUNT(bookings) for active arrivals", ["booking_summary"])],
         [
             ("alos_active", _rate("arr_nights_active", "arr_bookings_active")),
             ("alos_confirmed", _rate("arr_nights_confirmed", "arr_bookings_confirmed")),
@@ -569,7 +638,7 @@ RECIPES = [
             ("arrivals_rooms_active", _sum("arr_rooms_active")),
             ("arrival_room_nights_active", _sum("arr_room_nights_active")),
         ],
-        ["Stays are grouped by arrival date, not by the nights they cover. Nights are room_bookings.nights."],
+        ["Stays are grouped by arrival date, not by the nights they cover. Nights are booking_summary.nights, the distinct stay dates of the booking."],
         ["guest_counts", "arrivals"],
     ),
     _recipe(
@@ -577,7 +646,7 @@ RECIPES = [
         "Average booking lead time in days between the hotel-local booking date and arrival, for bookings arriving on a hotel-local day or range, for active and all bookings.",
         ["booking lead time", "lead time", "booking window", "how far ahead do guests book", "days in advance"],
         "avg_lead_days_active",
-        [("avg_lead_days_active", "SUM(check_in_date - local created date) / COUNT(bookings) for active arrivals with a non-negative lead", ["room_bookings"])],
+        [("avg_lead_days_active", "SUM(check_in_date - local booked_at date) / COUNT(bookings) for active arrivals with a non-negative lead", ["booking_summary"])],
         [
             ("avg_lead_days_active", _rate("lead_days_active", "lead_bookings_active")),
             ("avg_lead_days_all", _rate("lead_days_all", "lead_bookings_all")),
@@ -585,15 +654,15 @@ RECIPES = [
             ("lead_bookings_active", _sum("lead_bookings_active")),
             ("lead_days_active", _sum("lead_days_active")),
         ],
-        ["Grouped by arrival date. Averages use only bookings recorded on or before their arrival date; negative_lead_bookings counts active bookings recorded after arrival. Bookings without created_at are skipped."],
+        ["Grouped by arrival date. Averages use only bookings recorded on or before their arrival date; negative_lead_bookings counts active bookings recorded after arrival."],
         ["guest_counts", "arrivals"],
     ),
     _recipe(
         "daily_outstanding_balance", "Outstanding balance by period",
-        "Outstanding balance (payments due, receivables) for active bookings arriving on a hotel-local day or range, plus an all_open row for every active booking, from payment_tracking and from payment_ledger receipts, with currency flags.",
+        "Outstanding balance (payments due, receivables) for active bookings arriving from start through end, inclusive, from booking amounts, nightly sell rates, and received payments, with currency flags.",
         ["outstanding balance", "payments due", "unpaid balance", "amount owed", "receivables", "who still owes", "how much do guests owe", "accounts receivable"],
         "outstanding_tracking_remaining",
-        [("outstanding_tracking_remaining", "SUM(payment_tracking.remaining_balance) for active bookings by check_in_date", ["payment_tracking", "room_bookings"])],
+        [("outstanding_tracking_remaining", "SUM(booking_balance.balance_due) for active bookings by check_in_date", ["booking_balance", "booking_summary", "payment"])],
         [
             ("outstanding_tracking_remaining", ""),
             ("outstanding_total_less_ledger", ""),
@@ -607,21 +676,38 @@ RECIPES = [
             ("foreign_currency_bookings", ""),
             ("unknown_currency_bookings", ""),
         ],
-        ["Balances are current values grouped by arrival date. The all_open row covers every active booking whatever its arrival date; its period_start and period_end are the earliest and latest arrival dates and days_in_period is NULL.",
-         "payment_tracking.remaining_balance and payment_ledger receipts are separate records and can disagree.",
+        ["Balances are current values for arrivals from start through end inclusive. The row is that one span.",
+         "outstanding_tracking_remaining is booking.gross_amount less received payments plus received refunds (booking_balance.balance_due); tracking_total_amount is booking.gross_amount and "
+         "bookings_without_tracking counts bookings without one. outstanding_total_less_ledger is the sum of the booking's live nightly sell_rate less the same net payments; "
+         "ledger_received is received payments less received refunds. Void payments are not counted. The two outstanding readings can disagree.",
          "Amounts are in each booking's currency as recorded; do not state a total as one currency when mixed_currency is true."],
         sql=_BALANCE_SQL,
+    ),
+    _nightly(
+        "daily_rooms_left_by_room_type", "Rooms left by room type and night",
+        "Rooms left to sell (availability, vacancy, open inventory) for each room type on each hotel-local night, with inventory, blocked rooms, rooms booked, stop-sell, closed-to-arrival, and minimum stay.",
+        ["rooms left", "room availability", "availability", "rooms available", "vacancy", "how many rooms are left", "can we accommodate",
+         "open inventory", "rooms left today", "availability by room type"],
+        "rooms_left",
+        [("rooms_left", "room_inventory_nightly.total_inventory - blocked_quantity - sold booking_room_night rows of that room type and night; 0 on a stop_sell night",
+          ["room_inventory_nightly", "room_type", "booking_room_night", "booking"])],
+        [(name, "") for name in ("total_inventory", "blocked_quantity", "rooms_booked", "rooms_left", "sellable_left", "stop_sell", "closed_to_arrival", "min_stay")],
+        ["One row per room type with an inventory row on that night; a room type without one is not listed.",
+         "rooms_left is 0 on a stop_sell night; sellable_left ignores stop_sell. A negative sellable_left means sold above recorded inventory.",
+         "Rows are ordered from the hotel-local today forward, then past nights. A range total is not answered; each night is its own row."],
+        sql=_ROOMS_LEFT_SQL,
+        keys=["hotel_name", "period", "stay_date", "room_type"],
     ),
 ]
 
 RETIRED = ["daily_rooms_available"]
 
 UNSUPPORTED = {
-    "ota_commission": "No commission rate or amount is stored on bookings; channel payloads carry amount.commission but it is zero or absent.",
+    "ota_commission": "No general recipe reads booking.commission_amount or commission_rate yet; channels often send them as zero or absent.",
 }
 
 
-def _publish(cur, body):
+def _publish(cur, body, source=SOURCE):
     """Read the active page first. Write a new version only when the body changed."""
     from psycopg2.extras import Json
     from booking_system.semantic.registry import refresh_page_index
@@ -642,13 +728,13 @@ def _publish(cur, body):
     if not cur.fetchone():
         cur.execute(
             "INSERT INTO catalogs (catalog_id, parent_id, domain, purpose, status, store, scope) VALUES (%s, %s, %s, %s, 'active', 'postgresql', 'general')",
-            (catalog_id, PARENT, PARENT, body["purpose"]),
+            (catalog_id, body["parent"], body["parent"], body["purpose"]),
         )
     cur.execute("SELECT COALESCE(MAX(version), 0) + 1 FROM catalog_versions WHERE catalog_id = %s", (catalog_id,))
     version = int(cur.fetchone()[0])
     cur.execute(
         "INSERT INTO catalog_versions (catalog_id, version, body, provenance) VALUES (%s, %s, %s, %s)",
-        (catalog_id, version, Json(body), Json({"source": SOURCE})),
+        (catalog_id, version, Json(body), Json({"source": source})),
     )
     cur.execute(
         """

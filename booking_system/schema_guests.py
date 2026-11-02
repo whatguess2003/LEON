@@ -1,0 +1,167 @@
+"""Guest service DDL beyond core_schema: messages, preferences, requests and complaints, the desk approval list, the hotel user's
+WhatsApp window, loyalty, mobile check-in with digital keys, and hotel partnerships with referrals. Ids are '<prefix>_<uuid4>'."""
+
+from booking_system.schema_tools import create_indexes, create_tables
+
+
+def _id(column, prefix):
+    return column + " VARCHAR(48) PRIMARY KEY CHECK (left(" + column + ", " + str(len(prefix) + 1) + ") = '" + prefix + "_')"
+
+
+_GUEST = "FOREIGN KEY (hotel_id, guest_id) REFERENCES guest (hotel_id, guest_id) ON DELETE CASCADE"
+
+GUEST_TABLES = (
+    # A message is filed under the hotel once the guest's hotel is known; a WhatsApp message can arrive before that.
+    ("guest_message", _id("message_id", "msg") + """,
+        hotel_id    VARCHAR(48)  REFERENCES hotel (hotel_id),
+        guest_phone VARCHAR(32)  NOT NULL,
+        channel     VARCHAR(16)  NOT NULL CHECK (channel IN ('whatsapp','email','voice')),
+        source_ref  VARCHAR(255) NOT NULL CHECK (source_ref <> ''),
+        sent_at     TIMESTAMPTZ,
+        body        TEXT         NOT NULL DEFAULT '',
+        direction   VARCHAR(8)   NOT NULL DEFAULT '' CHECK (direction IN ('in','out','')),
+        status      VARCHAR(32)  NOT NULL DEFAULT '',
+        media_mime  VARCHAR(128) NOT NULL DEFAULT '',
+        media_note  VARCHAR(255) NOT NULL DEFAULT '',
+        UNIQUE (channel, source_ref)"""),
+    ("guest_preference", _id("preference_id", "gpf") + """,
+        hotel_id            VARCHAR(48)  NOT NULL,
+        guest_id            VARCHAR(48)  NOT NULL,
+        preference          VARCHAR(64)  NOT NULL CHECK (preference = lower(btrim(preference)) AND preference <> ''),
+        preference_value    VARCHAR(255) NOT NULL,
+        recorded_at         TIMESTAMPTZ  NOT NULL DEFAULT now(),
+        recorded_by_user_id VARCHAR(48)  REFERENCES user_account (user_id),
+        UNIQUE (guest_id, preference),
+        """ + _GUEST),
+    # A desk task or a service the guest asked for. Open until someone marks it done.
+    ("guest_request", _id("request_id", "grq") + """,
+        hotel_id            VARCHAR(48)  NOT NULL,
+        guest_id            VARCHAR(48)  NOT NULL,
+        booking_id          VARCHAR(48)  REFERENCES booking (booking_id) ON DELETE SET NULL,
+        request             VARCHAR(500) NOT NULL CHECK (btrim(request) <> ''),
+        requested_for       TIMESTAMPTZ,
+        status              VARCHAR(16)  NOT NULL CHECK (status IN ('open','done','cancelled')),
+        recorded_at         TIMESTAMPTZ  NOT NULL DEFAULT now(),
+        recorded_by_user_id VARCHAR(48)  REFERENCES user_account (user_id),
+        done_at             TIMESTAMPTZ,
+        done_by_user_id     VARCHAR(48)  REFERENCES user_account (user_id),
+        """ + _GUEST),
+    ("guest_complaint", _id("complaint_id", "gcp") + """,
+        hotel_id            VARCHAR(48)  NOT NULL,
+        guest_id            VARCHAR(48)  NOT NULL,
+        booking_id          VARCHAR(48)  REFERENCES booking (booking_id) ON DELETE SET NULL,
+        complaint           VARCHAR(1000) NOT NULL CHECK (btrim(complaint) <> ''),
+        recorded_at         TIMESTAMPTZ  NOT NULL DEFAULT now(),
+        recorded_by_user_id VARCHAR(48)  REFERENCES user_account (user_id),
+        """ + _GUEST),
+    # Desk actions this hotel holds for a person to approve.
+    ("desk_action_approval", """
+        hotel_id        VARCHAR(48) NOT NULL REFERENCES hotel (hotel_id),
+        action_name     VARCHAR(64) NOT NULL,
+        set_by_user_id  VARCHAR(48) REFERENCES user_account (user_id),
+        set_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (hotel_id, action_name)"""),
+    # The hotel user's latest inbound WhatsApp: free text to them is open for 24 hours after it.
+    ("user_whatsapp_window", """
+        user_id         VARCHAR(48) PRIMARY KEY REFERENCES user_account (user_id) ON DELETE CASCADE,
+        last_inbound_at TIMESTAMPTZ NOT NULL"""),
+    # ---------- loyalty: tiers by points balance, one member per guest, a points ledger, rewards and occasions ----------
+    ("loyalty_tier", """
+        hotel_id   VARCHAR(48) NOT NULL REFERENCES hotel (hotel_id),
+        tier_name  VARCHAR(32) NOT NULL CHECK (tier_name = UPPER(btrim(tier_name)) AND tier_name <> ''),
+        min_points INTEGER     NOT NULL CHECK (min_points >= 0),
+        PRIMARY KEY (hotel_id, tier_name),
+        UNIQUE (hotel_id, min_points)"""),
+    ("loyalty_member", _id("member_id", "lym") + """,
+        hotel_id            VARCHAR(48) NOT NULL,
+        guest_id            VARCHAR(48) NOT NULL,
+        status              VARCHAR(16) NOT NULL CHECK (status IN ('active','closed')),
+        enrolled_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+        enrolled_by_user_id VARCHAR(48) REFERENCES user_account (user_id),
+        UNIQUE (hotel_id, guest_id),
+        UNIQUE (hotel_id, member_id),
+        """ + _GUEST),
+    ("loyalty_reward", _id("reward_id", "lyr") + """,
+        hotel_id    VARCHAR(48)  NOT NULL REFERENCES hotel (hotel_id),
+        reward_name VARCHAR(128) NOT NULL CHECK (reward_name = UPPER(btrim(reward_name)) AND reward_name <> ''),
+        points_cost INTEGER      NOT NULL CHECK (points_cost > 0),
+        status      VARCHAR(16)  NOT NULL CHECK (status IN ('active','inactive')),
+        UNIQUE (hotel_id, reward_name),
+        UNIQUE (hotel_id, reward_id)"""),
+    ("loyalty_points", _id("entry_id", "lyp") + """,
+        hotel_id            VARCHAR(48)  NOT NULL,
+        member_id           VARCHAR(48)  NOT NULL,
+        points              INTEGER      NOT NULL CHECK (points <> 0),
+        reason              VARCHAR(255) NOT NULL CHECK (btrim(reason) <> ''),
+        booking_id          VARCHAR(48)  REFERENCES booking (booking_id) ON DELETE SET NULL,
+        reward_id           VARCHAR(48),
+        recorded_at         TIMESTAMPTZ  NOT NULL DEFAULT now(),
+        recorded_by_user_id VARCHAR(48)  REFERENCES user_account (user_id),
+        FOREIGN KEY (hotel_id, member_id) REFERENCES loyalty_member (hotel_id, member_id) ON DELETE CASCADE,
+        FOREIGN KEY (hotel_id, reward_id) REFERENCES loyalty_reward (hotel_id, reward_id)"""),
+    ("guest_occasion", _id("occasion_id", "goc") + """,
+        hotel_id            VARCHAR(48)  NOT NULL,
+        guest_id            VARCHAR(48)  NOT NULL,
+        occasion            VARCHAR(64)  NOT NULL CHECK (occasion = lower(btrim(occasion)) AND occasion <> ''),
+        occasion_date       DATE         NOT NULL,
+        notes               VARCHAR(500),
+        recorded_by_user_id VARCHAR(48)  REFERENCES user_account (user_id),
+        UNIQUE (guest_id, occasion, occasion_date),
+        """ + _GUEST),
+    # ---------- mobile check-in: started, identity verified, then a digital key per checked-in room ----------
+    ("mobile_checkin", _id("checkin_id", "mci") + """,
+        hotel_id            VARCHAR(48) NOT NULL REFERENCES hotel (hotel_id),
+        booking_id          VARCHAR(48) NOT NULL UNIQUE REFERENCES booking (booking_id) ON DELETE CASCADE,
+        status              VARCHAR(16) NOT NULL CHECK (status IN ('started','verified')),
+        started_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+        started_by_user_id  VARCHAR(48) REFERENCES user_account (user_id),
+        verified_at         TIMESTAMPTZ,
+        verified_by_user_id VARCHAR(48) REFERENCES user_account (user_id),
+        CHECK (status <> 'verified' OR verified_at IS NOT NULL)"""),
+    ("digital_key", _id("key_id", "dkey") + """,
+        hotel_id          VARCHAR(48) NOT NULL,
+        booking_id        VARCHAR(48) NOT NULL REFERENCES booking (booking_id) ON DELETE CASCADE,
+        room_id           VARCHAR(48) NOT NULL,
+        valid_from        TIMESTAMPTZ NOT NULL,
+        valid_until       TIMESTAMPTZ NOT NULL CHECK (valid_until > valid_from),
+        status            VARCHAR(16) NOT NULL CHECK (status IN ('active','revoked')),
+        issued_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+        issued_by_user_id VARCHAR(48) REFERENCES user_account (user_id),
+        FOREIGN KEY (hotel_id, room_id) REFERENCES room (hotel_id, room_id)"""),
+    # ---------- referrals: a partner hotel this hotel sends guests to, and each guest it sent ----------
+    ("hotel_partnership", _id("partnership_id", "hpt") + """,
+        hotel_id           VARCHAR(48)  NOT NULL REFERENCES hotel (hotel_id),
+        partner_hotel_id   VARCHAR(48)  NOT NULL REFERENCES hotel (hotel_id),
+        status             VARCHAR(16)  NOT NULL CHECK (status IN ('active','ended')),
+        notes              VARCHAR(500),
+        created_at         TIMESTAMPTZ  NOT NULL DEFAULT now(),
+        created_by_user_id VARCHAR(48)  REFERENCES user_account (user_id),
+        UNIQUE (hotel_id, partner_hotel_id),
+        UNIQUE (hotel_id, partnership_id),
+        CHECK (partner_hotel_id <> hotel_id)"""),
+    ("guest_referral", _id("referral_id", "grf") + """,
+        hotel_id            VARCHAR(48)  NOT NULL,
+        partnership_id      VARCHAR(48)  NOT NULL,
+        guest_id            VARCHAR(48)  NOT NULL,
+        reason              VARCHAR(500),
+        referred_at         TIMESTAMPTZ  NOT NULL DEFAULT now(),
+        referred_by_user_id VARCHAR(48)  REFERENCES user_account (user_id),
+        FOREIGN KEY (hotel_id, partnership_id) REFERENCES hotel_partnership (hotel_id, partnership_id),
+        """ + _GUEST),
+)
+
+GUEST_INDEXES = (
+    ("guest_message_phone_idx", "guest_message (guest_phone, sent_at)"),
+    ("guest_message_hotel_idx", "guest_message (hotel_id, guest_phone)"),
+    ("guest_request_open_idx", "guest_request (hotel_id, status)"),
+    ("loyalty_points_member_idx", "loyalty_points (member_id)"),
+    ("digital_key_booking_idx", "digital_key (booking_id)"),
+    ("guest_referral_partner_idx", "guest_referral (partnership_id)"),
+)
+
+
+def ensure(cur, seen):
+    """Autocommit DDL cursor. Read the catalog first; create or reshape only what is missing. The hotel_name-shaped guest
+    tables hold no rows worth keeping (messages were keyed to a hotel name, the others were never written)."""
+    create_tables(cur, seen, GUEST_TABLES)
+    create_indexes(cur, seen, GUEST_INDEXES)

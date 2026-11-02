@@ -1,291 +1,112 @@
-#!/usr/bin/env python3
-"""
-Mobile Check-in Manager - Database Operations Only
-Handles database operations for mobile check-in processes
-"""
+"""Mobile check-in on mobile_checkin (one per booking: started, then verified) and digital_key (one active key per booking room,
+valid until the hotel's check-out time (setting front_desk.checkout_time) on the morning after the room's last night). Each writer reads first; a refusal returns
+{'error': reason}."""
 
-import os
-import json
-import psycopg2
-from psycopg2.extras import RealDictCursor
-from pymongo import MongoClient
-import redis
-from datetime import datetime, date, timedelta
-try:
-    from zoneinfo import ZoneInfo
-except Exception:
-    ZoneInfo = None
-from .timezone_utils import get_hotel_timezone_str
-from decimal import Decimal
-from dotenv import load_dotenv
+import sys
+from datetime import datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
-load_dotenv()
+from booking_system.guest_manager import Refused, run
+from booking_system.hotel_registry import new_id
 
-# Database connections
-DATABASE_URL = os.getenv('DATABASE_URL')
-MONGO_URL = os.getenv('MONGO_URL')
-REDIS_URL = os.getenv('REDIS_URL')
 
-class MobileCheckinManager:
-    """Manages mobile check-in database operations"""
-    
-    def __init__(self):
-        self.mongo_client = MongoClient(MONGO_URL) if MONGO_URL else None
-        self.mongo_db = self.mongo_client.ella_hotel_encyclopedia if self.mongo_client else None
-        self.redis_client = redis.from_url(REDIS_URL) if REDIS_URL else None
-    def _require_zoneinfo(self, hotel_name: str):
-        tz = get_hotel_timezone_str(hotel_name)
-        if not tz or ZoneInfo is None:
-            raise ValueError("❌ Missing hotel timezone")
-        return ZoneInfo(tz)
-    def _now_local(self, hotel_name: str) -> datetime:
-        return datetime.now(self._require_zoneinfo(hotel_name))
-        
-    def get_db_connection(self):
-        """Get PostgreSQL database connection"""
-        return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+def _booking(cur, hotel_id, booking_id):
+    cur.execute("SELECT booking_status FROM booking WHERE hotel_id = %s AND booking_id = %s", (hotel_id, booking_id))
+    found = cur.fetchone()
+    if not found:
+        raise Refused("Booking " + str(booking_id or "") + " not found")
+    return found
 
-    def initiate_mobile_checkin(self, guest_id: str, arrival_date: str) -> dict:
-        """Start mobile check-in process for a guest"""
-        try:
-            with self.get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    # Get booking details
-                    cur.execute("""
-                        SELECT cb.*, g.guest_name 
-                        FROM confirmed_bookings cb
-                        JOIN guests g ON cb.guest_id = g.guest_id
-                        WHERE cb.guest_id = %s AND cb.check_in_date = %s
-                    """, (guest_id, arrival_date))
-                    
-                    booking = cur.fetchone()
-                    if not booking:
-                        return {'success': False, 'error': f"No booking found for {guest_id} on {arrival_date}"}
-                    
-                    # Create mobile check-in record
-                    checkin_id = f"{guest_id}checkin{datetime.now().strftime('%Y%m%d%H%M')}"
-                    
-                    cur.execute("""
-                        INSERT INTO mobile_checkin_sessions (
-                            session_id, guest_id, booking_id, hotel_id, room_type_id,
-                            checkin_status, initiated_at
-                        ) VALUES (%s, %s, %s, %s, %s, 'INITIATED', NOW())
-                    """, (checkin_id, guest_id, booking['booking_id'], booking['hotel_id'], booking['room_type_id']))
-                    
-                    conn.commit()
-                    
-                    return {
-                        'success': True,
-                        'checkin_id': checkin_id,
-                        'guest_name': booking['guest_name'],
-                        'guest_id': guest_id,
-                        'booking_id': booking['booking_id'],
-                        'room_type_id': booking['room_type_id'],
-                        'arrival_date': arrival_date
-                    }
-                    
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
 
-    def verify_guest_identity(self, guest_id: str, verification_data: dict) -> dict:
-        """Verify guest identity for mobile check-in"""
-        try:
-            with self.get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    # Get guest details
-                    cur.execute("SELECT * FROM guests WHERE guest_id = %s", (guest_id,))
-                    guest = cur.fetchone()
-                    
-                    if not guest:
-                        return {'success': False, 'error': f"Guest {guest_id} not found"}
-                    
-                    # Update mobile check-in with verification
-                    cur.execute("""
-                        UPDATE mobile_checkin_sessions 
-                        SET identity_verified = TRUE, 
-                            verification_method = %s,
-                            verification_time = NOW()
-                        WHERE guest_id = %s AND checkin_status = 'INITIATED'
-                    """, (verification_data.get('method', 'ID_CARD'), guest_id))
-                    
-                    # Store verification details in MongoDB
-                    if self.mongo_db:
-                        self.mongo_db.guest_verifications.insert_one({
-                            'guest_id': guest_id,
-                            'verification_data': verification_data,
-                            'verified_at': datetime.now(),
-                            'verified_by': 'mobile_checkin_manager'
-                        })
-                    
-                    conn.commit()
-                    
-                    return {
-                        'success': True,
-                        'guest_name': guest['guest_name'],
-                        'verification_method': verification_data.get('method', 'ID_CARD'),
-                        'document_type': verification_data.get('document_type', 'N/A')
-                    }
-                    
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
+def start(hotel_id, user_id, booking_id):
+    """READ the booking's mobile check-in; create it for a confirmed booking."""
+    def write(cur):
+        if _booking(cur, hotel_id, booking_id)["booking_status"] != "confirmed":
+            raise Refused("Booking " + booking_id + " is not confirmed")
+        cur.execute("SELECT checkin_id, status FROM mobile_checkin WHERE booking_id = %s", (booking_id,))
+        found = cur.fetchone()
+        if found:
+            return {"checkin_id": found["checkin_id"], "status": found["status"], "result": "already started"}
+        checkin_id = new_id("mci")
+        cur.execute("INSERT INTO mobile_checkin (checkin_id, hotel_id, booking_id, status, started_by_user_id) VALUES (%s, %s, %s, 'started', %s)",
+                    (checkin_id, hotel_id, booking_id, user_id))
+        return {"checkin_id": checkin_id, "status": "started", "result": "created"}
+    return run(write)
 
-    def update_room_preferences(self, guest_id: str, preferences: dict) -> dict:
-        """Update room preferences during mobile check-in"""
-        try:
-            # Update guest preferences in MongoDB
-            if self.mongo_db:
-                self.mongo_db.guest_preferences.update_one(
-                    {'guest_id': guest_id},
-                    {
-                        '$set': {
-                            'room_preferences': preferences,
-                            'updated_at': datetime.now(),
-                            'updated_via': 'mobile_checkin'
-                        }
-                    },
-                    upsert=True
-                )
-            
-            # Update mobile check-in record
-            with self.get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        UPDATE mobile_checkin_sessions 
-                        SET preferences_updated = TRUE,
-                            preferences_time = NOW()
-                        WHERE guest_id = %s AND checkin_status = 'INITIATED'
-                    """, (guest_id,))
-                    
-                    conn.commit()
-            
-            return {
-                'success': True,
-                'guest_id': guest_id,
-                'preferences': preferences
-            }
-            
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
 
-    def generate_digital_room_key(self, guest_id: str, room_type_id: str) -> dict:
-        """Generate digital room key for mobile check-in"""
-        try:
-            # Generate unique key
-            key_code = f"KEY{guest_id[-4:]}{room_type_id[-3:]}{datetime.now().strftime('%H%M')}"
-            
-            with self.get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    # Create digital key record
-                    key_id = f"{guest_id}key{datetime.now().strftime('%Y%m%d')}"
-                    valid_until = datetime.now() + timedelta(days=7)
-                    
-                    cur.execute("""
-                        INSERT INTO digital_keys (
-                            key_id, guest_id, room_type_id, key_code,
-                            valid_from, valid_until, key_status, created_at
-                        ) VALUES (%s, %s, %s, %s, NOW(), %s, 'ACTIVE', NOW())
-                    """, (key_id, guest_id, room_type_id, key_code, valid_until))
-                    
-                    # Update mobile check-in
-                    cur.execute("""
-                        UPDATE mobile_checkin_sessions 
-                        SET digital_key_generated = TRUE,
-                            key_generation_time = NOW(),
-                            checkin_status = 'COMPLETED'
-                        WHERE guest_id = %s AND room_type_id = %s
-                    """, (guest_id, room_type_id))
-                    
-                    conn.commit()
-                    
-                    return {
-                        'success': True,
-                        'guest_id': guest_id,
-                        'room_type_id': room_type_id,
-                        'key_code': key_code,
-                        'valid_from': datetime.now(),
-                        'valid_until': valid_until
-                    }
-                    
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
+def verify(hotel_id, user_id, booking_id):
+    """The desk confirmed the guest's identity: started becomes verified."""
+    def write(cur):
+        cur.execute("SELECT checkin_id, status FROM mobile_checkin WHERE hotel_id = %s AND booking_id = %s FOR UPDATE", (hotel_id, booking_id))
+        found = cur.fetchone()
+        if not found:
+            raise Refused("Mobile check-in not started for " + str(booking_id or ""))
+        if found["status"] == "verified":
+            return {"checkin_id": found["checkin_id"], "status": "verified", "result": "already verified"}
+        cur.execute("UPDATE mobile_checkin SET status = 'verified', verified_at = now(), verified_by_user_id = %s WHERE checkin_id = %s",
+                    (user_id, found["checkin_id"]))
+        return {"checkin_id": found["checkin_id"], "status": "verified", "result": "updated"}
+    return run(write)
 
-    def check_mobile_checkin_status(self, guest_id: str) -> dict:
-        """Check current mobile check-in status for a guest"""
-        try:
-            with self.get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        SELECT mc.*, g.guest_name, cb.room_type_id
-                        FROM mobile_checkin_sessions mc
-                        JOIN guests g ON mc.guest_id = g.guest_id
-                        JOIN confirmed_bookings cb ON mc.booking_id = cb.booking_id
-                        WHERE mc.guest_id = %s
-                        ORDER BY mc.initiated_at DESC
-                        LIMIT 1
-                    """, (guest_id,))
-                    
-                    checkin = cur.fetchone()
-                    if not checkin:
-                        return {'success': False, 'error': f"No mobile check-in found for {guest_id}"}
-                    
-                    # Check digital key status
-                    cur.execute("""
-                        SELECT key_code, valid_until, key_status
-                        FROM digital_keys
-                        WHERE guest_id = %s AND room_type_id = %s
-                        ORDER BY created_at DESC
-                        LIMIT 1
-                    """, (guest_id, checkin['room_type_id']))
-                    
-                    key_info = cur.fetchone()
-                    
-                    return {
-                        'success': True,
-                        'checkin_data': dict(checkin),
-                        'key_info': dict(key_info) if key_info else None
-                    }
-                    
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
 
-    def handle_checkin_issues(self, guest_id: str, issue_type: str, resolution: str) -> dict:
-        """Handle mobile check-in issues and provide resolutions"""
-        try:
-            with self.get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    # Log the issue
-                    issue_id = f"{guest_id}issue{datetime.now().strftime('%Y%m%d%H%M%S')}"
-                    
-                    cur.execute("""
-                        INSERT INTO checkin_issues (
-                            issue_id, guest_id, issue_type, issue_description,
-                            resolution_action, resolved_at, resolved_by
-                        ) VALUES (%s, %s, %s, %s, %s, NOW(), 'mobile_checkin_manager')
-                    """, (issue_id, guest_id, issue_type, issue_type, resolution))
-                    
-                    # Update mobile check-in status if needed
-                    if issue_type == 'identity_failed':
-                        cur.execute("""
-                            UPDATE mobile_checkin_sessions 
-                            SET checkin_status = 'IDENTITY_REVIEW',
-                                identity_verified = FALSE
-                            WHERE guest_id = %s
-                        """, (guest_id,))
-                    
-                    conn.commit()
-                    
-                    return {
-                        'success': True,
-                        'issue_id': issue_id,
-                        'guest_id': guest_id,
-                        'issue_type': issue_type,
-                        'resolution': resolution
-                    }
-                    
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
+def issue_key(hotel_id, user_id, booking_id, room_number):
+    """A key for a verified check-in's room that is checked in; an active key for the same room is returned, not repeated."""
+    def write(cur):
+        cur.execute("SELECT status FROM mobile_checkin WHERE hotel_id = %s AND booking_id = %s", (hotel_id, booking_id))
+        found = cur.fetchone()
+        if not found or found["status"] != "verified":
+            raise Refused("Mobile check-in is not verified for " + str(booking_id or ""))
+        cur.execute(
+            """SELECT r.room_id, MAX(n.stay_date) AS last_night, h.timezone
+               FROM booking_room_night n JOIN room r ON r.room_id = n.room_id JOIN hotel h ON h.hotel_id = n.hotel_id
+               WHERE n.hotel_id = %s AND n.booking_id = %s AND r.room_number = %s AND n.night_status = 'checked_in'
+               GROUP BY r.room_id, h.timezone""",
+            (hotel_id, booking_id, str(room_number or "").strip().upper()))
+        room = cur.fetchone()
+        if not room:
+            raise Refused("Room " + str(room_number or "") + " is not checked in on " + str(booking_id or ""))
+        cur.execute("SELECT hotel_setting_required(%s, 'front_desk.checkout_time', %s) #>> '{}' AS checkout",
+                    (hotel_id, room["last_night"] + timedelta(days=1)))
+        room["standard_checkout_time"] = time.fromisoformat(cur.fetchone()["checkout"])
+        cur.execute("SELECT key_id, valid_until FROM digital_key WHERE booking_id = %s AND room_id = %s AND status = 'active'", (booking_id, room["room_id"]))
+        held = cur.fetchone()
+        if held:
+            return {"key_id": held["key_id"], "valid_until": held["valid_until"].isoformat(), "result": "already issued"}
+        until = datetime.combine(room["last_night"] + timedelta(days=1), room["standard_checkout_time"], ZoneInfo(room["timezone"]))
+        key_id = new_id("dkey")
+        cur.execute(
+            """INSERT INTO digital_key (key_id, hotel_id, booking_id, room_id, valid_from, valid_until, status, issued_by_user_id)
+               VALUES (%s, %s, %s, %s, now(), %s, 'active', %s)""",
+            (key_id, hotel_id, booking_id, room["room_id"], until, user_id))
+        return {"key_id": key_id, "valid_until": until.isoformat(), "result": "created"}
+    return run(write)
 
-if __name__ == "__main__":
-    # Test the manager
-    manager = MobileCheckinManager()
-    print("🌟 Mobile Check-in Manager initialized successfully!") 
+
+def revoke_key(hotel_id, user_id, key_id):
+    def write(cur):
+        cur.execute("SELECT status FROM digital_key WHERE hotel_id = %s AND key_id = %s FOR UPDATE", (hotel_id, key_id))
+        found = cur.fetchone()
+        if not found:
+            raise Refused("Key " + str(key_id or "") + " not found")
+        if found["status"] == "active":
+            cur.execute("UPDATE digital_key SET status = 'revoked' WHERE key_id = %s", (key_id,))
+        return {"key_id": key_id, "status": "revoked"}
+    return run(write)
+
+
+def status(hotel_id, booking_id):
+    """The booking's mobile check-in and its keys."""
+    def read(cur):
+        _booking(cur, hotel_id, booking_id)
+        cur.execute("SELECT checkin_id, status, started_at, verified_at FROM mobile_checkin WHERE booking_id = %s", (booking_id,))
+        found = cur.fetchone()
+        cur.execute(
+            """SELECT k.key_id, r.room_number, k.valid_from, k.valid_until, k.status FROM digital_key k JOIN room r ON r.room_id = k.room_id
+               WHERE k.booking_id = %s ORDER BY k.issued_at""", (booking_id,))
+        keys = [{name: (value.isoformat() if hasattr(value, "isoformat") else value) for name, value in row.items()} for row in cur.fetchall()]
+        checkin = {name: (value.isoformat() if hasattr(value, "isoformat") else value) for name, value in found.items()} if found else None
+        return {"booking_id": booking_id, "mobile_checkin": checkin, "keys": keys}
+    return run(read)
+
+
+mobile_checkin_manager = sys.modules[__name__]

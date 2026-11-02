@@ -4,7 +4,8 @@ import json
 import psycopg2
 from psycopg2.extras import Json
 
-from booking_system.content_store import add_column
+from booking_system import schema_catalog
+from booking_system.content_store import add_column, hotel_column
 
 def initialize_catalog():
     """Schema, seed, and one full index rebuild. A chat turn does not call this."""
@@ -66,7 +67,7 @@ def initialize_catalog():
             """
             CREATE TABLE IF NOT EXISTS investigation_traces (
                 trace_id BIGSERIAL PRIMARY KEY,
-                hotel_name VARCHAR NOT NULL,
+                hotel_id VARCHAR(48) NOT NULL REFERENCES hotel (hotel_id),
                 question TEXT NOT NULL,
                 catalog_ids JSONB NOT NULL,
                 catalog_versions JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -132,9 +133,9 @@ def initialize_catalog():
             """
             CREATE TABLE IF NOT EXISTS knowledge_tests (
                 catalog_id VARCHAR NOT NULL,
-                hotel_name VARCHAR NOT NULL,
+                hotel_id VARCHAR(48) NOT NULL REFERENCES hotel (hotel_id),
                 expected_value TEXT NOT NULL,
-                PRIMARY KEY (catalog_id, hotel_name)
+                PRIMARY KEY (catalog_id, hotel_id)
             )
             """
         )
@@ -316,7 +317,7 @@ def sync_keyphrases():
 
 def filter_catalogs(phrases):
     """Active catalogs whose keyphrases are the same phrase. No row cap."""
-    from booking_system.content_store import _with
+    from booking_system.content_store import _with, with_settings
 
     wanted = []
     for phrase in phrases or []:
@@ -327,7 +328,6 @@ def filter_catalogs(phrases):
         return []
 
     def run(cur):
-        cur.execute("SET pg_trgm.similarity_threshold = 0.6")
         cur.execute(
             """
             SELECT DISTINCT k.catalog_id
@@ -343,7 +343,7 @@ def filter_catalogs(phrases):
         )
         return [row[0] for row in cur.fetchall()]
 
-    return _with(run) or []
+    return _with(lambda cur: with_settings(cur, (("pg_trgm.similarity_threshold", 0.6),), run)) or []
 
 
 def _page_aliases(catalog_id, body):
@@ -490,50 +490,54 @@ def verify_catalog_index():
     return _with(run) or []
 
 
-def search_knowledge(request, limit=8):
-    """Summaries only. One broader pass when the first shortlist is weak."""
-    from booking_system.content_store import _with
+_SEARCH = """
+    WITH asked AS (
+        SELECT plainto_tsquery('english', %(request)s) AS tsq,
+               %(request)s::text AS raw
+    ),
+    by_index AS (
+        SELECT i.catalog_id,
+               ts_rank_cd(i.search_vector, asked.tsq)::float8 AS score
+        FROM knowledge_index i
+        CROSS JOIN asked
+        WHERE i.status = 'published'
+          AND i.search_vector @@ asked.tsq
+    ),
+    by_similarity AS (
+        SELECT k.catalog_id,
+               MAX(similarity(k.phrase, asked.raw))::float8 AS score
+        FROM catalog_keyphrase k
+        CROSS JOIN asked
+        WHERE k.phrase %% asked.raw
+        GROUP BY k.catalog_id
+    )
+    SELECT i.catalog_id, i.title, i.summary, i.version, MAX(h.score) AS score
+    FROM (
+        SELECT catalog_id, score FROM by_index
+        UNION ALL
+        SELECT catalog_id, score FROM by_similarity
+    ) h
+    JOIN knowledge_index i ON i.catalog_id = h.catalog_id AND i.status = 'published'
+    GROUP BY i.catalog_id, i.title, i.summary, i.version
+    ORDER BY score DESC, i.catalog_id
+    LIMIT %(limit)s
+"""
 
-    def gather(cur, threshold):
-        cur.execute(
-            """
-            WITH cfg AS (
-                SELECT set_config('pg_trgm.word_similarity_threshold', %s, true)
-            )
-            SELECT i.catalog_id, i.title, i.summary, i.version,
-                   MAX(word_similarity(k.phrase, %s)) AS score
-            FROM catalog_keyphrase k
-            JOIN knowledge_index i ON i.catalog_id = k.catalog_id
-            CROSS JOIN cfg
-            WHERE k.phrase <%% %s
-            GROUP BY i.catalog_id, i.title, i.summary, i.version
-            ORDER BY score DESC
-            LIMIT %s
-            """,
-            (str(threshold), str(request or ""), str(request or ""), int(limit)),
-        )
-        rows = []
-        for catalog_id, title, summary, version, score in cur.fetchall():
-            rows.append({
-                "catalog_id": catalog_id,
-                "title": title,
-                "summary": summary,
-                "version": int(version or 0),
-                "score": float(score or 0),
-            })
-        return rows
+
+def search_knowledge(request, limit=8):
+    """Short list from the knowledge index and phrase similarity. The tsvector GIN index and the trigram GIN index
+    supply the hits. Summaries only; recipe bodies stay out of this read."""
+    from booking_system.content_store import _with, with_settings
 
     def run(cur):
-        found = gather(cur, 0.5)
-        weak = not found or found[0]["score"] < 0.45
-        if weak:
-            wider = gather(cur, 0.25)
-            if wider and (not found or wider[0]["score"] >= found[0]["score"]):
-                return wider
-        return found
+        cur.execute(_SEARCH, {"request": str(request or ""), "limit": int(limit)})
+        return [
+            {"catalog_id": catalog_id, "title": title, "summary": summary, "version": int(version or 0), "score": float(score or 0)}
+            for catalog_id, title, summary, version, score in cur.fetchall()
+        ]
 
     try:
-        return _with(run) or []
+        return _with(lambda cur: with_settings(cur, (("pg_trgm.similarity_threshold", "0.3"),), run)) or []
     except psycopg2.errors.UndefinedTable:
         raise RuntimeError("catalog index is not initialized")
 
@@ -579,7 +583,7 @@ def list_active_catalogs():
         cur.execute(
             """
             SELECT c.catalog_id, c.parent_id, c.domain, c.purpose, c.status, c.store,
-                   a.version, v.body, c.scope, c.manager_name
+                   a.version, v.body, c.scope, c.user_id
             FROM catalogs c
             JOIN catalog_active_versions a
               ON a.catalog_id = c.catalog_id AND a.scope = 'global'
@@ -603,7 +607,7 @@ def list_active_catalogs():
                 "concepts": list(body.get("concepts") or []),
                 "body": body,
                 "scope": row[8],
-                "manager_name": row[9],
+                "user_id": row[9],
             })
         return rows
 
@@ -626,24 +630,24 @@ def retire_catalog(catalog_id):
     return _transaction(run)
 
 
-def assign_user_scope(catalog_id, manager_name):
-    """Mark a learned page as one manager's user recipe."""
+def assign_user_scope(catalog_id, user_id):
+    """Mark a learned page as one user's own recipe."""
     from booking_system.content_store import _with
 
     def run(cur):
         cur.execute(
-            "UPDATE catalogs SET scope = 'user', manager_name = %s WHERE catalog_id = %s RETURNING catalog_id",
-            (str(manager_name or "").upper(), str(catalog_id)),
+            "UPDATE catalogs SET scope = 'user', user_id = %s WHERE catalog_id = %s RETURNING catalog_id",
+            (str(user_id or ""), str(catalog_id)),
         )
         return bool(cur.fetchone())
 
     return _with(run)
 
 
-def visible_to(row, manager_name):
-    """General recipes are for every hotel and user. A user recipe is visible only to the manager who owns it."""
+def visible_to(row, user_id):
+    """General recipes are for every hotel and user. A user recipe is visible only to the user who owns it."""
     return row.get("scope") == "general" or (
-        row.get("scope") == "user" and str(row.get("manager_name") or "") == str(manager_name or "").upper()
+        row.get("scope") == "user" and bool(user_id) and str(row.get("user_id") or "") == str(user_id)
     )
 
 
@@ -657,10 +661,10 @@ def catalog_scopes(catalog_ids):
 
     def run(cur):
         cur.execute(
-            "SELECT catalog_id, scope, manager_name, status FROM catalogs WHERE catalog_id = ANY(%s)",
+            "SELECT catalog_id, scope, user_id, status FROM catalogs WHERE catalog_id = ANY(%s)",
             (wanted,),
         )
-        return {row[0]: {"scope": row[1], "manager_name": row[2], "status": row[3]} for row in cur.fetchall()}
+        return {row[0]: {"scope": row[1], "user_id": row[2], "status": row[3]} for row in cur.fetchall()}
 
     return _with(run)
 
@@ -721,24 +725,58 @@ def active_body(catalog_id):
     return _with(run)
 
 
+def active_pages(catalog_ids):
+    """Scope, owner, active version, and body of each id with an active version, in one read."""
+    from booking_system.content_store import _with
+
+    wanted = [str(item) for item in catalog_ids or [] if str(item or "")]
+    if not wanted:
+        return {}
+
+    def run(cur):
+        cur.execute(
+            """
+            SELECT c.catalog_id, c.scope, c.user_id, c.status, a.version, v.body
+            FROM catalogs c
+            JOIN catalog_active_versions a ON a.catalog_id = c.catalog_id AND a.scope = 'global'
+            JOIN catalog_versions v ON v.catalog_id = a.catalog_id AND v.version = a.version
+            WHERE c.catalog_id = ANY(%s)
+            """,
+            (wanted,),
+        )
+        return {
+            row[0]: {"scope": row[1], "user_id": row[2], "status": row[3], "version": int(row[4] or 0), "body": row[5]}
+            for row in cur.fetchall() if row[5]
+        }
+
+    return _with(run)
+
+
 def active_versions(catalog_ids):
-    found = []
-    for catalog_id in catalog_ids or []:
-        body = active_body(catalog_id)
-        if not body:
-            continue
-        from booking_system.content_store import _with
+    """The active version and body of each id that has one, in the order asked, in one read."""
+    from booking_system.content_store import _with
 
-        def run(cur, cid=str(catalog_id or "")):
-            cur.execute(
-                "SELECT version FROM catalog_active_versions WHERE scope = 'global' AND catalog_id = %s",
-                (cid,),
-            )
-            row = cur.fetchone()
-            return int(row[0]) if row else 0
+    wanted = [str(item or "") for item in catalog_ids or []]
+    if not wanted:
+        return []
 
-        found.append({"catalog_id": str(catalog_id), "version": _with(run), "body": body})
-    return found
+    def run(cur):
+        cur.execute(
+            """
+            SELECT a.catalog_id, a.version, v.body
+            FROM catalog_active_versions a
+            JOIN catalog_versions v ON v.catalog_id = a.catalog_id AND v.version = a.version
+            WHERE a.scope = 'global' AND a.catalog_id = ANY(%s)
+            """,
+            (wanted,),
+        )
+        return {row[0]: (int(row[1] or 0), row[2]) for row in cur.fetchall()}
+
+    loaded = _with(run)
+    return [
+        {"catalog_id": catalog_id, "version": loaded[catalog_id][0], "body": loaded[catalog_id][1]}
+        for catalog_id in wanted if catalog_id in loaded and loaded[catalog_id][1]
+    ]
 
 
 def save_proposal(trace_id, action, catalog_id, parent_id, body, diagnosis):
@@ -822,9 +860,9 @@ def promote_proposal(proposal_id, assisted=True, approval_ref="", owner=""):
     A general recipe is never changed by a learned proposal."""
     from booking_system.content_store import _transaction
 
-    owner = str(owner or "").upper()
+    owner = str(owner or "")
     if not owner:
-        return {"error": "a learned recipe needs the manager who owns it"}
+        return {"error": "a learned recipe needs the user who owns it"}
 
     def run(cur):
         cur.execute(
@@ -847,7 +885,7 @@ def promote_proposal(proposal_id, assisted=True, approval_ref="", owner=""):
         prior = cur.fetchone()
         previous = int(prior[0]) if prior else None
         if action == "repair":
-            cur.execute("SELECT scope, manager_name FROM catalogs WHERE catalog_id = %s", (catalog_id,))
+            cur.execute("SELECT scope, user_id FROM catalogs WHERE catalog_id = %s", (catalog_id,))
             page = cur.fetchone()
             if not page:
                 return {"error": "catalog not found; use create_child"}
@@ -865,7 +903,7 @@ def promote_proposal(proposal_id, assisted=True, approval_ref="", owner=""):
                 """,
                 (catalog_id, next_version, Json(body), Json({
                     "proposal_id": int(proposal_id), "action": "repair", "approval_ref": str(approval_ref or ""),
-                    "scope": "user", "manager_name": owner,
+                    "scope": "user", "user_id": owner,
                 })),
             )
             cur.execute(
@@ -884,7 +922,7 @@ def promote_proposal(proposal_id, assisted=True, approval_ref="", owner=""):
                 return {"error": "catalog already exists; use repair"}
             cur.execute(
                 """
-                INSERT INTO catalogs (catalog_id, parent_id, domain, purpose, status, store, scope, manager_name)
+                INSERT INTO catalogs (catalog_id, parent_id, domain, purpose, status, store, scope, user_id)
                 VALUES (%s, %s, %s, %s, 'active', %s, 'user', %s)
                 """,
                 (
@@ -903,7 +941,7 @@ def promote_proposal(proposal_id, assisted=True, approval_ref="", owner=""):
                 """,
                 (catalog_id, Json(body), Json({
                     "proposal_id": int(proposal_id), "action": "create_child", "approval_ref": str(approval_ref or ""),
-                    "scope": "user", "manager_name": owner,
+                    "scope": "user", "user_id": owner,
                 })),
             )
             cur.execute(
@@ -934,7 +972,7 @@ def promote_proposal(proposal_id, assisted=True, approval_ref="", owner=""):
         refresh_page_index(cur, catalog_id)
         return {
             "catalog_id": catalog_id, "action": action, "status": "published", "previous_version": previous,
-            "version": int(current[0]) if current else 1, "scope": "user", "manager_name": owner,
+            "version": int(current[0]) if current else 1, "scope": "user", "user_id": owner,
         }
 
     return _transaction(run)
@@ -1077,7 +1115,7 @@ def active_recipe_summaries(limit=8):
     return _with(run)
 
 
-def latest_problem_spec(hotel_name, question):
+def latest_problem_spec(hotel_id, question):
     from booking_system.content_store import _with
 
     def run(cur):
@@ -1085,11 +1123,11 @@ def latest_problem_spec(hotel_name, question):
             """
             SELECT body
             FROM problem_specs
-            WHERE hotel_name = %s AND original_question = %s
+            WHERE hotel_id = %s AND original_question = %s
             ORDER BY spec_id DESC
             LIMIT 1
             """,
-            (str(hotel_name or "").upper(), str(question or "")),
+            (str(hotel_id or ""), str(question or "")),
         )
         row = cur.fetchone()
         return row[0] if row and isinstance(row[0], dict) else {}
@@ -1097,26 +1135,40 @@ def latest_problem_spec(hotel_name, question):
     return _with(run)
 
 
+def _owner_column(cur, table, seen):
+    """The owner of a learned recipe, investigation, or gap is the user id. A table still keyed by manager_name is renamed once."""
+    present = seen.columns(table) & {"user_id", "manager_name"}
+    if "user_id" in present:
+        return
+    if "manager_name" in present:
+        cur.execute("ALTER TABLE " + table + " RENAME COLUMN manager_name TO user_id")
+        return
+    add_column(cur, table, "user_id", "VARCHAR NOT NULL DEFAULT ''", seen)
+
+
 def workflow_ddl(cur):
-    """Tables for events, tasks, context packages, evidence, and one open investigation per gap."""
-    cur.execute(
+    """Tables for events, tasks, context packages, evidence, and one open investigation per gap. The catalog is read once
+    (schema_catalog) and the CREATE TABLE IF NOT EXISTS statements travel together, so a ready schema costs few round trips."""
+    seen = schema_catalog.snapshot(cur)
+    tables = []
+    tables.append(
         """
         CREATE TABLE IF NOT EXISTS events (
             event_id BIGSERIAL PRIMARY KEY,
             event_type VARCHAR NOT NULL,
-            hotel_name VARCHAR NOT NULL,
+            hotel_id VARCHAR(48) NOT NULL REFERENCES hotel (hotel_id),
             idempotency_key VARCHAR NOT NULL UNIQUE,
             payload JSONB NOT NULL DEFAULT '{}'::jsonb,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
         """
     )
-    cur.execute(
+    tables.append(
         """
         CREATE TABLE IF NOT EXISTS tasks (
             task_id BIGSERIAL PRIMARY KEY,
             event_id BIGINT NOT NULL,
-            hotel_name VARCHAR NOT NULL,
+            hotel_id VARCHAR(48) NOT NULL REFERENCES hotel (hotel_id),
             agent VARCHAR NOT NULL,
             purpose VARCHAR NOT NULL,
             status VARCHAR NOT NULL,
@@ -1125,7 +1177,7 @@ def workflow_ddl(cur):
         )
         """
     )
-    cur.execute(
+    tables.append(
         """
         CREATE TABLE IF NOT EXISTS context_packages (
             package_id BIGSERIAL PRIMARY KEY,
@@ -1142,12 +1194,12 @@ def workflow_ddl(cur):
         )
         """
     )
-    cur.execute(
+    tables.append(
         """
         CREATE TABLE IF NOT EXISTS evidence (
             evidence_id BIGSERIAL PRIMARY KEY,
             task_id BIGINT,
-            hotel_name VARCHAR NOT NULL,
+            hotel_id VARCHAR(48) NOT NULL REFERENCES hotel (hotel_id),
             evidence_type VARCHAR NOT NULL,
             payload JSONB NOT NULL DEFAULT '{}'::jsonb,
             source VARCHAR NOT NULL DEFAULT '',
@@ -1156,11 +1208,11 @@ def workflow_ddl(cur):
         )
         """
     )
-    cur.execute(
+    tables.append(
         """
         CREATE TABLE IF NOT EXISTS investigations (
             investigation_id BIGSERIAL PRIMARY KEY,
-            hotel_name VARCHAR NOT NULL,
+            hotel_id VARCHAR(48) NOT NULL REFERENCES hotel (hotel_id),
             gap_fingerprint VARCHAR NOT NULL,
             trace_id BIGINT,
             status VARCHAR NOT NULL,
@@ -1172,6 +1224,8 @@ def workflow_ddl(cur):
         )
         """
     )
+    cur.execute(";\n".join(tables))
+    tables.clear()
     cur.execute(
         """
         SELECT indexdef FROM pg_indexes
@@ -1188,46 +1242,47 @@ def workflow_ddl(cur):
             WHERE status IN ('open', 'leased', 'awaiting_approval')
             """
         )
-    cur.execute(
+    tables.append(
         """
         CREATE TABLE IF NOT EXISTS problem_specs (
             spec_id BIGSERIAL PRIMARY KEY,
             event_id BIGINT,
-            hotel_name VARCHAR NOT NULL,
+            hotel_id VARCHAR(48) NOT NULL REFERENCES hotel (hotel_id),
             original_question TEXT NOT NULL,
             body JSONB NOT NULL DEFAULT '{}'::jsonb,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
         """
     )
-    cur.execute(
+    tables.append(
         """
         CREATE TABLE IF NOT EXISTS execution_runs (
             run_id BIGSERIAL PRIMARY KEY,
             task_id BIGINT,
-            hotel_name VARCHAR NOT NULL,
+            hotel_id VARCHAR(48) NOT NULL REFERENCES hotel (hotel_id),
             catalog_id VARCHAR NOT NULL DEFAULT '',
             version INTEGER,
             parameters JSONB NOT NULL DEFAULT '{}'::jsonb,
             row_count INTEGER NOT NULL DEFAULT 0,
             error TEXT NOT NULL DEFAULT '',
             elapsed_ms INTEGER NOT NULL DEFAULT 0,
+            definition_versions JSONB NOT NULL DEFAULT '[]'::jsonb,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
         """
     )
-    cur.execute(
+    tables.append(
         """
         CREATE TABLE IF NOT EXISTS composition_plans (
             plan_id BIGSERIAL PRIMARY KEY,
             task_id BIGINT,
-            hotel_name VARCHAR NOT NULL,
+            hotel_id VARCHAR(48) NOT NULL REFERENCES hotel (hotel_id),
             body JSONB NOT NULL DEFAULT '{}'::jsonb,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
         """
     )
-    cur.execute(
+    tables.append(
         """
         CREATE TABLE IF NOT EXISTS publication_decisions (
             decision_id BIGSERIAL PRIMARY KEY,
@@ -1240,7 +1295,7 @@ def workflow_ddl(cur):
         )
         """
     )
-    cur.execute(
+    tables.append(
         """
         CREATE TABLE IF NOT EXISTS recipe_reviews (
             review_id BIGSERIAL PRIMARY KEY,
@@ -1256,83 +1311,82 @@ def workflow_ddl(cur):
         )
         """
     )
-    cur.execute(
-        """
-        SELECT 1 FROM information_schema.tables
-        WHERE table_schema = 'public' AND table_name = 'catalog_proposals'
-        """
-    )
-    if cur.fetchone():
-        add_column(cur, "catalog_proposals", "content_hash", "VARCHAR NOT NULL DEFAULT ''")
-    cur.execute(
-        """
-        SELECT 1 FROM information_schema.tables
-        WHERE table_schema = 'public' AND table_name = 'catalog_test_runs'
-        """
-    )
-    if cur.fetchone():
-        add_column(cur, "catalog_test_runs", "input_hash", "VARCHAR NOT NULL DEFAULT ''")
-        add_column(cur, "catalog_test_runs", "checks", "JSONB NOT NULL DEFAULT '{}'::jsonb")
-        add_column(cur, "catalog_test_runs", "validator_version", "VARCHAR NOT NULL DEFAULT ''")
-    add_column(cur, "investigations", "revision_count", "INTEGER NOT NULL DEFAULT 0")
-    add_column(cur, "investigations", "proposal_id", "BIGINT")
-    add_column(cur, "investigations", "manager_name", "VARCHAR NOT NULL DEFAULT ''")
-    add_column(cur, "investigations", "closed_at", "TIMESTAMPTZ")
-    add_column(cur, "investigations", "tokens_used", "BIGINT NOT NULL DEFAULT 0")
-    cur.execute(
-        """
-        SELECT 1 FROM information_schema.tables
-        WHERE table_schema = 'public' AND table_name = 'catalogs'
-        """
-    )
-    if cur.fetchone():
-        add_column(cur, "catalogs", "scope", "VARCHAR NOT NULL DEFAULT 'general'")
-        add_column(cur, "catalogs", "manager_name", "VARCHAR NOT NULL DEFAULT ''")
+    if seen.exists("catalog_proposals"):
+        add_column(cur, "catalog_proposals", "content_hash", "VARCHAR NOT NULL DEFAULT ''", seen)
+    if seen.exists("catalog_test_runs"):
+        add_column(cur, "catalog_test_runs", "input_hash", "VARCHAR NOT NULL DEFAULT ''", seen)
+        add_column(cur, "catalog_test_runs", "checks", "JSONB NOT NULL DEFAULT '{}'::jsonb", seen)
+        add_column(cur, "catalog_test_runs", "validator_version", "VARCHAR NOT NULL DEFAULT ''", seen)
+    add_column(cur, "investigations", "revision_count", "INTEGER NOT NULL DEFAULT 0", seen)
+    add_column(cur, "investigations", "proposal_id", "BIGINT", seen)
+    _owner_column(cur, "investigations", seen)
+    add_column(cur, "investigations", "closed_at", "TIMESTAMPTZ", seen)
+    add_column(cur, "investigations", "tokens_used", "BIGINT NOT NULL DEFAULT 0", seen)
+    add_column(cur, "execution_runs", "definition_versions", "JSONB NOT NULL DEFAULT '[]'::jsonb", seen)
+    if seen.exists("catalogs"):
+        add_column(cur, "catalogs", "scope", "VARCHAR NOT NULL DEFAULT 'general'", seen)
+        _owner_column(cur, "catalogs", seen)
     cur.execute(
         """
         UPDATE investigations SET closed_at = created_at
         WHERE closed_at IS NULL AND status NOT IN ('open', 'leased', 'awaiting_approval')
         """
     )
-    cur.execute(
+    tables.append(
         """
         CREATE TABLE IF NOT EXISTS gap_candidates (
-            hotel_name VARCHAR NOT NULL,
+            hotel_id VARCHAR(48) NOT NULL REFERENCES hotel (hotel_id),
             gap_fingerprint VARCHAR NOT NULL,
-            manager_name VARCHAR NOT NULL,
+            user_id VARCHAR NOT NULL,
             occurrences INTEGER NOT NULL DEFAULT 0,
             status VARCHAR NOT NULL DEFAULT 'candidate',
             reason VARCHAR NOT NULL DEFAULT '',
             last_question TEXT NOT NULL DEFAULT '',
             first_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            PRIMARY KEY (hotel_name, gap_fingerprint, manager_name)
+            PRIMARY KEY (hotel_id, gap_fingerprint, user_id)
         )
         """
     )
-    cur.execute(
+    tables.append(
         """
         CREATE TABLE IF NOT EXISTS agent_usage (
-            hotel_name VARCHAR NOT NULL,
+            hotel_id VARCHAR(48) NOT NULL REFERENCES hotel (hotel_id),
             usage_date DATE NOT NULL,
             origin VARCHAR NOT NULL,
             agent VARCHAR NOT NULL,
             calls INTEGER NOT NULL DEFAULT 0,
             input_tokens BIGINT NOT NULL DEFAULT 0,
             output_tokens BIGINT NOT NULL DEFAULT 0,
-            PRIMARY KEY (hotel_name, usage_date, origin, agent)
+            PRIMARY KEY (hotel_id, usage_date, origin, agent)
         )
         """
     )
+    cur.execute(";\n".join(tables))
+    _owner_column(cur, "gap_candidates", seen)
+    for table in ("events", "tasks", "evidence", "investigations", "problem_specs", "execution_runs", "composition_plans"):
+        hotel_column(cur, table, seen=seen)
+    hotel_column(cur, "gap_candidates", ("hotel_id", "gap_fingerprint", "user_id"), seen)
+    hotel_column(cur, "agent_usage", ("hotel_id", "usage_date", "origin", "agent"), seen)
+    for table, key in (("investigation_traces", ()), ("knowledge_tests", ("catalog_id", "hotel_id")), ("complaints", ())):
+        if seen.exists(table):
+            hotel_column(cur, table, key, seen)
+    from booking_system.runtime_state import chat_ddl
+    chat_ddl(cur, seen)
+
+
+_WORKFLOW_READY = []
 
 
 def ensure_workflow_tables():
-    """Create the workflow tables. Does not seed catalogs or rebuild the index."""
+    """Create the workflow tables once per process. Does not seed catalogs or rebuild the index."""
     from booking_system.content_store import _with
-    return _with(workflow_ddl)
+    if not _WORKFLOW_READY:
+        _with(workflow_ddl)
+        _WORKFLOW_READY.append(True)
 
 
-def save_problem_spec(event_id, hotel_name, spec):
+def save_problem_spec(event_id, hotel_id, spec):
     from booking_system.content_store import _with
 
     body = spec or {}
@@ -1340,13 +1394,13 @@ def save_problem_spec(event_id, hotel_name, spec):
     def run(cur):
         cur.execute(
             """
-            INSERT INTO problem_specs (event_id, hotel_name, original_question, body)
+            INSERT INTO problem_specs (event_id, hotel_id, original_question, body)
             VALUES (%s, %s, %s, %s)
             RETURNING spec_id
             """,
             (
                 int(event_id) if event_id else None,
-                str(hotel_name or "").upper(),
+                str(hotel_id or ""),
                 str(body.get("original_question") or ""),
                 Json(body),
             ),
@@ -1356,27 +1410,29 @@ def save_problem_spec(event_id, hotel_name, spec):
     return _with(run)
 
 
-def save_execution_run(task_id, hotel_name, catalog_id, version, parameters, row_count, error, elapsed_ms):
+def save_execution_run(task_id, hotel_id, catalog_id, version, parameters, row_count, error, elapsed_ms, definition_versions=()):
+    """definition_versions: [{key, version_id, definition}] of the manager's definitions the run read (definitions.versions_used)."""
     from booking_system.content_store import _with
 
     def run(cur):
         cur.execute(
             """
             INSERT INTO execution_runs (
-                task_id, hotel_name, catalog_id, version, parameters, row_count, error, elapsed_ms
+                task_id, hotel_id, catalog_id, version, parameters, row_count, error, elapsed_ms, definition_versions
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING run_id
             """,
             (
                 int(task_id) if task_id else None,
-                str(hotel_name or "").upper(),
+                str(hotel_id or ""),
                 str(catalog_id or ""),
                 int(version) if version else None,
                 Json(parameters or {}),
                 int(row_count or 0),
                 str(error or ""),
                 int(elapsed_ms or 0),
+                Json(list(definition_versions or [])),
             ),
         )
         return {"run_id": int(cur.fetchone()[0])}
@@ -1384,17 +1440,17 @@ def save_execution_run(task_id, hotel_name, catalog_id, version, parameters, row
     return _with(run)
 
 
-def save_composition_plan(task_id, hotel_name, body):
+def save_composition_plan(task_id, hotel_id, body):
     from booking_system.content_store import _with
 
     def run(cur):
         cur.execute(
             """
-            INSERT INTO composition_plans (task_id, hotel_name, body)
+            INSERT INTO composition_plans (task_id, hotel_id, body)
             VALUES (%s, %s, %s)
             RETURNING plan_id
             """,
-            (int(task_id) if task_id else None, str(hotel_name or "").upper(), Json(body or {})),
+            (int(task_id) if task_id else None, str(hotel_id or ""), Json(body or {})),
         )
         return {"plan_id": int(cur.fetchone()[0])}
 
@@ -1424,38 +1480,42 @@ def save_publication_decision(proposal_id, catalog_id, status, notes, approval_r
     return _with(run)
 
 
-def save_event(hotel_name, event_type, idempotency_key, payload):
-    from booking_system.content_store import _transaction
-
-    def run(cur):
-        cur.execute("SELECT event_id FROM events WHERE idempotency_key = %s", (str(idempotency_key or ""),))
-        row = cur.fetchone()
-        if row:
-            return {"event_id": int(row[0]), "created": False}
-        cur.execute(
-            """
-            INSERT INTO events (event_type, hotel_name, idempotency_key, payload)
-            VALUES (%s, %s, %s, %s)
-            RETURNING event_id
-            """,
-            (str(event_type or ""), str(hotel_name or "").upper(), str(idempotency_key or ""), Json(payload or {})),
-        )
-        return {"event_id": int(cur.fetchone()[0]), "created": True}
-
-    return _transaction(run)
-
-
-def save_task(event_id, hotel_name, agent, purpose, status):
+def save_event(hotel_id, event_type, idempotency_key, payload):
+    """One statement: a new key is inserted; a repeated key returns the event it already names."""
     from booking_system.content_store import _with
 
     def run(cur):
         cur.execute(
             """
-            INSERT INTO tasks (event_id, hotel_name, agent, purpose, status)
+            WITH added AS (
+                INSERT INTO events (event_type, hotel_id, idempotency_key, payload)
+                VALUES (%(type)s, %(hotel)s, %(key)s, %(payload)s)
+                ON CONFLICT (idempotency_key) DO NOTHING
+                RETURNING event_id
+            )
+            SELECT event_id, TRUE FROM added
+            UNION ALL
+            SELECT event_id, FALSE FROM events WHERE idempotency_key = %(key)s AND NOT EXISTS (SELECT 1 FROM added)
+            """,
+            {"type": str(event_type or ""), "hotel": str(hotel_id or ""), "key": str(idempotency_key or ""), "payload": Json(payload or {})},
+        )
+        row = cur.fetchone()
+        return {"event_id": int(row[0]), "created": bool(row[1])}
+
+    return _with(run)
+
+
+def save_task(event_id, hotel_id, agent, purpose, status):
+    from booking_system.content_store import _with
+
+    def run(cur):
+        cur.execute(
+            """
+            INSERT INTO tasks (event_id, hotel_id, agent, purpose, status)
             VALUES (%s, %s, %s, %s, %s)
             RETURNING task_id
             """,
-            (int(event_id), str(hotel_name or "").upper(), str(agent or ""), str(purpose or ""), str(status or "")),
+            (int(event_id), str(hotel_id or ""), str(agent or ""), str(purpose or ""), str(status or "")),
         )
         return {"task_id": int(cur.fetchone()[0])}
 
@@ -1505,7 +1565,7 @@ def save_context_package(task_id, package):
     return _with(run)
 
 
-def save_evidence(task_id, hotel_name, evidence_type, payload, source):
+def save_evidence(task_id, hotel_id, evidence_type, payload, source):
     import hashlib
     from booking_system.content_store import _with
 
@@ -1515,13 +1575,13 @@ def save_evidence(task_id, hotel_name, evidence_type, payload, source):
     def run(cur):
         cur.execute(
             """
-            INSERT INTO evidence (task_id, hotel_name, evidence_type, payload, source, integrity_hash)
+            INSERT INTO evidence (task_id, hotel_id, evidence_type, payload, source, integrity_hash)
             VALUES (%s, %s, %s, %s, %s, %s)
             RETURNING evidence_id
             """,
             (
                 int(task_id) if task_id else None,
-                str(hotel_name or "").upper(),
+                str(hotel_id or ""),
                 str(evidence_type or ""),
                 Json(payload or {}),
                 str(source or ""),
@@ -1539,7 +1599,7 @@ def load_evidence(evidence_id):
     def run(cur):
         cur.execute(
             """
-            SELECT evidence_id, task_id, hotel_name, evidence_type, payload, source
+            SELECT evidence_id, task_id, hotel_id, evidence_type, payload, source
             FROM evidence WHERE evidence_id = %s
             """,
             (int(evidence_id),),
@@ -1550,7 +1610,7 @@ def load_evidence(evidence_id):
         return {
             "evidence_id": row[0],
             "task_id": row[1],
-            "hotel_name": row[2],
+            "hotel_id": row[2],
             "evidence_type": row[3],
             "payload": row[4] if isinstance(row[4], dict) else {},
             "source": row[5],
@@ -1563,7 +1623,7 @@ def task_hotel(task_id):
     from booking_system.content_store import _with
 
     def run(cur):
-        cur.execute("SELECT hotel_name FROM tasks WHERE task_id = %s", (int(task_id),))
+        cur.execute("SELECT hotel_id FROM tasks WHERE task_id = %s", (int(task_id),))
         row = cur.fetchone()
         return str(row[0] or "") if row else ""
 
@@ -1596,7 +1656,7 @@ def attachable_investigation(gap_fingerprint):
     return _with(run)
 
 
-def open_investigation(hotel_name, gap_fingerprint, trace_id, manager_name=""):
+def open_investigation(hotel_id, gap_fingerprint, trace_id, user_id=""):
     """One leased investigation per gap. A live lease keeps the new trace as evidence."""
     from booking_system.content_store import _transaction
 
@@ -1625,17 +1685,17 @@ def open_investigation(hotel_name, gap_fingerprint, trace_id, manager_name=""):
         cur.execute(
             """
             INSERT INTO investigations (
-                hotel_name, gap_fingerprint, trace_id, status, current_step, next_action, evidence_refs, lease_until, manager_name
+                hotel_id, gap_fingerprint, trace_id, status, current_step, next_action, evidence_refs, lease_until, user_id
             )
             VALUES (%s, %s, %s, 'leased', 'catalog', 'investigate', %s, NOW() + INTERVAL '30 minutes', %s)
             RETURNING investigation_id
             """,
             (
-                str(hotel_name or "").upper(),
+                str(hotel_id or ""),
                 str(gap_fingerprint or ""),
                 int(trace_id) if trace_id else None,
                 Json(attached),
-                str(manager_name or "").upper(),
+                str(user_id or ""),
             ),
         )
         return {"investigation_id": int(cur.fetchone()[0]), "trace_id": trace_id, "attached": False}

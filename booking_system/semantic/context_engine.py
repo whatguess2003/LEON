@@ -10,7 +10,7 @@ _POLICY = {
 
 
 def parameter_names(body):
-    """Declared inputs, in the order the agent listed them. hotel_name is always required."""
+    """Declared inputs, in the order the agent listed them. hotel_id is always required."""
     solution = (body or {}).get("solution") or {}
     raw = solution.get("parameters")
     if raw is None:
@@ -26,16 +26,16 @@ def parameter_names(body):
         name = str(item or "").strip()
         if name and name not in names:
             names.append(name)
-    if "hotel_name" not in names:
-        names.insert(0, "hotel_name")
+    if "hotel_id" not in names:
+        names.insert(0, "hotel_id")
     return names
 
 
-def parameter_values(hotel_name, resolved_dates, names):
-    """Bind hotel_name. A relative day is CURRENT_DATE in the hotel time zone, not a bound value."""
+def parameter_values(hotel_id, resolved_dates, names):
+    """Bind hotel_id. A day is not chosen or bound here."""
     values = {}
-    if "hotel_name" in (names or []):
-        values["hotel_name"] = str(hotel_name or "").upper()
+    if "hotel_id" in (names or []):
+        values["hotel_id"] = str(hotel_id or "")
     missing = [name for name in (names or []) if name not in values or values[name] in ("", None)]
     return values, missing
 
@@ -46,25 +46,21 @@ def capability_fingerprint(status, grain, entity, conditions=()):
     return str(status or "") + "|" + str(grain or "") + "|" + str(entity or "") + "|" + ";".join(facts)
 
 
-def recipe_candidates(question, manager_name, limit=8):
-    """Published recipes whose index matches the question, with a complete contract, that this manager may use:
-    general recipes and the manager's own user recipes, the manager's own first, each labelled with its scope."""
+def recipe_candidates(question, user_id, limit=8):
+    """Published recipes whose index matches the question, with a complete contract, that this user may use:
+    general recipes and the user's own recipes, the user's own first, each labelled with its scope."""
     import time
     from booking_system.semantic.recipe import recipe_contract
-    from booking_system.semantic.registry import active_versions, catalog_scopes, search_knowledge, visible_to
+    from booking_system.semantic.registry import active_pages, search_knowledge, visible_to
 
     started = time.monotonic()
     shortlist = search_knowledge(question, limit * 2) or []
-    scopes = catalog_scopes([row.get("catalog_id") for row in shortlist])
+    by_id = active_pages([row.get("catalog_id") for row in shortlist])
     pages = []
     for row in shortlist:
         catalog_id = str(row.get("catalog_id") or "")
-        scope = scopes.get(catalog_id) or {}
-        if not catalog_id or not visible_to(scope, manager_name):
-            continue
-        loaded = active_versions([catalog_id])
-        page = loaded[0] if loaded else None
-        if not page or int(page.get("version") or 0) != int(row.get("version") or 0):
+        page = by_id.get(catalog_id)
+        if not page or not visible_to(page, user_id) or page["version"] != int(row.get("version") or 0):
             continue
         body = page.get("body") or {}
         if recipe_contract(body):
@@ -75,7 +71,7 @@ def recipe_candidates(question, manager_name, limit=8):
             "body": body,
             "score": row.get("score"),
             "title": row.get("title"),
-            "scope": scope["scope"],
+            "scope": page["scope"],
         })
     pages.sort(key=lambda page: page["scope"] != "user")
     return pages[:limit], int((time.monotonic() - started) * 1000)
@@ -94,17 +90,25 @@ def _tokens(payload):
     return max(1, len(json.dumps(payload, default=str)) // 4)
 
 
-def compatible_recipes(pages, grain, hotel, dates):
-    """Keep recipes whose contract, grain, and bound inputs fit the spec."""
+def compatible_recipes(pages, spec, hotel, dates):
+    """Keep recipes whose contract is complete, whose outputs hold every measure the spec asked of them, whose rows are split
+    by no grain other than the breakdown asked, and whose inputs bind. A per-period count answers whatever unit it counts."""
     from booking_system.semantic.query import accepted_reads
-    from booking_system.semantic.recipe import recipe_contract
+    from booking_system.semantic.recipe import GRAINS, recipe_contract
 
+    asked = {}
+    for item in (spec or {}).get("measures") or []:
+        asked.setdefault(item["catalog_id"], []).append(item["column"])
+    breakdown = set((spec or {}).get("breakdown") or [])
     compatible = []
-    if not grain:
-        return compatible
     for page in pages or []:
         body = page.get("body") or {}
-        if recipe_contract(body) or str(body.get("output_grain") or "") != grain:
+        if recipe_contract(body):
+            continue
+        grain = str(body.get("output_grain") or "")
+        measures = asked.get(page.get("catalog_id")) or []
+        allowed = {grain} if GRAINS[grain]["splits"] else set()
+        if not measures or not set(measures) <= set(body.get("outputs") or []) or not breakdown <= allowed:
             continue
         template = str(((body.get("solution") or {}).get("sql_template")) or "").strip()
         values, missing = parameter_values(hotel, dates, parameter_names(body))
@@ -118,7 +122,8 @@ def compatible_recipes(pages, grain, hotel, dates):
             "statements": kept or [],
             "parameters": values,
             "outputs": list(body.get("outputs") or []),
-            "output_grain": grain,
+            "measures": measures,
+            "output_grain": str(body.get("output_grain") or ""),
             "steps": steps,
             "score": page.get("score"),
             "title": page.get("title"),
@@ -127,10 +132,7 @@ def compatible_recipes(pages, grain, hotel, dates):
 
 
 def _filtered(compatible, row_filters, hotel):
-    """Attach the requested day or period to each per-day recipe. A filter on a column the recipe does not return drops the recipe."""
-    from datetime import timedelta
-    from booking_system.timezone_utils import hotel_local_today
-
+    """Keep the recipe row for the period the desk wrote. No business-date lookup and no day offset."""
     wanted = {item["catalog_id"]: item for item in row_filters}
     kept = []
     for item in compatible:
@@ -140,8 +142,11 @@ def _filtered(compatible, row_filters, hotel):
             continue
         if chosen["column"] not in item["outputs"]:
             continue
-        day = "" if chosen["period"] else (hotel_local_today(hotel) + timedelta(days=chosen["day_offset"])).isoformat()
-        kept.append(dict(item, row_filter={"column": chosen["column"], "day": day, "period": chosen["period"]}))
+        period = str(chosen.get("period") or "")
+        if not period:
+            kept.append(item)
+            continue
+        kept.append(dict(item, row_filter={"column": chosen["column"], "day": "", "period": period}))
     return kept
 
 
@@ -167,12 +172,12 @@ class ContextEngine:
             }
         return builder(context_request or {})
 
-    def expand(self, task_id, references, budget, hotel_name="", manager_name=""):
-        """Return additional permitted evidence by stable reference. A page is permitted when it is general or the manager's own."""
+    def expand(self, task_id, references, budget, hotel_id="", user_id=""):
+        """Return additional permitted evidence by stable reference. A page is permitted when it is general or the user's own."""
         from booking_system.semantic.registry import task_hotel
 
-        self._manager = str(manager_name or "")
-        hotel = str(hotel_name or "").upper()
+        self._manager = str(user_id or "")
+        hotel = str(hotel_id or "")
         if task_id:
             hotel = task_hotel(task_id) or hotel
         blocks = []
@@ -185,7 +190,7 @@ class ContextEngine:
             blocks.append(self._expand_one(kind, ident, hotel, text))
         payload = {
             "task_id": task_id,
-            "hotel_name": hotel,
+            "hotel_id": hotel,
             "references": blocks,
             "policy_version": "expand_v1",
         }
@@ -200,7 +205,7 @@ class ContextEngine:
         package = {
             "agent": "desk",
             "purpose": str(request.get("purpose") or "route"),
-            "scope": {"hotel_name": str(scope.get("hotel_name") or "").upper()},
+            "scope": {"hotel_id": str(scope.get("hotel_id") or "")},
             "request": {
                 "question": str(entered.get("question") or ""),
                 "history": str(entered.get("history") or ""),
@@ -221,11 +226,11 @@ class ContextEngine:
     def _query(self, request):
         scope = request.get("scope") or {}
         entered = request.get("input") or {}
-        hotel = str(scope.get("hotel_name") or "").upper()
+        hotel = str(scope.get("hotel_id") or "")
         question = str(entered.get("question") or "")
-        dates = [str(day) for day in (entered.get("resolved_dates") or []) if str(day)]
+        entered_dates = entered.get("resolved_dates")
+        dates = entered_dates if isinstance(entered_dates, dict) else {"resolutions": []}
         spec = entered.get("spec") or {}
-        grain = str(spec.get("output_grain") or "")
         budget = int((request.get("budget") or {}).get("max_tokens") or 3000)
         if not hotel:
             return self._query_package(request, hotel, question, dates, "access_denied", "agent", [], [], {}, 0, budget, "", spec=spec)
@@ -234,7 +239,7 @@ class ContextEngine:
         considered = [str(row.get("catalog_id") or "") for row in shortlist if row.get("catalog_id")]
         chosen_ids = set(spec.get("recipe_ids") or [])
         loaded_pages = [page for page in shortlist if page.get("catalog_id") in chosen_ids]
-        compatible = _filtered(compatible_recipes(loaded_pages, grain, hotel, dates), spec.get("row_filters") or [], hotel)
+        compatible = _filtered(compatible_recipes(loaded_pages, spec, hotel, dates), spec.get("row_filters") or [], hotel)
         if len(compatible) < len(chosen_ids):
             compatible = []
         status = "missing_recipe"
@@ -267,7 +272,7 @@ class ContextEngine:
         package = {
             "agent": "query",
             "purpose": str(request.get("purpose") or "answer_database_question"),
-            "scope": {"hotel_name": hotel},
+            "scope": {"hotel_id": hotel},
             "request": {"question": question, "resolved_dates": dates, "spec": spec or {}},
             "retrieval": {"status": status, "execution": execution},
             "knowledge": versions,
@@ -303,7 +308,7 @@ class ContextEngine:
         package = {
             "agent": "catalog",
             "purpose": str(request.get("purpose") or "investigate"),
-            "scope": {"hotel_name": str((request.get("scope") or {}).get("hotel_name") or "").upper()},
+            "scope": {"hotel_id": str((request.get("scope") or {}).get("hotel_id") or "")},
             "request": {"trace": trace or {}},
             "retrieval": {"status": "matched" if trace else "no_match", "execution": "agent"},
             "page_ids": list((trace or {}).get("catalog_ids") or []),
@@ -364,6 +369,6 @@ class ContextEngine:
             return {"reference": reference, "error": str(exc)}
         if not row:
             return {"reference": reference, "error": "evidence not found"}
-        if hotel and str(row.get("hotel_name") or "").upper() != hotel:
+        if hotel and str(row.get("hotel_id") or "") != hotel:
             return {"reference": reference, "error": "access_denied"}
         return {"reference": reference, "evidence": row}

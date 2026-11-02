@@ -10,6 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
+from booking_system import service_token
+
 load_dotenv(override=True)
 
 app = FastAPI()
@@ -21,13 +23,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-@app.on_event("startup")
-async def startup():
-    try:
-        from booking_system.channel_reservations import ensure_tables
-        await run_in_threadpool(ensure_tables)
-    except Exception:
-        logging.exception("Channel manager tables")
 
 
 @app.get("/health")
@@ -39,52 +34,65 @@ def _mapping_response(result: dict):
     status = int((result or {}).get("status") or 0)
     if result.get("error") and status:
         return JSONResponse(content=result, status_code=status)
-    if result.get("error") and "hotel_name" not in result and "room_codes" not in result and "room_types" not in result:
+    if result.get("error") and "hotel_id" not in result and "room_codes" not in result and "room_types" not in result:
         return JSONResponse(content=result, status_code=400)
     return result
 
 
+def _refused(request: Request, hotel_id: str):
+    """Every endpoint except /health and the Aiosell webhook needs the main server's credential for this hotel_id."""
+    reason = service_token.refusal(request.headers.get(service_token.HEADER), str(hotel_id or ""))
+    if not reason:
+        return None
+    return JSONResponse(content={"error": reason}, status_code=503 if reason.startswith("CM_SERVICE_SECRET") else 401)
+
+
 @app.get("/mapping")
-def read_mapping(hotel_name: str = Query("")):
+def read_mapping(request: Request, hotel_id: str = Query("")):
     from booking_system.ota_mapping import read_mapping as load_mapping
-    return _mapping_response(load_mapping(hotel_name))
+    return _refused(request, hotel_id) or _mapping_response(load_mapping(hotel_id))
 
 
 @app.post("/mapping")
-def save_mapping(payload: dict = Body(...)):
+def save_mapping(request: Request, payload: dict = Body(...)):
     from booking_system.ota_mapping import save_mapping as store_mapping
     body = payload or {}
-    return _mapping_response(store_mapping(str(body.get("hotel_name") or ""), str(body.get("hotel_code") or "")))
+    hotel_id = str(body.get("hotel_id") or "")
+    return _refused(request, hotel_id) or _mapping_response(store_mapping(hotel_id, str(body.get("hotel_code") or "")))
 
 
 @app.post("/room-mapping")
-def save_room_mapping(payload: dict = Body(...)):
+def save_room_mapping(request: Request, payload: dict = Body(...)):
     from booking_system.ota_mapping import save_room_mapping as store_room
     body = payload or {}
-    return _mapping_response(store_room(str(body.get("hotel_name") or ""), str(body.get("room_code") or ""), str(body.get("room_type") or "")))
+    hotel_id = str(body.get("hotel_id") or "")
+    return _refused(request, hotel_id) or _mapping_response(store_room(hotel_id, str(body.get("room_code") or ""), str(body.get("room_type") or "")))
+
+
+def _listed(request, hotel_id, direction):
+    denied = _refused(request, hotel_id)
+    if denied:
+        return denied
+    from booking_system.channel_reservations import read_list
+    return read_list(str(hotel_id).strip(), direction)
 
 
 @app.get("/reservations")
-def read_reservations(hotel_name: str = Query("")):
-    hotel = str(hotel_name or "").strip()
-    if not hotel:
-        return JSONResponse(content={"error": "hotel_name is required"}, status_code=400)
-    from booking_system.channel_reservations import read_list
-    return read_list(hotel, "reservation_out")
+def read_reservations(request: Request, hotel_id: str = Query("")):
+    return _listed(request, hotel_id, "reservation_out")
 
 
 @app.get("/reservation-in")
-def read_reservation_in(hotel_name: str = Query("")):
-    hotel = str(hotel_name or "").strip()
-    if not hotel:
-        return JSONResponse(content={"error": "hotel_name is required"}, status_code=400)
-    from booking_system.channel_reservations import read_list
-    return read_list(hotel, "reservation_in")
+def read_reservation_in(request: Request, hotel_id: str = Query("")):
+    return _listed(request, hotel_id, "reservation_in")
 
 
 @app.post("/reservation-in")
-def push_reservation_in(payload: dict = Body(...)):
+def push_reservation_in(request: Request, payload: dict = Body(...)):
     from booking_system.channel_reservations import accept_pms_booking
+    denied = _refused(request, str((payload or {}).get("hotel_id") or ""))
+    if denied:
+        return denied
     result = accept_pms_booking(payload or {})
     if result.get("error"):
         return JSONResponse(content=result, status_code=400)
@@ -106,9 +114,9 @@ async def update_reservation(request: Request, background_tasks: BackgroundTasks
         return JSONResponse(content={"success": False, "message": "Invalid reservation payload"}, status_code=400)
     logging.info("Aiosell webhook action=%s bookingId=%s hotelCode=%s", (payload or {}).get("action"), (payload or {}).get("bookingId"), (payload or {}).get("hotelCode"))
     result = await run_in_threadpool(accept_webhook, payload if isinstance(payload, dict) else {})
-    if result.get("success") and result.get("hotel_name"):
+    if result.get("success") and result.get("hotel_id"):
         from aiosell_channel_manager import push_dates
-        background_tasks.add_task(push_dates, result["hotel_name"], list(result.get("stay_dates") or []))
+        background_tasks.add_task(push_dates, result["hotel_id"], list(result.get("stay_dates") or []))
     public = {"success": bool(result.get("success")), "message": str(result.get("message") or "")}
     if not public["success"]:
         return JSONResponse(content=public, status_code=400)

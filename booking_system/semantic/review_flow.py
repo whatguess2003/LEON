@@ -48,18 +48,19 @@ def _same_procedure(active, body):
     )
 
 
-def platform_facts(hotel_name):
+def platform_facts(hotel_id):
     """Facts the platform guarantees for every read. They are not business definitions."""
-    from booking_system.timezone_utils import get_hotel_timezone_str
+    from booking_system.semantic.hotel import hotel_zone
+    from booking_system.settings.service import SQL_FACTS
 
-    zone = str(get_hotel_timezone_str(hotel_name) or "")
+    zone = hotel_zone(hotel_id)
     return [
         "Every read runs in one transaction with the session TimeZone set to the hotel's configured time zone"
         + (" (" + zone + ")" if zone else "")
         + ". CURRENT_DATE is the hotel's local calendar date, and NOW() is the hotel's current instant.",
         "A read fails when the hotel has no configured time zone, so no read runs on another day boundary.",
-        "Only hotel_name is bound. Every read must filter on %(hotel_name)s, and the validator checks isolation against another hotel.",
-    ]
+        "Only the session hotel is bound. Every read must filter hotel_id = %(hotel_id)s on each hotel table, and the validator checks isolation against another hotel.",
+    ] + list(SQL_FACTS)
 
 
 def review_package(proposal, trace, validation, candidate_rows=None):
@@ -69,9 +70,9 @@ def review_package(proposal, trace, validation, candidate_rows=None):
 
     body = proposal.get("body") or {}
     question = str((trace or {}).get("question") or "")
-    hotel_name = str((trace or {}).get("hotel_name") or "")
+    hotel_id = str((trace or {}).get("hotel_id") or "")
     owner = trace_manager(trace)
-    spec = latest_problem_spec(hotel_name, question)
+    spec = latest_problem_spec(hotel_id, question)
     grain = str(body.get("output_grain") or spec.get("output_grain") or "")
     related = []
     for row in list_active_catalogs():
@@ -94,8 +95,8 @@ def review_package(proposal, trace, validation, candidate_rows=None):
         "proposal_id": proposal.get("proposal_id"),
         "proposal_version_hash": proposal.get("content_hash") or "",
         "original_question": question,
-        "hotel_scope": hotel_name,
-        "recipe_scope": {"scope": "user", "manager_name": owner},
+        "hotel_scope": hotel_id,
+        "recipe_scope": {"scope": "user", "user_id": owner},
         "canonical_problem": {
             "entity": str(spec.get("entity") or ""),
             "output_grain": grain,
@@ -128,7 +129,7 @@ def review_package(proposal, trace, validation, candidate_rows=None):
             "rows_excerpt": str((trace or {}).get("reply_excerpt") or ""),
             "error": str((trace or {}).get("error") or ""),
         },
-        "platform_facts": platform_facts(hotel_name),
+        "platform_facts": platform_facts(hotel_id),
         "manager_definitions": manager_definitions(owner),
         "related_recipe_refs": related,
     }

@@ -379,7 +379,7 @@ class OperationsComponent {
     }
 
     async updateRoomStatus(roomNumber) {
-        const next = window.prompt(`Readiness for room ${roomNumber} (clean, dirty, cleaning, occupied)`, 'dirty');
+        const next = window.prompt(`Readiness for room ${roomNumber} (clean, dirty, cleaning, inspected)`, 'dirty');
         if (!next) return;
         const resp = await fetch(`${this.apiUrl}/rooms/readiness_status/update`, {
             method: 'POST',

@@ -212,7 +212,8 @@ class BookingComponent {
                     const hotelName = (hotelParam || cookieHotel || '').toUpperCase();
                     const apiRoot = this.apiUrl.replace('/api', '');
                     const results = await Promise.all(dates.map(d => fetch(`${apiRoot}/api/availability?hotel_name=${encodeURIComponent(hotelName)}&room_type=${encodeURIComponent(room_type)}&stay_date=${encodeURIComponent(d)}`, { credentials: 'include' }).then(r => r.json()).catch(() => ({ available: 0 }))));
-                    const priceResults = await Promise.all(dates.map(d => fetch(`${apiRoot}/api/hotels/${encodeURIComponent(hotelName.replace(/\s+/g,'_'))}/pricing?room_type=${encodeURIComponent(room_type)}&start_date=${encodeURIComponent(d)}`, { credentials: 'include' }).then(r => r.json()).catch(() => ({ price: 0 }))));
+                    const hotelId = await window.leonHotelId();
+                    const priceResults = await Promise.all(dates.map(d => fetch(`${apiRoot}/api/hotels/${encodeURIComponent(hotelId)}/pricing?room_type=${encodeURIComponent(room_type)}&start_date=${encodeURIComponent(d)}`, { credentials: 'include' }).then(r => r.json()).catch(() => ({ price: 0 }))));
                     let minAvail = null;
                     const dateInputs = Array.from(wrap.querySelectorAll('input[type="date"]'));
                     dateInputs.forEach((input, idx) => {
@@ -525,7 +526,8 @@ class BookingComponent {
             const apiRoot = this.apiUrl.replace('/api', '');
             // Fetch all availabilities and prices in parallel
             const results = await Promise.all(dates.map(d => fetch(`${apiRoot}/api/availability?hotel_name=${encodeURIComponent(hotelName)}&room_type=${encodeURIComponent(room_type)}&stay_date=${encodeURIComponent(d)}`, { credentials: 'include' }).then(r => r.json()).catch(() => ({ available: 0 }))));
-            const priceResults = await Promise.all(dates.map(d => fetch(`${apiRoot}/api/hotels/${encodeURIComponent(hotelName.replace(/\s+/g,'_'))}/pricing?room_type=${encodeURIComponent(room_type)}&start_date=${encodeURIComponent(d)}`, { credentials: 'include' }).then(r => r.json()).catch(() => ({ price: 0 }))));
+            const hotelId = await window.leonHotelId();
+            const priceResults = await Promise.all(dates.map(d => fetch(`${apiRoot}/api/hotels/${encodeURIComponent(hotelId)}/pricing?room_type=${encodeURIComponent(room_type)}&start_date=${encodeURIComponent(d)}`, { credentials: 'include' }).then(r => r.json()).catch(() => ({ price: 0 }))));
             // Update inline availability per row
             let minAvail = null;
             dateInputs.forEach((input, idx) => {
@@ -679,9 +681,10 @@ class BookingComponent {
             const cookieHotel = (document.cookie.match(/(?:^|; )leon_hotel=([^;]+)/)?.[1] ? decodeURIComponent(document.cookie.match(/(?:^|; )leon_hotel=([^;]+)/)[1]) : '');
             const hotelName = (hotelParam || cookieHotel || '').toUpperCase();
             const apiRoot = this.apiUrl.replace('/api', '');
+            const hotelId = await window.leonHotelId();
             const packs = await Promise.all(lines.map(async (line) => {
                 const results = await Promise.all(dates.map(d => fetch(`${apiRoot}/api/availability?hotel_name=${encodeURIComponent(hotelName)}&room_type=${encodeURIComponent(line.room_type)}&stay_date=${encodeURIComponent(d)}`, { credentials: 'include' }).then(r => r.json()).catch(() => ({ available: 0, booked: 0 }))));
-                const priceResults = await Promise.all(dates.map(d => fetch(`${apiRoot}/api/hotels/${encodeURIComponent(hotelName.replace(/\s+/g,'_'))}/pricing?room_type=${encodeURIComponent(line.room_type)}&start_date=${encodeURIComponent(d)}`, { credentials: 'include' }).then(r => r.json()).catch(() => ({ price: 0 }))));
+                const priceResults = await Promise.all(dates.map(d => fetch(`${apiRoot}/api/hotels/${encodeURIComponent(hotelId)}/pricing?room_type=${encodeURIComponent(line.room_type)}&start_date=${encodeURIComponent(d)}`, { credentials: 'include' }).then(r => r.json()).catch(() => ({ price: 0 }))));
                 let minAvail = null;
                 results.forEach(r => {
                     const av = (typeof r.available === 'number') ? r.available : 0;

@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Onboarding - LEON-INAP PMS</title>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+  <script src="js/session.js"></script>
+</head>
+<body class="h-full bg-white text-gray-900">
+  <main id="onboarding" class="h-full flex flex-col">
+    <header class="border-b border-gray-200 px-4 py-3">
+      <div class="max-w-5xl mx-auto flex items-center">
+        <div class="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center text-sm font-semibold flex-shrink-0">L</div>
+        <div class="ml-3 min-w-0">
+          <div class="text-sm font-semibold">Leon-INAP</div>
+          <div id="subtitle" class="text-xs text-gray-500 truncate">Setting up LEON around your hotel</div>
+        </div>
+        <button id="panel-toggle" type="button" class="ml-auto md:hidden text-xs border border-gray-300 rounded-lg px-3 py-1">
+          <i class="fas fa-list-check mr-1"></i>Progress
+        </button>
+      </div>
+    </header>
+    <div id="resume" class="hidden border-b border-blue-100 bg-blue-50 px-4 py-2">
+      <div class="max-w-5xl mx-auto flex items-start text-sm text-blue-900">
+        <i class="fas fa-rotate-left mt-1 mr-2"></i>
+        <div id="resume-text" class="flex-1"></div>
+        <button id="resume-close" type="button" class="ml-2 text-blue-700" aria-label="Close"><i class="fas fa-xmark"></i></button>
+      </div>
+    </div>
+    <div class="flex-1 flex flex-col md:flex-row min-h-0">
+      <section class="flex-1 flex flex-col min-h-0">
+        <div id="messages" class="flex-1 overflow-y-auto px-4 py-6"></div>
+        <form id="composer" class="border-t border-gray-200 px-4 py-3">
+          <div id="password-row" class="hidden max-w-3xl mx-auto mb-2">
+            <label for="password" class="block text-xs text-gray-600 mb-1">Password for your LEON account. It goes straight to the account, never into the chat.</label>
+            <input id="password" type="password" autocomplete="new-password" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+          </div>
+          <div id="pending" class="max-w-3xl mx-auto flex flex-wrap gap-2 mb-2"></div>
+          <div id="composer-row" class="max-w-3xl mx-auto flex items-end">
+            <label for="file" class="mr-2 flex-shrink-0 border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-600 cursor-pointer" aria-label="Attach a file" title="Attach an image, PDF, CSV, or document">
+              <i class="fas fa-paperclip"></i>
+            </label>
+            <input id="file" type="file" class="hidden" multiple accept=".csv,.tsv,.txt,.xlsx,.pdf,.docx,.md,.jpg,.jpeg,.png,.webp,.gif,image/*">
+            <textarea id="input" rows="1" placeholder="Message LEON-INAP" class="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm resize-none max-h-40"></textarea>
+            <button id="send" type="submit" class="ml-2 bg-blue-600 text-white rounded-lg px-4 py-2 text-sm flex-shrink-0">Send</button>
+          </div>
+        </form>
+      </section>
+      <div id="panel" class="hidden md:block w-full md:w-80 border-t md:border-t-0 md:border-l border-gray-200 p-3 overflow-y-auto order-first md:order-last flex-shrink-0 max-h-72 md:max-h-full">
+        <h2 class="text-xs font-semibold text-gray-700">Checklist</h2>
+        <div id="checklist" class="mt-2"></div>
+        <h2 class="text-xs font-semibold text-gray-700 mt-4">Open items</h2>
+        <div id="open-items" class="mt-2"></div>
+        <h2 class="text-xs font-semibold text-gray-700 mt-4">Procedures</h2>
+        <div id="sops" class="mt-2"></div>
+        <h2 class="text-xs font-semibold text-gray-700 mt-4">Imports</h2>
+        <div id="imports" class="mt-2"></div>
+        <div id="invites-block" class="hidden">
+          <h2 class="text-xs font-semibold text-gray-700 mt-4">Staff invites</h2>
+          <div id="invites" class="mt-2"></div>
+        </div>
+        <h2 class="text-xs font-semibold text-gray-700 mt-4">Saved</h2>
+        <div id="saved" class="mt-2"></div>
+      </div>
+    </div>
+  </main>
+  <div id="invite" class="hidden h-full flex items-center justify-center px-4">
+    <form id="invite-form" class="w-full max-w-sm border border-gray-200 rounded-lg p-4">
+      <div class="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center text-sm font-semibold mb-3">L</div>
+      <p id="invite-text" class="text-sm text-gray-700 mb-3">Checking your invite&hellip;</p>
+      <label for="invite-password" class="block text-xs text-gray-600 mb-1">Password</label>
+      <input id="invite-password" type="password" autocomplete="new-password" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+      <p id="invite-error" class="text-xs text-red-600 mt-2"></p>
+      <button type="submit" class="mt-3 w-full bg-blue-600 text-white rounded-lg px-4 py-2 text-sm">Join</button>
+    </form>
+  </div>
+  <script src="js/components/onboarding.js?v=3"></script>
+</body>
+<script src="js/subpage-embed.js"></script>
+</html>

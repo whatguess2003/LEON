@@ -1,15 +1,15 @@
 """Named dynamic pricing setups for a hotel.
 
-Each setup is content: a name plus the model that fills its parameters.
-The natural key is hotel_name + pricing_name.
+Each setup is a document: a name plus the model that fills its parameters. It is found by hotel_id + pricing_name.
 """
-import os
+import sys
 
-from pymongo import MongoClient
-
+from booking_system import db
+from booking_system.content_store import client
 from booking_system.llm_utils import canonical_key
 
 INAP_MODEL = "INAP dynamic pricing"
+collection = client["leon_hotel_memory"]["dynamic_pricing"]
 
 
 def _number(value):
@@ -34,7 +34,6 @@ def _limits_error(enabled, sensitivity, lower_limit, upper_limit):
 
 def _public(doc):
     return {
-        "hotel_name": doc.get("hotel_name"),
         "pricing_name": doc.get("pricing_name"),
         "pricing_label": doc.get("pricing_label") or doc.get("pricing_name"),
         "model": doc.get("model"),
@@ -45,94 +44,61 @@ def _public(doc):
     }
 
 
-class DynamicPricing:
-    def __init__(self):
-        self.client = MongoClient(os.getenv("MONGO_URL"))
-        self.collection = self.client["leon_hotel_memory"]["dynamic_pricing"]
-        try:
-            self.collection.create_index(
-                [("hotel_name", 1), ("pricing_name", 1)],
-                unique=True,
-                name="hotel_pricing_name",
-            )
-        except Exception as exc:
-            print(f"⚠️ Dynamic pricing index warning: {exc}")
-
-    def list_for_hotel(self, hotel_name):
-        hotel = canonical_key(hotel_name)
-        rows = []
-        for doc in self.collection.find({"hotel_name": hotel}).sort("pricing_name", 1):
-            rows.append(_public(doc))
-        return rows
-
-    def read_one(self, hotel_name, pricing_name):
-        hotel = canonical_key(hotel_name)
-        key = canonical_key(str(pricing_name or "").strip())
-        if not key:
-            return {"missing": True}
-        doc = self.collection.find_one({"hotel_name": hotel, "pricing_name": key})
-        if not doc:
-            return {"missing": True}
-        return _public(doc)
-
-    def save(self, hotel_name, pricing_label, model, enabled, sensitivity, lower_limit, upper_limit):
-        hotel = canonical_key(hotel_name)
-        label = str(pricing_label or "").strip()
-        key = canonical_key(label)
-        if not key:
-            return {"error": "Pricing name is required"}
-        if model != INAP_MODEL:
-            return {"error": "That model is not available yet"}
-        try:
-            sensitivity_n = _number(sensitivity)
-            lower_n = _number(lower_limit)
-            upper_n = _number(upper_limit)
-        except (TypeError, ValueError):
-            return {"error": "Sensitivity, lower limit, and upper limit must be numbers"}
-        limits_error = _limits_error(bool(enabled), sensitivity_n, lower_n, upper_n)
-        if limits_error:
-            return {"error": limits_error}
-        existing = list(self.collection.find({"hotel_name": hotel}))
-        exact = None
-        similar = []
-        for doc in existing:
-            other = doc.get("pricing_name") or ""
-            if other == key:
-                exact = doc
-                continue
-            if len(key) >= 4 and len(other) >= 4 and (other.startswith(key) or key.startswith(other)):
-                similar.append(doc)
-        fields = {
-            "hotel_name": hotel,
-            "pricing_name": key,
-            "pricing_label": label,
-            "model": model,
-            "enabled": bool(enabled),
-            "sensitivity": sensitivity_n,
-            "lower_limit": lower_n,
-            "upper_limit": upper_n,
-        }
-        if exact:
-            self.collection.update_one(
-                {"hotel_name": hotel, "pricing_name": key},
-                {"$set": fields},
-            )
-            return self.read_one(hotel, key)
-        if similar:
-            return {"clarify": True, "matches": [_public(doc) for doc in similar]}
-        self.collection.insert_one(fields)
-        return self.read_one(hotel, key)
-
-    def delete(self, hotel_name, pricing_name):
-        hotel = canonical_key(hotel_name)
-        key = canonical_key(str(pricing_name or "").strip())
-        if not key:
-            return {"error": "Pricing name is required"}
-        doc = self.collection.find_one({"hotel_name": hotel, "pricing_name": key})
-        if not doc:
-            return {"error": "No dynamic pricing with that name"}
-        self.collection.delete_one({"hotel_name": hotel, "pricing_name": key})
-        return {"deleted": key, "pricing_label": doc.get("pricing_label") or key}
+def _key(hotel_id, pricing_name):
+    return "hotel_id=" + hotel_id + "|pricing_name=" + pricing_name
 
 
-dynamic_pricing = DynamicPricing()
+def list_for_hotel(hotel_id):
+    return [_public(doc) for doc in collection.find({"hotel_id": hotel_id}).sort("pricing_name", 1)]
+
+
+def read_one(hotel_id, pricing_name):
+    key = canonical_key(str(pricing_name or "").strip())
+    doc = collection.find_one({"hotel_id": hotel_id, "pricing_name": key}) if key else None
+    return _public(doc) if doc else {"missing": True}
+
+
+def save(hotel_id, user_id, pricing_label, model, enabled, sensitivity, lower_limit, upper_limit):
+    """CREATE or UPDATE by name. A new name close to an existing one asks which was meant."""
+    label = str(pricing_label or "").strip()
+    key = canonical_key(label)
+    if not key:
+        return {"error": "Pricing name is required"}
+    if model != INAP_MODEL:
+        return {"error": "That model is not available yet"}
+    try:
+        sensitivity_n = _number(sensitivity)
+        lower_n = _number(lower_limit)
+        upper_n = _number(upper_limit)
+    except (TypeError, ValueError):
+        return {"error": "Sensitivity, lower limit, and upper limit must be numbers"}
+    limits_error = _limits_error(bool(enabled), sensitivity_n, lower_n, upper_n)
+    if limits_error:
+        return {"error": limits_error}
+    existing = list(collection.find({"hotel_id": hotel_id}))
+    exact = [doc for doc in existing if doc.get("pricing_name") == key]
+    similar = [doc for doc in existing if doc.get("pricing_name") != key and len(key) >= 4 and len(doc.get("pricing_name") or "") >= 4
+               and (doc["pricing_name"].startswith(key) or key.startswith(doc["pricing_name"]))]
+    if similar and not exact:
+        return {"clarify": True, "matches": [_public(doc) for doc in similar]}
+    body = {
+        "hotel_id": hotel_id, "pricing_name": key, "pricing_label": label, "model": model, "enabled": bool(enabled),
+        "sensitivity": sensitivity_n, "lower_limit": lower_n, "upper_limit": upper_n, "updated_by_user_id": user_id,
+    }
+    db.transaction(lambda cur: collection.write_in(cur, _key(hotel_id, key), body))
+    return _public(body)
+
+
+def delete(hotel_id, pricing_name):
+    key = canonical_key(str(pricing_name or "").strip())
+    if not key:
+        return {"error": "Pricing name is required"}
+    doc = collection.find_one({"hotel_id": hotel_id, "pricing_name": key})
+    if not doc:
+        return {"error": "No dynamic pricing with that name"}
+    collection.delete_one({"hotel_id": hotel_id, "pricing_name": key})
+    return {"deleted": key, "pricing_label": doc.get("pricing_label") or key}
+
+
+# `from booking_system.dynamic_pricing import dynamic_pricing` keeps working for callers of the old instance.
+dynamic_pricing = sys.modules[__name__]

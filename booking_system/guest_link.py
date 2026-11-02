@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 
 def _secret() -> bytes:
-    return str(os.getenv("JWT_SECRET") or "dev-secret").encode()
+    return os.environ["JWT_SECRET"].encode()
 
 
 def _pack(raw: bytes) -> str:
@@ -25,11 +25,11 @@ def _unpack(text: str) -> bytes:
         return b""
 
 
-def guest_link(hotel_name: str, guest_phone: str) -> str:
+def guest_link(hotel_id: str, guest_phone: str) -> str:
     """A link suffix that stays valid for 7 days."""
     exp = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
     body = json.dumps(
-        {"hotel_name": str(hotel_name or "").upper(), "guest_phone": str(guest_phone or ""), "exp": exp},
+        {"hotel_id": str(hotel_id or ""), "guest_phone": str(guest_phone or ""), "exp": exp},
         separators=(",", ":"),
     ).encode()
     sig = hmac.new(_secret(), body, hashlib.sha256).digest()
@@ -60,8 +60,8 @@ def read_guest_link(token: str) -> dict:
         until = until.replace(tzinfo=timezone.utc)
     if datetime.now(timezone.utc) > until:
         return {"error": "This link has expired"}
-    hotel = str(data.get("hotel_name") or "").upper()
+    hotel = str(data.get("hotel_id") or "")
     phone = str(data.get("guest_phone") or "")
     if not hotel or not phone:
         return {"error": "This link is not valid"}
-    return {"hotel_name": hotel, "guest_phone": phone}
+    return {"hotel_id": hotel, "guest_phone": phone}

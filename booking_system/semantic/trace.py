@@ -1,10 +1,25 @@
 """Investigation traces and stall detection for the Catalog Agent."""
 
+import contextvars
 import hashlib
 import re
-import threading
 import time
 from psycopg2.extras import Json
+
+_FOLLOWUP = contextvars.ContextVar("desk_catalog_followup", default=False)
+
+
+def followup_token(active):
+    """Mark the desk turn that runs after a recipe is published. That turn does not start another catalog job."""
+    return _FOLLOWUP.set(bool(active))
+
+
+def followup_reset(token):
+    _FOLLOWUP.reset(token)
+
+
+def in_followup():
+    return bool(_FOLLOWUP.get())
 
 _QUERY_BUDGET_S = 20
 _MAX_ATTEMPTS = 5
@@ -42,21 +57,21 @@ def stall_reason(attempts, elapsed_s, recursion_hit=False):
     return ""
 
 
-def save_trace(hotel, question, catalog_ids, catalog_versions, attempts, stall, row_count, elapsed_ms, reply, error, retrieval=None):
+def save_trace(hotel_id, question, catalog_ids, catalog_versions, attempts, stall, row_count, elapsed_ms, reply, error, retrieval=None):
     from booking_system.content_store import _with
 
     def run(cur):
         cur.execute(
             """
             INSERT INTO investigation_traces (
-                hotel_name, question, catalog_ids, catalog_versions, attempts,
+                hotel_id, question, catalog_ids, catalog_versions, attempts,
                 stall_reason, row_count, elapsed_ms, reply_excerpt, error, retrieval
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING trace_id
             """,
             (
-                str(hotel or "").upper(),
+                str(hotel_id or ""),
                 str(question or "")[:4000],
                 Json(list(catalog_ids or [])),
                 Json(list(catalog_versions or [])),
@@ -80,7 +95,7 @@ def load_trace(trace_id):
     def run(cur):
         cur.execute(
             """
-            SELECT trace_id, hotel_name, question, catalog_ids, catalog_versions, attempts,
+            SELECT trace_id, hotel_id, question, catalog_ids, catalog_versions, attempts,
                    stall_reason, row_count, elapsed_ms, reply_excerpt, error, retrieval
             FROM investigation_traces WHERE trace_id = %s
             """,
@@ -91,7 +106,7 @@ def load_trace(trace_id):
             return None
         return {
             "trace_id": row[0],
-            "hotel_name": row[1],
+            "hotel_id": row[1],
             "question": row[2],
             "catalog_ids": row[3],
             "catalog_versions": row[4],
@@ -115,43 +130,71 @@ def catalog_agent_ms(trace_id):
     return _AGENT_MS.get(int(trace_id)) if trace_id is not None else None
 
 
-def enqueue_catalog_agent(trace_id):
-    """Fire Catalog Agent off the chat turn. Its duration is not part of the reply time."""
-    import os
-    from booking_system.semantic.review_flow import learn
+def queue_missing_recipe(hotel_id, hotel_name, manager, question, dates=None, spec=None, task=None):
+    """A desk question with no published recipe. The catalog job is queued and this call returns.
+    A follow-up after publication does not queue another one. No statement is written."""
+    if in_followup():
+        return {"queued": False, "followup": True}
+    import json
+    from booking_system import jobs
+    from booking_system.semantic.registry import open_investigation
 
-    def worker():
+    hotel_id = str(hotel_id or "")
+    manager = str(manager or "")
+    hotel_name = str(hotel_name or "")
+    question = " ".join(str(question or "").split())
+    if not hotel_id or not manager or not question:
+        return {"queued": False}
+    spec = spec if isinstance(spec, dict) else {}
+    capability = " ".join(str(spec.get("capability") or "").split())
+    fingerprint = "missing_recipe|" + capability + "|" + question[:400]
+    retrieval = json.loads(json.dumps({
+        "source": "missing_recipe",
+        "manager": manager,
+        "hotel_name": hotel_name,
+        "question": question,
+        "dates": dates if isinstance(dates, dict) else {"resolutions": []},
+        "task": task if isinstance(task, dict) else {},
+        "spec": spec,
+        "capability": capability,
+    }, default=str))
+    trace_id = save_trace(hotel_id, question, [], [], [], "missing_recipe", 0, 0, "", "", retrieval)
+    opened = open_investigation(hotel_id, fingerprint, trace_id, manager)
+    if opened.get("attached"):
+        return {"queued": False, "attached": True, "trace_id": trace_id}
+    try:
+        jobs.enqueue(
+            "catalog_agent",
+            {"trace_id": int(trace_id)},
+            hotel_id=hotel_id,
+            dedupe_key="catalog_agent/" + str(trace_id),
+        )
+    except Exception:
+        return {"queued": False, "trace_id": trace_id}
+    return {"queued": True, "trace_id": trace_id}
+
+
+def enqueue_catalog_agent(trace_id):
+    """Catalog Agent runs off the chat turn as a durable job (booking_system.jobs). CATALOG_AGENT_SYNC=1 runs it inline for tests."""
+    import os
+    from booking_system import jobs
+
+    if os.getenv("CATALOG_AGENT_SYNC") == "1":
+        from booking_system.semantic.review_flow import learn
         started = time.monotonic()
         try:
             learn(trace_id)
-        except Exception:
-            pass
         finally:
             _AGENT_MS[int(trace_id)] = int((time.monotonic() - started) * 1000)
-
-    if os.getenv("CATALOG_AGENT_SYNC") == "1":
-        worker()
         return catalog_agent_ms(trace_id)
-
-    thread = threading.Thread(target=worker, name="catalog-agent-" + str(trace_id), daemon=False)
-    thread.start()
-    return thread
+    return jobs.enqueue("catalog_agent", {"trace_id": trace_id}, dedupe_key="catalog_agent/" + str(trace_id))
 
 
 def enqueue_resume(trace_ids):
-    """Review blocked investigations again off the request clock."""
-    from booking_system.semantic.review_flow import resume
+    """Review blocked investigations again off the request clock, one durable job per trace."""
+    from booking_system import jobs
 
-    def worker():
-        for trace_id in trace_ids or []:
-            try:
-                resume(int(trace_id))
-            except Exception:
-                pass
-
-    thread = threading.Thread(target=worker, name="catalog-resume", daemon=False)
-    thread.start()
-    return thread
+    return [jobs.enqueue("catalog_resume", {"trace_id": int(trace_id)}) for trace_id in trace_ids or []]
 
 
 class InvestigationClock:

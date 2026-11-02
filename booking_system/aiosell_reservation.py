@@ -1,34 +1,15 @@
-"""Inbound Aiosell reservation workflow.
+"""Inbound Aiosell reservations. One endpoint receives book, modify and cancel; the payload is the full new state. The booking is the
+core booking under (channel, channel_booking_ref = bookingId), so a repeat delivery updates it. Room codes map through
+hotel_room_code_mapping. Special requests and the raw payload are documents keyed by booking_id; card values stay encrypted."""
 
-One endpoint receives book, modify, and cancel. The payload is the full new state.
-Guest fields may be missing. Special requests stay plain text. Card values stay encrypted.
-"""
-
-import logging
 import os
 from datetime import datetime, timedelta
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-def _party_size(rooms):
-    total = 0
-    supplied = False
-    for room in rooms or []:
-        occupancy = room.get("occupancy") if isinstance(room, dict) else None
-        if not isinstance(occupancy, dict):
-            continue
-        for key in ("adults", "children"):
-            if occupancy.get(key) is None:
-                continue
-            supplied = True
-            text = str(occupancy.get(key)).strip()
-            if text.isdigit():
-                total += int(text)
-    if not supplied or total < 1:
-        return 0
-    return total
-
-MANAGER_NAME = "AIOSSELL"
+from booking_system import db
+from booking_system.booking_manager import booking_docs, booking_by_ref, cancel_in, channel_docs, write_channel_booking
+from booking_system.guest_manager import Refused
 
 ACTION_MESSAGES = {
     "book": "Reservation Updated Successfully",
@@ -125,35 +106,24 @@ def _money(value):
         return None
 
 
-def _nights(checkin: str, checkout: str):
-    start = datetime.strptime(checkin, "%Y-%m-%d")
-    end = datetime.strptime(checkout, "%Y-%m-%d")
-    days = []
-    cursor = start
-    while cursor < end:
-        days.append(cursor.strftime("%Y-%m-%d"))
-        cursor += timedelta(days=1)
-    return days
+def _count(rooms, field):
+    """Sum of one occupancy field over the rooms, or None when no room states it."""
+    values = [str(room["occupancy"].get(field)).strip() for room in rooms
+              if isinstance(room.get("occupancy"), dict) and room["occupancy"].get(field) is not None]
+    return sum(int(value) for value in values if value.isdigit()) if values else None
 
 
 def _room_nights(room: dict, checkin: str, checkout: str):
-    dates = []
-    prices = room.get("prices")
-    entries = prices if isinstance(prices, list) else []
-    for price in entries:
-        if isinstance(price, dict):
-            day = _stay_day(price.get("date"))
-        else:
-            day = _stay_day(price)
-        if day and day not in dates:
-            dates.append(day)
-    if dates:
-        return dates
-    start = _stay_day(checkin)
-    end = _stay_day(checkout)
-    if start and end:
-        return _nights(start, end)
-    return []
+    """[(stay_date, sell_rate or None)] from the room's prices, else every night from checkin to checkout."""
+    nights = {}
+    for price in room.get("prices") if isinstance(room.get("prices"), list) else []:
+        day = _stay_day(price.get("date") if isinstance(price, dict) else price)
+        if day and day not in nights:
+            nights[day] = _money(price.get("sellRate")) if isinstance(price, dict) else None
+    if not nights and checkin and checkout:
+        start, end = datetime.strptime(checkin, "%Y-%m-%d").date(), datetime.strptime(checkout, "%Y-%m-%d").date()
+        nights = {(start + timedelta(days=offset)).isoformat(): None for offset in range((end - start).days)}
+    return [(datetime.strptime(day, "%Y-%m-%d").date(), rate) for day, rate in sorted(nights.items())]
 
 
 def _guest_name(payload: dict) -> str:
@@ -174,356 +144,85 @@ def _guest_phone(payload: dict) -> str:
     return str(guest.get("phone") or "").strip()
 
 
-def handle_reservation(payload: dict, push: bool = True) -> dict:
-    action = str((payload or {}).get("action") or "").strip().lower()
+def _room_type(cur, hotel_id, room):
+    code = str(room.get("roomCode") or "").strip()
+    if not code:
+        raise Refused("Room code is required")
+    cur.execute("SELECT room_type_id FROM hotel_room_code_mapping WHERE hotel_id = %s AND channel_room_code = %s", (hotel_id, code))
+    found = cur.fetchone()
+    if not found:
+        raise Refused("Room code " + code + " is not mapped")
+    return found["room_type_id"]
+
+
+def _live_dates(cur, booking_id):
+    cur.execute("SELECT DISTINCT stay_date FROM booking_room_night WHERE booking_id = %s AND night_status IN ('booked', 'checked_in') "
+                "ORDER BY stay_date", (booking_id,))
+    return [row["stay_date"].isoformat() for row in cur.fetchall()]
+
+
+def _apply(cur, hotel, channel, reference, payload):
+    hotel_id = hotel["hotel_id"]
+    rooms = [room for room in payload.get("rooms") or [] if isinstance(room, dict)]
+    if not rooms:
+        raise Refused("Rooms are required")
+    checkin, checkout = _stay_day(payload.get("checkin")), _stay_day(payload.get("checkout"))
+    lines = [(_room_type(cur, hotel_id, room), _room_nights(room, checkin, checkout)) for room in rooms]
+    if not all(nights for _type, nights in lines):
+        raise Refused("Stay dates are required")
+    existing = booking_by_ref(cur, hotel_id, channel, reference)
+    before = _live_dates(cur, existing["booking_id"]) if existing else []
+    guest = payload.get("guest") if isinstance(payload.get("guest"), dict) else {}
+    amount = payload.get("amount") if isinstance(payload.get("amount"), dict) else {}
+    currency = str(amount.get("currency") or "").strip().upper() or None
+    priced = currency is not None
+    notes = payload.get("specialRequests")
+    saved = dict(payload)
+    if isinstance(saved.get("creditCard"), dict):
+        saved["creditCard"] = {"stored": "encrypted"}
+    documents = {
+        booking_docs: {
+            "channel": channel, "cm_booking_id": str(payload.get("cmBookingId") or ""), "segment": str(payload.get("segment") or ""),
+            "special_requests": "" if notes is None else str(notes), "pah": payload.get("pah"), "amount": amount,
+            "reference_phone": _guest_phone(payload), "card_present": _open_card(payload), "checkin": checkin, "checkout": checkout,
+            "rooms": [{name: room.get(name) for name in ("roomCode", "rateplanCode", "guestName", "occupancy", "prices")} for room in rooms],
+        },
+        channel_docs: {"channel_booking_ref": reference, "payload": saved},
+    }
+    written = write_channel_booking(
+        cur, hotel_id, channel, reference,
+        {"guest_name": _guest_name(payload), "phone": _guest_phone(payload), "email": guest.get("email")},
+        lines, _count(rooms, "adults"), _count(rooms, "children"), currency,
+        _money(amount.get("amountAfterTax")) if priced else None, _money(amount.get("commission")) if priced else None, None, documents,
+    )
+    cur.execute("SELECT DISTINCT t.room_type_name FROM booking_room_night n JOIN room_type t ON t.room_type_id = n.room_type_id "
+                "WHERE n.booking_id = %s ORDER BY 1", (written["booking_id"],))
+    room_types = [row["room_type_name"] for row in cur.fetchall()]
+    return {"booking_id": written["booking_id"], "room_types": room_types,
+            "stay_dates": sorted(set(before) | {day.isoformat() for _type, nights in lines for day, _rate in nights})}
+
+
+def _cancel(cur, hotel, channel, reference, payload):
+    existing = booking_by_ref(cur, hotel["hotel_id"], channel, reference)
+    if not existing:
+        raise Refused("Booking " + reference + " not found for " + channel)
+    closed = cancel_in(cur, hotel["hotel_id"], None, existing["booking_id"], channel + " cancellation")
+    return {"booking_id": existing["booking_id"], "room_types": [], "stay_dates": closed["stay_dates"]}
+
+
+def handle_reservation(hotel: dict, payload: dict) -> dict:
+    """Apply one delivery for the hotel row resolved from hotelCode. -> {'success', 'message', 'booking_id', 'room_types', 'stay_dates'}."""
+    action = str(payload.get("action") or "").strip().lower()
     message = ACTION_MESSAGES.get(action)
     if not message:
         return {"success": False, "message": "Unknown action"}
-    booking_id = str((payload or {}).get("bookingId") or "").strip()
-    hotel_code = str((payload or {}).get("hotelCode") or "").strip()
-    if not booking_id or not hotel_code:
-        return {"success": False, "message": "bookingId and hotelCode are required"}
-    if action == "cancel":
-        return _cancel(hotel_code, booking_id, message, push)
-    return _apply(payload, hotel_code, booking_id, message, push)
-
-
-def _hotel_name(db, hotel_code: str):
-    names = []
-    for doc in db["ota_link"].find({"hotel_code": hotel_code}, {"_id": 0, "hotel_name": 1}):
-        hotel = str((doc or {}).get("hotel_name") or "").strip().upper()
-        if hotel and hotel not in names:
-            names.append(hotel)
-    if len(names) == 1:
-        return names[0], ""
-    if not names:
-        return "", "Hotel code is not linked"
-    return "", "Hotel code matches more than one hotel"
-
-
-def _room_type(cur, hotel_code: str, hotel_name: str, room_code: str):
-    cur.execute(
-        """
-        SELECT room_type FROM hotel_room_code_mapping
-        WHERE hotel_code = %s AND room_code = %s AND hotel_name = %s
-        """,
-        (hotel_code, room_code, hotel_name),
-    )
-    row = cur.fetchone()
-    if not row:
-        return ""
-    return str(row[0] or "")
-
-
-def _ensure_mapping_table(cur):
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS hotel_room_code_mapping (
-            hotel_code VARCHAR(64),
-            room_code VARCHAR(64),
-            hotel_name VARCHAR(255),
-            room_type VARCHAR(255),
-            PRIMARY KEY (hotel_code, room_code)
-        )
-        """
-    )
-
-
-def _apply(payload: dict, hotel_code: str, booking_id: str, message: str, push: bool = True) -> dict:
-    from booking_system.booking_manager import booking_manager
-
-    booking_manager._ensure_postgres_connection()
-    db = booking_manager.records
-    if db is None or booking_manager.postgres_conn is None:
-        return {"success": False, "message": "Database connection not available"}
-    hotel_name, hotel_error = _hotel_name(db, hotel_code)
-    if hotel_error:
-        return {"success": False, "message": hotel_error}
-    rooms = payload.get("rooms") if isinstance(payload.get("rooms"), list) else []
-    if not rooms:
-        return {"success": False, "message": "Rooms are required"}
-    checkin = _stay_day(payload.get("checkin"))
-    checkout = _stay_day(payload.get("checkout"))
-    card_present = _open_card(payload)
-    with booking_manager.postgres_lock:
-        return _apply_locked(booking_manager, payload, hotel_code, booking_id, message, push, hotel_name, db, rooms, checkin, checkout, card_present)
-
-
-def _apply_locked(booking_manager, payload, hotel_code, booking_id, message, push, hotel_name, db, rooms, checkin, checkout, card_present) -> dict:
-    booking_manager._clear_transaction()
-    conn = booking_manager.postgres_conn
-    cur = conn.cursor()
+    reference = str(payload.get("bookingId") or "").strip()
+    channel = str(payload.get("channel") or "").strip().upper()
+    if not reference or not channel:
+        return {"success": False, "message": "bookingId and channel are required"}
+    work = {"cancel": _cancel}.get(action, _apply)
     try:
-        _ensure_mapping_table(cur)
-        lines = []
-        refused = ""
-        for room in rooms:
-            room_code = str((room or {}).get("roomCode") or "").strip()
-            if not room_code:
-                refused = "Room code is required"
-                break
-            room_type = _room_type(cur, hotel_code, hotel_name, room_code)
-            if not room_type:
-                refused = "Room code " + room_code + " is not mapped"
-                break
-            nights = _room_nights(room, checkin, checkout)
-            if not nights:
-                refused = "Stay dates are required"
-                break
-            lines.append({"room_type": room_type, "nights": nights, "rateplan": str((room or {}).get("rateplanCode") or "")})
-        if refused:
-            conn.rollback()
-            return {"success": False, "message": refused}
-        cur.execute("SELECT hotel_name, guest_phone FROM room_bookings WHERE booking_id = %s", (booking_id,))
-        existing = cur.fetchone()
-        if existing and str(existing[0] or "") != hotel_name:
-            conn.rollback()
-            return {"success": False, "message": "Booking belongs to another hotel"}
-        reference_phone = _guest_phone(payload)
-        phone = ""
-        phone_verified = False
-        if existing:
-            current_phone = str(existing[1] or "").strip()
-            if current_phone and db["guests"].find_one({"guest_phone": current_phone, "hotel_name": hotel_name}):
-                phone = current_phone
-                phone_verified = True
-        cur.execute(
-            """
-            UPDATE room_number_assignments
-            SET booking_id = NULL, guest_phone = NULL, assignment_status = 'available', updated_by = %s
-            WHERE hotel_name = %s AND booking_id = %s
-            """,
-            (MANAGER_NAME, hotel_name, booking_id),
-        )
-        cur.execute("DELETE FROM room_stay WHERE hotel_name = %s AND booking_id = %s", (hotel_name, booking_id))
-        cur.execute("SELECT stay_date FROM booking_stays WHERE hotel_name = %s AND booking_id = %s", (hotel_name, booking_id))
-        previous_dates = [row[0] for row in cur.fetchall()]
-        cur.execute("DELETE FROM booking_stays WHERE hotel_name = %s AND booking_id = %s", (hotel_name, booking_id))
-        per_date = {}
-        stay_rows = []
-        type_counts = {}
-        all_dates = []
-        for line in lines:
-            type_counts[line["room_type"]] = type_counts.get(line["room_type"], 0) + 1
-            for stay_date in line["nights"]:
-                per_date[stay_date] = per_date.get(stay_date, 0) + 1
-                stay_rows.append((stay_date, per_date[stay_date], line["room_type"]))
-                if stay_date not in all_dates:
-                    all_dates.append(stay_date)
-        header_type = lines[0]["room_type"]
-        channel = str(payload.get("channel") or "").strip().upper()
-        reference = str(payload.get("cmBookingId") or booking_id)
-        notes = payload.get("specialRequests")
-        notes_text = "" if notes is None else str(notes)
-        amount = payload.get("amount") if isinstance(payload.get("amount"), dict) else {}
-        total = _money(amount.get("amountAfterTax"))
-        currency = str(amount.get("currency") or "").strip().upper() or None
-        if existing:
-            cur.execute(
-                """
-                UPDATE room_bookings
-                SET guest_phone = %s, hotel_name = %s, room_type = %s, rooms_booked = %s,
-                    booking_status = 'confirmed', booking_reference = %s, nights = %s,
-                    channel = %s, booking_notes = %s, check_in_date = %s, currency = %s,
-                    updated_at = NOW(), updated_by = %s
-                WHERE booking_id = %s
-                """,
-                (phone, hotel_name, header_type, len(lines), reference, len(all_dates), channel, notes_text, checkin or None, currency, MANAGER_NAME, booking_id),
-            )
-        else:
-            cur.execute(
-                """
-                INSERT INTO room_bookings
-                (booking_id, guest_phone, hotel_name, room_type, rooms_booked, booking_status, booking_reference, created_at, nights, channel, booking_notes, check_in_date, currency)
-                VALUES (%s, %s, %s, %s, %s, 'confirmed', %s, CURRENT_TIMESTAMP, %s, %s, %s, %s, %s)
-                """,
-                (booking_id, phone, hotel_name, header_type, len(lines), reference, len(all_dates), channel, notes_text, checkin or None, currency),
-            )
-        for stay_date, count in per_date.items():
-            room_types_that_night = []
-            for stay, index, room_type in stay_rows:
-                if stay == stay_date and room_type not in room_types_that_night:
-                    room_types_that_night.append(room_type)
-            for room_type in room_types_that_night:
-                booked = len([row for row in stay_rows if row[0] == stay_date and row[2] == room_type])
-                cur.execute(
-                    """
-                    INSERT INTO booking_stays (hotel_name, room_type, stay_date, booking_id, rooms_booked, booking_status)
-                    VALUES (%s, %s, %s, %s, %s, 'confirmed')
-                    """,
-                    (hotel_name, room_type, stay_date, booking_id, booked),
-                )
-        for stay_date, index, room_type in stay_rows:
-            cur.execute(
-                """
-                INSERT INTO room_stay (booking_id, stay_date, stay_index, hotel_name, room_number, stay_status, assigned_by, assignment_id)
-                VALUES (%s, %s, %s, %s, NULL, 'pending', %s, %s)
-                """,
-                (booking_id, stay_date, index, hotel_name, MANAGER_NAME, booking_id + "#" + str(index)),
-            )
-        single_type = len(type_counts) == 1
-        if single_type:
-            booking_manager._assign_open_rooms(cur, hotel_name, header_type, booking_id, phone, MANAGER_NAME, all_dates, len(lines))
-        paid = 0.0
-        total_value = total
-        remaining = None if total_value is None else total_value - paid
-        cur.execute("SELECT booking_id FROM payment_tracking WHERE booking_id = %s", (booking_id,))
-        payment = cur.fetchone()
-        if payment:
-            cur.execute(
-                """
-                UPDATE payment_tracking
-                SET guest_phone_number = %s, total_amount = %s, amount_paid = %s, remaining_balance = %s, payment_status = 'pending', currency = %s
-                WHERE booking_id = %s
-                """,
-                (phone, total_value, paid, remaining, currency, booking_id),
-            )
-        else:
-            cur.execute(
-                """
-                INSERT INTO payment_tracking
-                (booking_id, guest_phone_number, total_amount, amount_paid, remaining_balance, payment_status, payment_method, payment_date, currency)
-                VALUES (%s, %s, %s, %s, %s, 'pending', NULL, NULL, %s)
-                """,
-                (booking_id, phone, total_value, paid, remaining, currency),
-            )
-        stored_rooms = []
-        for room in rooms:
-            stored_rooms.append({
-                "roomCode": (room or {}).get("roomCode"),
-                "rateplanCode": (room or {}).get("rateplanCode"),
-                "guestName": (room or {}).get("guestName"),
-                "occupancy": (room or {}).get("occupancy"),
-                "prices": (room or {}).get("prices"),
-            })
-        content = {
-            "hotel_name": hotel_name,
-            "booking_id": booking_id,
-            "guest_phone": phone,
-            "reference_phone": reference_phone,
-            "phone_verified": phone_verified,
-            "guest_name": _guest_name(payload),
-            "channel": channel,
-            "cm_booking_id": str(payload.get("cmBookingId") or ""),
-            "segment": str(payload.get("segment") or ""),
-            "special_requests": notes_text,
-            "pah": payload.get("pah"),
-            "amount": amount,
-            "rooms": stored_rooms,
-            "card_present": card_present,
-            "checkin": checkin,
-            "checkout": checkout,
-        }
-        bookings = db["guest_bookings"]
-        current_doc = bookings.find_one({"booking_id": booking_id, "hotel_name": hotel_name})
-        if current_doc:
-            bookings.update_one({"booking_id": booking_id, "hotel_name": hotel_name}, {"$set": content})
-        else:
-            bookings.insert_one(content)
-        reservations = db["ota_reservations"]
-        saved = dict(payload)
-        if isinstance(saved.get("creditCard"), dict):
-            saved["creditCard"] = {"stored": "encrypted"}
-        record = {"hotel_name": hotel_name, "booking_id": booking_id, "payload": saved}
-        current_res = reservations.find_one({"hotel_name": hotel_name, "booking_id": booking_id})
-        if current_res:
-            reservations.update_one({"hotel_name": hotel_name, "booking_id": booking_id}, {"$set": record})
-        else:
-            reservations.insert_one(record)
-        from booking_system.booking_manager import booking_manager
-        booking_manager.write_booking_guest_count(cur, hotel_name, booking_id, _party_size(rooms), channel or MANAGER_NAME)
-        conn.commit()
-        pushed_dates = [str(day)[:10] for day in previous_dates] + list(all_dates)
-        outcome = {"success": True, "message": message}
-    except Exception as exc:
-        conn.rollback()
-        pushed_dates = None
-        outcome = {"success": False, "message": str(exc)}
-    finally:
-        cur.close()
-    if pushed_dates is not None:
-        outcome["stay_dates"] = pushed_dates
-        if push:
-            booking_manager._safe_rollback()
-            _push_stay_dates(hotel_name, pushed_dates)
-    return outcome
-
-
-def _cancel(hotel_code: str, booking_id: str, message: str, push: bool = True) -> dict:
-    from booking_system.booking_manager import booking_manager
-
-    booking_manager._ensure_postgres_connection()
-    db = booking_manager.records
-    if db is None or booking_manager.postgres_conn is None:
-        return {"success": False, "message": "Database connection not available"}
-    hotel_name, hotel_error = _hotel_name(db, hotel_code)
-    if hotel_error:
-        return {"success": False, "message": hotel_error}
-    with booking_manager.postgres_lock:
-        booking_manager._clear_transaction()
-        cur = booking_manager.postgres_conn.cursor()
-        cur.execute("SELECT stay_date FROM booking_stays WHERE hotel_name = %s AND booking_id = %s", (hotel_name, booking_id))
-        previous_dates = [str(row[0])[:10] for row in cur.fetchall()]
-        cur.close()
-        result = booking_manager.cancel_booking(hotel_name, booking_id, MANAGER_NAME)
-    if str(result).startswith("❌"):
-        return {"success": False, "message": result}
-    db["guest_bookings"].update_one(
-        {"hotel_name": hotel_name, "booking_id": booking_id},
-        {"$set": {"booking_status": "cancelled"}},
-    )
-    if push:
-        _push_stay_dates(hotel_name, previous_dates)
-    return {"success": True, "message": message, "stay_dates": previous_dates}
-
-
-def backfill_currency() -> dict:
-    """Fill a NULL booking currency from the stored channel payload. Amounts are not rewritten; no payload currency stays NULL."""
-    from booking_system.content_store import _transaction
-
-    def run(cur):
-        for table in ("room_bookings", "payment_tracking", "payment_ledger"):
-            cur.execute("ALTER TABLE " + table + " ADD COLUMN IF NOT EXISTS currency VARCHAR(3)")
-        cur.execute(
-            """
-            UPDATE room_bookings b
-            SET currency = UPPER(COALESCE(NULLIF(o.body->'payload'->'amount'->>'currency', ''), NULLIF(g.body->'amount'->>'currency', '')))
-            FROM room_bookings r
-            LEFT JOIN content_document o ON o.collection_name = 'ota_reservations'
-             AND o.body->>'booking_id' = r.booking_id AND UPPER(o.body->>'hotel_name') = UPPER(r.hotel_name)
-            LEFT JOIN content_document g ON g.collection_name = 'guest_bookings'
-             AND g.body->>'booking_id' = r.booking_id AND UPPER(g.body->>'hotel_name') = UPPER(r.hotel_name)
-            WHERE r.booking_id = b.booking_id AND b.currency IS NULL
-              AND COALESCE(NULLIF(o.body->'payload'->'amount'->>'currency', ''), NULLIF(g.body->'amount'->>'currency', '')) IS NOT NULL
-            """
-        )
-        bookings = cur.rowcount
-        cur.execute(
-            """
-            UPDATE payment_tracking t SET currency = b.currency FROM room_bookings b
-            WHERE b.booking_id = t.booking_id AND t.currency IS NULL AND b.currency IS NOT NULL
-            """
-        )
-        tracking = cur.rowcount
-        cur.execute(
-            """
-            UPDATE payment_ledger l SET currency = b.currency FROM room_bookings b
-            WHERE b.booking_id = l.booking_id AND UPPER(b.hotel_name) = UPPER(l.hotel_name) AND l.currency IS NULL AND b.currency IS NOT NULL
-            """
-        )
-        return {"room_bookings": bookings, "payment_tracking": tracking, "payment_ledger": cur.rowcount}
-
-    return _transaction(run)
-
-
-def _push_stay_dates(hotel_name: str, stay_dates):
-    from booking_system.booking_manager import booking_manager
-    try:
-        booking_manager._safe_rollback()
-        from aiosell_channel_manager import push_dates
-        pushed = push_dates(hotel_name, stay_dates)
-        if pushed.get("error") or pushed.get("skipped"):
-            logging.info("Aiosell push %s", pushed.get("error") or pushed.get("skipped"))
-    except Exception:
-        booking_manager._safe_rollback()
-        logging.exception("Aiosell push failed")
+        done = db.transaction(lambda cur: work(cur, hotel, channel, reference, payload))
+    except Refused as reason:
+        return {"success": False, "message": str(reason)}
+    return dict(done, success=True, message=message)

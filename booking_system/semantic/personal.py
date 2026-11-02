@@ -1,7 +1,7 @@
-"""Personal recipes: a manager's named bundle of published general recipes. Stored on the manager profile; no SQL of its own."""
+"""Personal recipes: a manager's named bundle of published general recipes. Stored on the user's user_profile document; no SQL of its own."""
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 
 def _now():
@@ -16,20 +16,17 @@ def _key(value):
     return "_".join(str(value or "").lower().split())
 
 
-def _profile(manager_name):
-    from booking_system.hotel_context_manager import manager_col
-    name = str(manager_name or "").upper()
-    if not name or manager_col is None:
-        return None
-    return manager_col.find_one({"manager_name": name}, {"password": 0})
+def _profile(user_id):
+    from booking_system.semantic.definitions import _profile as profile
+    return profile(user_id)
 
 
-def _write(manager_name, values):
-    from booking_system.hotel_context_manager import manager_col
-    manager_col.update_one({"manager_name": str(manager_name or "").upper()}, {"$set": values})
+def _write(user_id, values):
+    from booking_system.semantic.definitions import _write as write
+    write(user_id, values)
 
 
-def published_recipes(manager_name):
+def published_recipes(user_id):
     """Published recipes this manager may use, with a complete contract: their own user recipes first, then general."""
     from booking_system.semantic.recipe import recipe_contract
     from booking_system.semantic.registry import list_active_catalogs, visible_to
@@ -37,7 +34,7 @@ def published_recipes(manager_name):
     found = []
     for row in list_active_catalogs():
         body = row.get("body") or {}
-        if recipe_contract(body) or not visible_to(row, manager_name):
+        if recipe_contract(body) or not visible_to(row, user_id):
             continue
         found.append({
             "catalog_id": str(row.get("catalog_id") or ""),
@@ -48,14 +45,14 @@ def published_recipes(manager_name):
     return sorted(found, key=lambda item: item["scope"] != "user")
 
 
-def note_user_recipe(manager_name, catalog_id, version):
+def note_user_recipe(user_id, catalog_id, version):
     """List a published user recipe on its owner's profile."""
-    doc = _profile(manager_name)
+    doc = _profile(user_id)
     if not doc:
-        return {"error": "manager not found"}
+        return {"error": "user not found"}
     kept = [item for item in doc.get("user_recipes") or [] if isinstance(item, dict) and item.get("catalog_id") != catalog_id]
     kept.append({"catalog_id": str(catalog_id), "version": int(version or 0), "published_at": _now()})
-    _write(manager_name, {"user_recipes": kept})
+    _write(user_id, {"user_recipes": kept})
     return {"catalog_id": catalog_id, "status": "listed"}
 
 
@@ -66,30 +63,30 @@ def _usable(item, by_id):
     return bool(recipe) and all(column in recipe["outputs"] for column in columns)
 
 
-def personal_recipes(manager_name):
-    doc = _profile(manager_name) or {}
+def personal_recipes(user_id):
+    doc = _profile(user_id) or {}
     return [item for item in doc.get("personal_recipes") or [] if isinstance(item, dict) and _key(item.get("key"))]
 
 
-def personal_cards(manager_name):
+def personal_cards(user_id):
     """The short list the spec call chooses from."""
     return [
         {"key": item["key"], "name": item.get("name"), "figures": [figure.get("label") for figure in item.get("items") or []]}
-        for item in personal_recipes(manager_name)
+        for item in personal_recipes(user_id)
     ]
 
 
-def find_personal(manager_name, key):
-    matched = [item for item in personal_recipes(manager_name) if item["key"] == _key(key)]
+def find_personal(user_id, key):
+    matched = [item for item in personal_recipes(user_id) if item["key"] == _key(key)]
     return matched[0] if matched else None
 
 
-def save_personal(manager_name, name, items, published_seen=""):
+def save_personal(user_id, name, items, published_seen=""):
     """Read first. A known key is updated; an unknown key is created."""
     key = _key(name)
     if not key or not items:
         return {"error": "name and figures are required"}
-    kept = personal_recipes(manager_name)
+    kept = personal_recipes(user_id)
     entry = {"key": key, "name": _text(name), "items": list(items), "published_seen": published_seen, "updated_at": _now()}
     matched = [index for index, item in enumerate(kept) if item["key"] == key]
     if matched:
@@ -98,42 +95,42 @@ def save_personal(manager_name, name, items, published_seen=""):
     else:
         entry["created_at"] = entry["updated_at"]
         kept.append(entry)
-    _write(manager_name, {"personal_recipes": kept})
+    _write(user_id, {"personal_recipes": kept})
     return {"key": key, "status": "updated" if matched else "created", "recipe": entry}
 
 
-def delete_personal(manager_name, key):
+def delete_personal(user_id, key):
     """Read first. Only an existing key is deleted."""
-    kept = personal_recipes(manager_name)
+    kept = personal_recipes(user_id)
     remaining = [item for item in kept if item["key"] != _key(key)]
     if len(remaining) == len(kept):
         return {"error": "no personal recipe " + _key(key)}
-    _write(manager_name, {"personal_recipes": remaining})
+    _write(user_id, {"personal_recipes": remaining})
     return {"key": _key(key), "status": "deleted"}
 
 
-def recent_reports(manager_name):
-    doc = _profile(manager_name) or {}
+def recent_reports(user_id):
+    doc = _profile(user_id) or {}
     return [item for item in doc.get("recent_reports") or [] if isinstance(item, dict)]
 
 
-def declined_reports(manager_name):
-    doc = _profile(manager_name) or {}
+def declined_reports(user_id):
+    doc = _profile(user_id) or {}
     return [item for item in doc.get("declined_reports") or [] if isinstance(item, dict)]
 
 
-def decline_report(manager_name, name, question):
+def decline_report(user_id, name, question):
     """The manager said no to saving this bundle; it is not offered again."""
-    kept = [item for item in declined_reports(manager_name) if item.get("question") != _text(question)]
+    kept = [item for item in declined_reports(user_id) if item.get("question") != _text(question)]
     kept.append({"name": _text(name), "question": _text(question), "declined_at": _now()})
-    _write(manager_name, {"declined_reports": kept[-20:]})
+    _write(user_id, {"declined_reports": kept[-20:]})
 
 
-def remember_report(manager_name, question, figures):
+def remember_report(user_id, question, figures):
     """Keep the manager's last five multi-figure questions so a repeat can be offered as a saved report."""
-    kept = recent_reports(manager_name)
+    kept = recent_reports(user_id)
     kept.append({"question": _text(question), "figures": list(figures or []), "asked_at": _now()})
-    _write(manager_name, {"recent_reports": kept[-5:]})
+    _write(user_id, {"recent_reports": kept[-5:]})
 
 
 def describe(recipe):
@@ -147,17 +144,10 @@ def describe(recipe):
 
 
 def _item_phrase(item):
-    return " ".join(str(item.get("period") or "").split("_")) or _day_phrase(int(item.get("day_offset") or 0))
+    return " ".join(str(item.get("period") or "").split("_"))
 
 
-def _day_phrase(offset):
-    names = {-1: "yesterday", 0: "today", 1: "tomorrow"}
-    if offset in names:
-        return names[offset]
-    return str(abs(offset)) + (" days ago" if offset < 0 else " days ahead")
-
-
-def map_figures(name, request, published, keys=(), definitions=()):
+def map_figures(name, request, published, keys=(), definitions=(), dates=None):
     """Haiku maps the figures a manager asked for onto published recipes. A figure no recipe answers stays pending,
     with the definition its meaning still needs."""
     from booking_system.llm_utils import haiku_text
@@ -176,15 +166,13 @@ def map_figures(name, request, published, keys=(), definitions=()):
                         "catalog_id": {"type": "string", "enum": ids + ["none"]},
                         "outputs": {"type": "array", "items": {"type": "string"}},
                         "date_column": {"type": "string"},
-                        "day_offset": {"type": "integer"},
-                        "period": {"type": "string"},
                         "definition_key": {"type": "string", "enum": [""] + key_names + ["new"]},
                         "new_key": {"type": "string"},
                         "new_label": {"type": "string"},
                         "definition_question": {"type": "string"},
                     },
                     "required": [
-                        "label", "catalog_id", "outputs", "date_column", "day_offset", "period",
+                        "label", "catalog_id", "outputs", "date_column",
                         "definition_key", "new_key", "new_label", "definition_question",
                     ],
                     "additionalProperties": False,
@@ -197,18 +185,15 @@ def map_figures(name, request, published, keys=(), definitions=()):
     parsed = json.loads(haiku_text(
         (
             "The manager names a personal report and the figures it holds. Return one item per figure. "
-            "label is the figure in two to four words, without any day or date, because day_offset carries the day. "
-            "day_offset is the day the figure is for, relative to the hotel's today: -1 for yesterday, 0 for today, 1 for tomorrow. "
-            "Take the day from the report name or the request; never a calendar date. "
+            "label is the figure in two to four words, without any day or date. "
+            "Do not choose a day, a period, or an offset. The dates in this turn were already written. "
             "catalog_id is the published recipe whose problem answers that figure, and none when no recipe answers it. "
             "A recipe with scope user is this manager's own; choose it over a general recipe whenever it answers the figure. "
             "outputs are the output columns of that recipe that hold the figure, copied exactly; choose the reading the figure names. "
             "A recipe that returns one row per date answers any day: date_column is its output column that names each row's day. "
             "When the recipe names each row's day or range in one column, such as period, date_column is that column, "
             "never a start or end date column, because a day and a range can share a start date. "
-            "period is the range the figure covers when it is a named range that recipe returns, copied exactly as the recipe's "
-            "preconditions or limitations name it, such as last_week; empty when the figure is for one day. "
-            "A recipe without a date column answers only today; do not use it for another day, use none instead. "
+            "A recipe without a date column is not tied to a day. When dates has a resolution whose unresolved is false, use none instead of a recipe that has no date column. "
             "With catalog_id none, leave outputs and date_column empty. "
             "definition_key is the phrase whose meaning the figure needs, chosen from keys, for any figure with more than one reading "
             "that changes the number, including a recipe that offers several output columns for it. "
@@ -220,6 +205,7 @@ def map_figures(name, request, published, keys=(), definitions=()):
         json.dumps({
             "report": _text(name),
             "request": _text(request),
+            "dates": dates or {"resolutions": []},
             "published": published,
             "keys": list(keys or []),
             "definitions": list(definitions or []),
@@ -228,13 +214,15 @@ def map_figures(name, request, published, keys=(), definitions=()):
         max_tokens=2000,
         timeout=90,
     ))
+    from booking_system.semantic.dates import usable_periods
     by_id = {item["catalog_id"]: item for item in published}
     answered = {item["key"] for item in definitions or []}
+    periods = usable_periods(dates)
+    agent_period = periods[0] if len(periods) == 1 else ""
     items = []
     for item in parsed.get("items") or []:
         recipe = by_id.get(str(item.get("catalog_id") or ""))
-        offset = int(item.get("day_offset") or 0)
-        entry = {"label": _text(item.get("label")), "day_offset": offset, "period": "", "catalog_id": "", "outputs": [], "date_column": "", "status": "pending"}
+        entry = {"label": _text(item.get("label")), "period": "", "catalog_id": "", "outputs": [], "date_column": "", "status": "pending"}
         chosen_key = str(item.get("definition_key") or "")
         if chosen_key == "new":
             entry["definition"] = {"key": _key(item.get("new_key")), "label": _text(item.get("new_label")), "question": _text(item.get("definition_question"))}
@@ -244,26 +232,26 @@ def map_figures(name, request, published, keys=(), definitions=()):
             outputs = [column for column in item.get("outputs") or [] if column in recipe["outputs"]]
             date_column = str(item.get("date_column") or "")
             dated = date_column in recipe["outputs"]
-            if outputs and (dated or offset == 0):
+            if outputs and (dated or not agent_period):
                 entry.update({
                     "catalog_id": recipe["catalog_id"],
                     "outputs": outputs,
                     "date_column": date_column if dated else "",
-                    "period": _text(item.get("period")) if dated else "",
+                    "period": "",
                     "status": "ready",
                 })
         items.append(entry)
     return items
 
 
-def learn(manager_name, name, request):
+def learn(user_id, name, request, dates=None):
     """Map a request onto today's published recipes. Returns the items and the published set they were mapped against."""
     from booking_system.semantic.definitions import known_keys, manager_definitions
 
-    published = published_recipes(manager_name)
-    definitions = manager_definitions(manager_name)
+    published = published_recipes(user_id)
+    definitions = manager_definitions(user_id)
     seen = ",".join(sorted(item["catalog_id"] for item in published))
-    items = map_figures(name, request, published, known_keys(manager_name), definitions)
+    items = map_figures(name, request, published, known_keys(user_id), definitions, dates)
     answered = {item["key"] for item in definitions}
     return [_marked(item, seen, answered) for item in items], seen
 
@@ -275,13 +263,13 @@ def _marked(item, seen, answered):
     return dict(item, mapped_with=seen + "|" + ("settled" if _settled(item, answered) else "open"))
 
 
-def needed_definitions(manager_name, recipe):
+def needed_definitions(user_id, recipe):
     """Pending figures whose meaning the manager has not defined yet. A new phrase is opened on the profile first."""
     from booking_system.semantic.definitions import known_keys, manager_definitions, open_request, skipped_keys
 
-    answered = {item["key"] for item in manager_definitions(manager_name)}
-    declined = set(skipped_keys(manager_name))
-    stored = {item["key"]: item["question"] for item in known_keys(manager_name)}
+    answered = {item["key"] for item in manager_definitions(user_id)}
+    declined = set(skipped_keys(user_id))
+    stored = {item["key"]: item["question"] for item in known_keys(user_id)}
     needed = []
     for item in recipe.get("items") or []:
         wanted = item.get("definition") or {}
@@ -290,7 +278,7 @@ def needed_definitions(manager_name, recipe):
             continue
         question = wanted.get("question") or stored.get(key) or "What do you count as " + item["label"].lower() + "?"
         if wanted.get("label"):
-            opened = open_request(manager_name, key, wanted["label"], question)
+            opened = open_request(user_id, key, wanted["label"], question)
             if opened.get("error"):
                 continue
         needed.append({"key": key, "label": item["label"], "question": question})
@@ -302,11 +290,11 @@ def _settled(item, answered):
     return not key or key in answered
 
 
-def _promote(manager_name, recipe, published):
+def _promote(user_id, recipe, published):
     """A pending figure is mapped again once the published recipes or its settled meaning changed; it becomes ready when a recipe answers it."""
     from booking_system.semantic.definitions import known_keys, manager_definitions
 
-    definitions = manager_definitions(manager_name)
+    definitions = manager_definitions(user_id)
     answered = {item["key"] for item in definitions}
     seen = ",".join(sorted(item["catalog_id"] for item in published))
     stale = [
@@ -322,7 +310,7 @@ def _promote(manager_name, recipe, published):
     )
     mapped = {
         item["label"]: item
-        for item in map_figures(recipe.get("name"), request, published, known_keys(manager_name), definitions)
+        for item in map_figures(recipe.get("name"), request, published, known_keys(user_id), definitions)
     }
     items = []
     for item in recipe.get("items") or []:
@@ -331,27 +319,29 @@ def _promote(manager_name, recipe, published):
             items.append(dict(found, definition=item.get("definition") or found.get("definition") or {}))
             continue
         items.append(_marked(item, seen, answered) if item in stale else item)
-    return save_personal(manager_name, recipe.get("name"), items, seen)["recipe"]
+    return save_personal(user_id, recipe.get("name"), items, seen)["recipe"]
 
 
-def _run_item(hotel_name, item, today):
-    """Run the referenced general recipe and keep the rows for the item's day and the chosen columns."""
+def _run_item(hotel_id, item, agent_period):
+    """Run the referenced general recipe and keep the rows for the period the desk wrote."""
     from booking_system.semantic.query import accepted_reads, execute_reads, rows_for
     from booking_system.semantic.registry import active_body
 
-    day = item.get("period") or (today + timedelta(days=int(item.get("day_offset") or 0))).isoformat()
+    day = str(agent_period or "")
     body = active_body(item["catalog_id"]) or {}
     template = str(((body.get("solution") or {}).get("sql_template")) or "").strip()
     statements = accepted_reads([template]) if template else []
     if not statements:
         return {"figure": item["label"], "day": day, "error": "recipe " + item["catalog_id"] + " has no runnable template"}
-    result = execute_reads(statements, {"hotel_name": str(hotel_name or "").upper()}, None)
+    result = execute_reads(statements, {"hotel_id": str(hotel_id or "")}, None)
     if result.get("error"):
         return {"figure": item["label"], "day": day, "error": result["error"]}
     rows = result.get("rows") or []
     column = item.get("date_column") or ""
+    if column and not day:
+        return {"figure": item["label"], "day": "", "error": "no date was settled for this figure"}
     if column:
-        rows = rows_for(rows, {"column": column, "period": item.get("period") or "", "day": day})
+        rows = rows_for(rows, {"column": column, "period": day, "day": ""})
     values = [{name: row.get(name) for name in item["outputs"]} for row in rows]
     return {"figure": item["label"], "day": day, "recipe": item["catalog_id"], "values": values}
 
@@ -378,49 +368,31 @@ def _gap_blocked(trace_id):
     return _with(run)
 
 
-def _run_live(hotel_name, manager, item, today, definitions):
-    """A pending figure is answered live and the gap is queued for the catalog.
-    A figure the hotel data cannot hold is reported as not recorded, without another live attempt."""
-    from booking_system.semantic.sql_agent import answer_question
-    from booking_system.semantic.workflow import _queue_catalog
+def _run_live(hotel_id, manager, item, agent_period, definitions, dates=None):
+    """A figure with no published recipe is not answered by writing SQL. The catalog is queued when this is not a follow-up."""
+    from booking_system.semantic.hotel import hotel_row
+    from booking_system.semantic.trace import in_followup, queue_missing_recipe
 
-    offset = int(item.get("day_offset") or 0)
-    day = (today + timedelta(days=offset)).isoformat()
+    day = str(agent_period or "")
     if _gap_blocked(item.get("gap_trace_id")):
         return {"figure": item["label"], "day": day, "error": "the hotel records do not hold this figure yet", "gap_trace_id": item["gap_trace_id"]}
-    found = answer_question(hotel_name, item["label"] + " for " + _item_phrase(item), [], None, None, definitions)
-    gap_trace_id = item.get("gap_trace_id")
-    if _settled(item, {entry["key"] for entry in definitions or []}):
-        succeeded = bool(found.get("statements")) and not found.get("error") and not found.get("stall_reason")
-        package = {"page_ids": [], "referenced_versions": [], "retrieval": {"status": "missing_recipe"}, "shortlist": [], "manager": manager}
-        spec = {
-            "output_grain": "night",
-            "entity": item["label"],
-            "constraints": [{"fact": item["label"] + " per hotel-local date"}],
-            "learn": "recurring",
-            "capability": _key(item["label"]) + "_per_day",
-        }
-        gap = (
-            item["label"] + " for each hotel-local date. A figure in a manager's daily report, read for " + _day_phrase(offset)
-            + ". Return one row per hotel-local date over a rolling window, with the date as a column, so any relative day can be read."
-        )
-        gap_trace_id = _queue_catalog(hotel_name, gap, package, found, "knowledge_gap_detected" if succeeded else "live_answer_failed", spec)
+    hotel_name = str((hotel_row(hotel_id) or {}).get("hotel_name") or "")
+    started = {}
+    if not in_followup():
+        started = queue_missing_recipe(hotel_id, hotel_name, manager, str(item.get("label") or ""), dates, {}, {})
     return {
         "figure": item["label"],
         "day": day,
-        "live": True,
-        "gap_trace_id": gap_trace_id,
-        "values": list(found.get("rows") or [])[:5],
-        "error": str(found.get("error") or found.get("stall_reason") or ""),
+        "values": [],
+        "error": "Give me a minute." if started.get("queued") or started.get("attached") else "I could not answer that from a published recipe.",
     }
 
 
-def run_personal(hotel_name, manager, recipe, question, definitions):
-    """Every figure in parallel, then one desk sentence."""
+def run_personal(hotel_id, manager, recipe, question, definitions, dates=None):
+    """Every figure in parallel. The reply node writes the sentence."""
     import time
     from concurrent.futures import ThreadPoolExecutor
-    from booking_system.leon_turn import compile_desk_sentence
-    from booking_system.timezone_utils import hotel_local_today
+    from booking_system.semantic.dates import usable_periods
 
     started = time.monotonic()
     published = published_recipes(manager)
@@ -434,12 +406,13 @@ def run_personal(hotel_name, manager, recipe, question, definitions):
         recipe = save_personal(manager, recipe.get("name"), checked, recipe.get("published_seen") or "")["recipe"]
     recipe = _promote(manager, recipe, published)
     definitions = list(definitions or [])
-    today = hotel_local_today(hotel_name)
+    periods = usable_periods(dates)
+    agent_period = periods[0] if len(periods) == 1 else ""
     items = list(recipe.get("items") or [])
     with ThreadPoolExecutor(max_workers=max(1, len(items))) as pool:
         futures = [
-            pool.submit(_run_item, hotel_name, item, today) if item.get("status") == "ready"
-            else pool.submit(_run_live, hotel_name, manager, item, today, definitions)
+            pool.submit(_run_item, hotel_id, item, agent_period) if item.get("status") == "ready"
+            else pool.submit(_run_live, hotel_id, manager, item, agent_period, definitions, dates)
             for item in items
         ]
         figures = [future.result() for future in futures]
@@ -451,16 +424,15 @@ def run_personal(hotel_name, manager, recipe, question, definitions):
     if traced != items:
         recipe = save_personal(manager, recipe.get("name"), traced, recipe.get("published_seen") or "")["recipe"]
     errors = "; ".join(item["figure"] + ": " + item["error"] for item in figures if item.get("error"))
-    sentence = compile_desk_sentence(
-        str(question or "") + " (" + describe(recipe) + ")",
-        figures,
-        errors,
-        "",
-        definitions,
-    )
-    return sentence, {
-        "personal_key": recipe.get("key"),
+    return {
+        "question": str(question or "") + " (" + describe(recipe) + ")",
         "figures": figures,
-        "read_ms": read_ms,
-        "live_figures": [item["figure"] for item in figures if item.get("live")],
+        "errors": errors,
+        "definitions": definitions,
+        "info": {
+            "personal_key": recipe.get("key"),
+            "figures": figures,
+            "read_ms": read_ms,
+            "live_figures": [item["figure"] for item in figures if item.get("live")],
+        },
     }

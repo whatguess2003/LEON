@@ -1,6 +1,5 @@
 (function(){
   var API = (location.hostname==='localhost'||location.hostname==='127.0.0.1') ? 'http://localhost:8002' : 'https://api.inap.ai';
-  var CM = (location.hostname==='localhost'||location.hostname==='127.0.0.1') ? 'http://127.0.0.1:8006' : 'https://cm.inap.ai';
   var TABS = [
     {id:'rate_out', operation:'rates', label:'Rate Out', line:'Aiosell will send Rates to'},
     {id:'inventory_out', operation:'inventory', label:'Inventory Out', line:'Aiosell will send Inventory to'},
@@ -322,10 +321,11 @@
     }
     if (button) button.disabled = true;
     try {
-      var res = await fetch(CM + '/room-mapping', {
+      var res = await fetch(API + '/api/ota/room-mapping', {
         method: 'POST',
+        credentials: 'include',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({hotel_name: hotel, room_code: code, room_type: roomType})
+        body: JSON.stringify({room_code: code, room_type: roomType})
       });
       var data = await res.json();
       if (!res.ok || (data && data.error)){
@@ -350,7 +350,7 @@
     }
     if (status) status.textContent = 'Loading...';
     try {
-      var res = await fetch(CM + '/mapping?hotel_name=' + encodeURIComponent(hotel));
+      var res = await fetch(API + '/api/ota/mapping', { credentials: 'include' });
       var data = await res.json();
       applyPayload(data);
       if (!res.ok || (data && data.error)){
@@ -384,10 +384,11 @@
     }
     if (status) status.textContent = 'Saving...';
     try {
-      var res = await fetch(CM + '/mapping', {
+      var res = await fetch(API + '/api/ota/mapping', {
         method:'POST',
+        credentials: 'include',
         headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ hotel_name: hotel, hotel_code: hotelCode })
+        body: JSON.stringify({ hotel_code: hotelCode })
       });
       var data = await res.json();
       applyPayload(data);
