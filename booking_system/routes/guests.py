@@ -24,7 +24,7 @@ ACCESS = [
     ("GET /api/guests/whatsapp/templates", "front_desk", "view"), ("POST /api/guests/whatsapp/template", "front_desk", "operate"),
     ("POST /api/guests/messages", "front_desk", "operate"), ("POST /api/guests/summarize", "front_desk", "view"),
 ]
-PUBLIC = ("GET /api/guest/biography", "POST /api/guest/biography")
+PUBLIC = ("GET /api/guest/biography", "POST /api/guest/biography", "GET /api/guest/onboard", "POST /api/guest/onboard/turn")
 BIOGRAPHY = ("guest_name", "email", "country", "date_of_birth", "gender", "company", "address", "identity_type", "identity_number",
              "special_request")
 
@@ -364,3 +364,24 @@ def guest_biography_save(payload: Dict[str, Any] = Body(...)):
     if saved.get("error"):
         return _error(saved["error"], 400)
     return {"success": True, "whatsapp_url": intelligent_front_desk.whatsapp_click_url(fields.get("guest_name") or guest["guest_name"])}
+
+
+@router.get("/api/guest/onboard")
+def guest_onboard_open(token: str = Query("")):
+    """Ella's opening for the guest who opened the portal link."""
+    from booking_system.guest_onboard import guest_open
+    opened = guest_open(token)
+    if opened.get("error"):
+        return _error(opened["error"], 400)
+    return opened
+
+
+@router.post("/api/guest/onboard/turn")
+async def guest_onboard_turn(payload: Dict[str, Any] = Body(default={})):
+    """One chat turn with Ella. The link token is the guest's login."""
+    from booking_system.guest_onboard import guest_turn
+    body = payload or {}
+    result = await run_in_threadpool(guest_turn, str(body.get("token") or ""), str(body.get("message") or ""), body.get("history") or [])
+    if result.get("error") and not result.get("reply"):
+        return _error(result["error"], 400)
+    return result

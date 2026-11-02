@@ -1,0 +1,185 @@
+(function () {
+  var host = window.location.hostname;
+  var local = host === "localhost" || host === "127.0.0.1" || host === "::1";
+  var api = (local ? "http://localhost:8002" : "https://api.inap.ai") + "/api";
+  var token = new URLSearchParams(window.location.search).get("t") || "";
+  var storeKey = "ella_guest_chat";
+  var messages = [];
+  var fields = {};
+  var todos = [];
+  var highlights = [];
+  var suggestion = "";
+  var whatsappUrl = "";
+  var busy = false;
+
+  function qs(id) { return document.getElementById(id); }
+
+  function load() {
+    if (!token) {
+      messages = [{ role: "ella", text: "Open the link from WhatsApp to fill in your details." }];
+      return;
+    }
+    try {
+      var data = JSON.parse(sessionStorage.getItem(storeKey) || "null");
+      if (data && data.token === token && data.messages && data.messages.length) {
+        messages = data.messages;
+        fields = data.fields || {};
+        todos = data.todos || [];
+        highlights = data.highlights || [];
+        suggestion = data.suggestion || "";
+        whatsappUrl = data.whatsappUrl || "";
+      }
+    } catch (error) {}
+  }
+
+  function persist() {
+    try {
+      sessionStorage.setItem(storeKey, JSON.stringify({
+        token: token, messages: messages, fields: fields, todos: todos,
+        highlights: highlights, suggestion: suggestion, whatsappUrl: whatsappUrl,
+      }));
+    } catch (error) {}
+  }
+
+  function apply(data) {
+    if (!data) return;
+    if (data.fields) fields = data.fields;
+    if (data.todos) todos = data.todos;
+    if (data.highlights) highlights = data.highlights;
+    suggestion = data.suggestion || "";
+    if (data.whatsapp_url) whatsappUrl = data.whatsapp_url;
+  }
+
+  function progress() {
+    var line = qs("progress");
+    var current = todos.filter(function (row) { return row.state === "now"; })[0];
+    var done = todos.length && todos.every(function (row) { return row.state === "done"; });
+    line.textContent = current && current.detail ? current.detail : (done ? "Your details are in" : "Ella");
+  }
+
+  function paint() {
+    var box = qs("messages");
+    var list = qs("todos");
+    var facts = qs("highlights");
+    var chips = qs("suggestion-row");
+    box.innerHTML = "";
+    list.innerHTML = "";
+    facts.innerHTML = "";
+    chips.innerHTML = "";
+    messages.forEach(function (row) {
+      var wrap = document.createElement("div");
+      wrap.className = "max-w-3xl mx-auto flex mb-4" + (row.role === "guest" ? " justify-end" : "");
+      if (row.role !== "guest") {
+        var mark = document.createElement("div");
+        mark.className = "w-7 h-7 rounded-full bg-teal-600 text-white flex items-center justify-center text-xs font-semibold mr-3 flex-shrink-0";
+        mark.textContent = "E";
+        wrap.appendChild(mark);
+      }
+      var text = document.createElement("div");
+      text.className = "rounded-lg px-3 py-2 text-sm max-w-lg " + (row.role === "guest" ? "bg-teal-600 text-white" : "bg-gray-100 text-gray-900");
+      text.textContent = row.text;
+      wrap.appendChild(text);
+      box.appendChild(wrap);
+    });
+    if (busy) {
+      var wait = document.createElement("div");
+      wait.className = "max-w-3xl mx-auto text-xs text-gray-500 mb-4";
+      wait.textContent = "Ella is writing...";
+      box.appendChild(wait);
+    }
+    todos.forEach(function (row) {
+      var line = document.createElement("div");
+      line.className = "text-sm mt-2 " + (row.state === "done" ? "text-green-700" : "text-gray-900 font-semibold");
+      line.textContent = row.label + (row.detail ? " — " + row.detail : "");
+      list.appendChild(line);
+    });
+    highlights.forEach(function (row) {
+      var chip = document.createElement("span");
+      chip.className = "inline-block bg-teal-50 text-teal-800 rounded-full px-2 py-1 mr-1 mb-1 text-xs";
+      chip.textContent = row.label + ": " + row.value;
+      facts.appendChild(chip);
+    });
+    if (suggestion && !busy) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "bg-teal-50 text-teal-800 rounded-full px-3 py-1 text-sm";
+      button.textContent = suggestion;
+      button.addEventListener("click", function () { sendText(suggestion); });
+      chips.appendChild(button);
+    }
+    if (whatsappUrl && !busy) {
+      var link = document.createElement("a");
+      link.className = "inline-block bg-teal-600 text-white rounded-full px-3 py-1 text-sm";
+      link.href = whatsappUrl;
+      link.textContent = "Message the hotel";
+      chips.appendChild(link);
+    }
+    progress();
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function prior() {
+    return messages.filter(function (row) { return row.text; });
+  }
+
+  function sendText(text) {
+    if (busy || !token) return;
+    text = String(text || "").trim();
+    if (!text) return;
+    qs("input").value = "";
+    messages.push({ role: "guest", text: text });
+    busy = true;
+    paint();
+    var history = prior().slice(0, -1);
+    fetch(api + "/guest/onboard/turn", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: token, message: text, history: history, fields: fields }),
+    }).then(function (response) {
+      return response.json().then(function (data) { return { ok: response.ok, data: data || {} }; });
+    }).then(function (result) {
+      var data = result.data;
+      if (!result.ok || (data.error && !data.reply)) {
+        messages.push({ role: "ella", text: data.error || "I could not save that." });
+      } else {
+        apply(data);
+        messages.push({ role: "ella", text: data.reply || "Say that once more." });
+      }
+      persist();
+    }).catch(function () {
+      messages.push({ role: "ella", text: "I could not reach the server." });
+    }).then(function () {
+      busy = false;
+      paint();
+    });
+  }
+
+  function open() {
+    if (!token || messages.length) {
+      paint();
+      return;
+    }
+    fetch(api + "/guest/onboard?token=" + encodeURIComponent(token)).then(function (response) {
+      return response.json().then(function (data) { return { ok: response.ok, data: data || {} }; });
+    }).then(function (result) {
+      if (!result.ok || result.data.error) {
+        messages = [{ role: "ella", text: (result.data && result.data.error) || "This link is not valid." }];
+      } else {
+        apply(result.data);
+        messages = [{ role: "ella", text: result.data.greeting || "Hey, I'm Ella." }];
+      }
+      persist();
+      paint();
+    }).catch(function () {
+      messages = [{ role: "ella", text: "I could not reach the server." }];
+      paint();
+    });
+  }
+
+  document.getElementById("composer").addEventListener("submit", function (event) {
+    event.preventDefault();
+    sendText(qs("input").value);
+  });
+  load();
+  open();
+})();

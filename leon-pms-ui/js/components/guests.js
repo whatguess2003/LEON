@@ -854,9 +854,23 @@ class GuestComponent {
             body: JSON.stringify(payload)
         });
         const data = await response.json();
+        const note = document.getElementById('add-status');
         if (!response.ok || data.error) {
-            alert(data.error || 'Could not create the guest');
+            if (note) note.textContent = data.error || 'Could not create the guest';
             return;
+        }
+        if (note) {
+            note.textContent = data.whatsapp_error
+                ? 'Created. The WhatsApp link was not sent. ' + data.whatsapp_error
+                : 'Created. Ella\'s link was sent on WhatsApp.';
+            if (data.portal_url && String(data.portal_url).indexOf("http") === 0) {
+                const link = document.createElement('a');
+                link.href = data.portal_url;
+                link.target = '_blank';
+                link.className = 'block text-blue-600 mt-1';
+                link.textContent = 'Open the guest portal';
+                note.appendChild(link);
+            }
         }
         document.getElementById('guest-search').value = payload.guest_phone;
         await this.search();

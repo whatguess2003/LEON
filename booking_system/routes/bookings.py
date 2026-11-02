@@ -291,7 +291,11 @@ def api_guest_profile_create(payload: Dict[str, Any] = Body(...), s: dict = Depe
                                               payload.get("nationality"))
     if made.get("error"):
         return _refused(made)
-    return dict(made, result="Guest profile created for " + made["guest_name"] + " (" + made["guest_phone"] + ")")
+    from booking_system.guest_link import deliver_portal_link
+    sent = deliver_portal_link(s["hotel_id"], made["guest_phone"], made["guest_name"])
+    return dict(made, result="Guest profile created for " + made["guest_name"] + " (" + made["guest_phone"] + ")",
+                portal_url=sent.get("portal_url") or "", whatsapp_error=sent.get("error") or "",
+                whatsapp_message_id=sent.get("message_id") or "")
 
 
 @router.post("/api/guest_profile/update")
