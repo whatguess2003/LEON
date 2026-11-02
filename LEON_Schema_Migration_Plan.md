@@ -1820,6 +1820,10 @@ Operational choices belong to each hotel and are captured from the hotel's own a
   - `hr_worked_hours`, and `hr_leave_days(hotel, from, to, rule_day)` (PL/pgSQL, so it reads only the branch the setting selects).
 - Migration: the three `hotel` time columns became `hotel_setting` rows (source `migration`) and were dropped.
 
+### WA: WhatsApp interactive navigation (done)
+
+The PMS is reached from WhatsApp as a tree of interactive messages, not by opening pages. `wa_interactive_template` is one Cloud API message (`list` of at most 10 rows, or `button` of at most 3 reply buttons). `wa_interactive_choice` is a row or button whose id opens the next template. A read fills its rows from `choice_sql` (`%(hotel_id)s`, `%(record_id)s`). `booking_system/interactive/catalog.py` inserts a missing key only. The agent in `interactive/agent.py` loads the row, fills `{placeholders}` from the hotel, and returns the Messages API body. A list reply id is the template key, or `template_key/record_id`.
+
 **Catalog**
 
 | Area | Settings |

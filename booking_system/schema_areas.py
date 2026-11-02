@@ -2,10 +2,12 @@
 core_schema.catalog(cur) as read before the core DDL (relations, functions, triggers, constraints, hotel_name_tables)."""
 
 from booking_system import schema_bookings, schema_frontdesk, schema_guests, schema_operations, schema_rooms
+from booking_system.interactive import schema as schema_interactive
 from booking_system.onboarding import schema as schema_onboarding
 from booking_system.settings import schema as schema_settings
 
-AREAS = (schema_rooms, schema_bookings, schema_frontdesk, schema_operations, schema_guests, schema_settings, schema_onboarding)
+AREAS = (schema_rooms, schema_bookings, schema_frontdesk, schema_operations, schema_guests, schema_settings, schema_onboarding,
+         schema_interactive)
 
 
 def ensure(cur, seen):

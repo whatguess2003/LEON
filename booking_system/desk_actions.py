@@ -802,13 +802,21 @@ _POPULAR = (
 
 
 def menu_screen(hotel_id):
-    """The list shown when the hotel user logs in. Each row is one catalog action."""
+    """The list shown when the hotel user logs in. The interactive catalog is the navigation; the ten desk actions remain if it is empty."""
+    from booking_system.interactive.agent import complete
+    done = complete(hotel_id, "nav.home")
+    if done:
+        return done["screen"]
     rows = [_list_row("Actions", name, _LISTS[name][0], _LISTS[name][1], "menu", None) for name in _POPULAR]
     return _card(hotel_id, "menu", "Leon", "What should we do?", "Actions", [{"title": "Actions", "rows": rows}])
 
 
 def open_action(hotel_id, name):
-    """The database list for one catalog action, with fields still empty."""
+    """The database list for one catalog action, with fields still empty. A WhatsApp template key is completed from PostgreSQL."""
+    from booking_system.interactive.agent import complete
+    done = complete(hotel_id, name)
+    if done:
+        return done["screen"]
     action = str(name or "").strip()
     if action == "check_availability":
         return availability_screen(hotel_id, {"informational_actions": [{"action": "check_availability", "ask": "rooms_left"}]})

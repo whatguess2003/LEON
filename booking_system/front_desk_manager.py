@@ -967,6 +967,21 @@ class FrontDesk:
             return {"error": "List needs a body, a button, and a row"}
         return self._post_whatsapp(payload)
 
+    def send_whatsapp_interactive(self, guest_phone: str, interactive: dict) -> dict:
+        """Send one completed interactive message (list or reply buttons). Meta accepts it only inside an open window."""
+        recipient = self._whatsapp_to(guest_phone)
+        if not recipient:
+            return {"error": "WhatsApp number needs a country code"}
+        if not isinstance(interactive, dict) or not interactive.get("type"):
+            return {"error": "Interactive message is empty"}
+        return self._post_whatsapp({
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": recipient,
+            "type": "interactive",
+            "interactive": interactive,
+        })
+
     def send_whatsapp_media(self, guest_phone: str, kind: str, media_id: str, caption: str = "") -> dict:
         """Send a file already uploaded to WhatsApp. kind is image, video, audio, or document."""
         from booking_system.whatsapp_media import caption_allowed

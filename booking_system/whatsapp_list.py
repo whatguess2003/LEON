@@ -1,9 +1,17 @@
-"""WhatsApp interactive list messages, matching the Cloud API list request and list_reply webhook."""
+"""WhatsApp interactive messages, matching the Cloud API list, reply-button, and list_reply shapes.
+
+A list message carries one button that opens up to 10 rows in up to 10 sections. A reply-button message carries one to three
+buttons and no list. Header text is 60 characters, footer 60, list button 20, list row title 24, list row description 72,
+list row id 200. A reply button title is 20 and its id 256. List body is 4096 characters; button body is 1024."""
 
 _BODY = 4096
+_BUTTON_BODY = 1024
 _HEADER = 60
 _FOOTER = 60
 _BUTTON = 20
+_BUTTON_TITLE = 20
+_BUTTONS = 3
+_BUTTON_ID = 256
 _SECTION = 24
 _ROW_ID = 200
 _ROW_TITLE = 24
@@ -16,13 +24,7 @@ def _cut(value, limit):
     return str(value or "").strip()[:limit]
 
 
-def list_payload(to, header, body, footer, button, sections):
-    """The Messages API body for one interactive list. Header and footer are omitted when empty."""
-    text = _cut(body, _BODY)
-    label = _cut(button, _BUTTON)
-    recipient = str(to or "").strip()
-    if not text or not label or not recipient:
-        return None
+def _sections(sections):
     built = []
     remaining = _ROWS
     for section in sections or []:
@@ -47,17 +49,67 @@ def list_payload(to, header, body, footer, button, sections):
             remaining -= 1
         if rows:
             built.append({"title": title, "rows": rows})
-    if not built:
+    return built
+
+
+def _frame(kind, header, body, limit):
+    text = _cut(body, limit)
+    if not text:
         return None
-    interactive = {"type": "list"}
+    interactive = {"type": kind}
     head = _cut(header, _HEADER)
-    foot = _cut(footer, _FOOTER)
     if head:
         interactive["header"] = {"type": "text", "text": head}
     interactive["body"] = {"text": text}
+    return interactive
+
+
+def _footer(interactive, footer):
+    foot = _cut(footer, _FOOTER)
     if foot:
         interactive["footer"] = {"text": foot}
+    return interactive
+
+
+def list_interactive(header, body, footer, button, sections):
+    """The interactive object for one list. None without a body, a button, and a row."""
+    label = _cut(button, _BUTTON)
+    interactive = _frame("list", header, body, _BODY)
+    built = _sections(sections)
+    if not interactive or not label or not built:
+        return None
+    _footer(interactive, footer)
     interactive["action"] = {"button": label, "sections": built}
+    return interactive
+
+
+def button_interactive(header, body, footer, buttons):
+    """The interactive object for one to three reply buttons. None without a body and a button."""
+    interactive = _frame("button", header, body, _BUTTON_BODY)
+    if not interactive:
+        return None
+    built = []
+    for item in buttons or []:
+        if len(built) >= _BUTTONS:
+            break
+        row_id = _cut((item or {}).get("id"), _BUTTON_ID)
+        title = _cut((item or {}).get("title"), _BUTTON_TITLE)
+        if not row_id or not title:
+            continue
+        built.append({"type": "reply", "reply": {"id": row_id, "title": title}})
+    if not built:
+        return None
+    _footer(interactive, footer)
+    interactive["action"] = {"buttons": built}
+    return interactive
+
+
+def list_payload(to, header, body, footer, button, sections):
+    """The Messages API body for one interactive list. Header and footer are omitted when empty."""
+    recipient = str(to or "").strip()
+    interactive = list_interactive(header, body, footer, button, sections)
+    if not interactive or not recipient:
+        return None
     return {
         "messaging_product": "whatsapp",
         "recipient_type": "individual",

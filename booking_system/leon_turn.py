@@ -920,13 +920,21 @@ def receive_manager_whatsapp(account, source_ref, text, row_id=""):
         card_click(hotel, "sales", row_id)
         coll.update_one({"source_ref": ref}, {"$set": {"clicked": True}})
     existing = coll.find_one({"source_ref": ref}) or {}
+    from booking_system.interactive.agent import complete
+    navigated = complete(account["hotel_id"], row_id) if row_id else None
     reply = str(existing.get("reply") or "")
     if not reply:
-        reply, _acted, _screen, _pins = desk_turn(hotel, account["user_id"], body, read_turns(hotel, account["user_id"]))
+        if navigated:
+            reply = navigated["text"]
+        else:
+            reply, _acted, _screen, _pins = desk_turn(hotel, account["user_id"], body, read_turns(hotel, account["user_id"]))
         coll.update_one({"source_ref": ref}, {"$set": {"reply": reply}})
     if not existing.get("reply_sent"):
         from booking_system.front_desk_manager import intelligent_front_desk
-        result = intelligent_front_desk.send_whatsapp_text(account["phone"], reply)
+        if navigated and navigated.get("interactive"):
+            result = intelligent_front_desk.send_whatsapp_interactive(account["phone"], navigated["interactive"])
+        else:
+            result = intelligent_front_desk.send_whatsapp_text(account["phone"], reply)
         if not result.get("error"):
             remember_outbound(result.get("message_id"), account["hotel_id"], {})
             coll.update_one({"source_ref": ref}, {"$set": {"reply_sent": True}})

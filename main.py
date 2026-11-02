@@ -573,15 +573,22 @@ async def chat_menu_open(payload: Dict[str, Any] = Body(...), leon_jwt: str = Co
     if not hotel:
         return JSONResponse(content={"error": "Invalid hotel in token"}, status_code=401)
     from booking_system.desk_actions import open_action
+    from booking_system.hotel_registry import hotel_id
+    from booking_system.interactive.agent import complete, deliver
     from booking_system.leon_meta_orchestrator import get_desk_user_from_jwt
     from booking_system.leon_turn import _copy_function, remember_topic
-    chosen = str((payload or {}).get("id") or "")
+    chosen = str((payload or {}).get("id") or "") or "nav.home"
     if chosen == "check_availability":
         manager = get_desk_user_from_jwt(leon_jwt)
         if isinstance(manager, str) and not manager.startswith("❌"):
             await run_in_threadpool(remember_topic, hotel, manager, "availability")
-    from booking_system.hotel_registry import hotel_id
-    screen = await run_in_threadpool(open_action, hotel_id(hotel), chosen)
+    ident = hotel_id(hotel)
+    done = await run_in_threadpool(complete, ident, chosen)
+    if done:
+        await run_in_threadpool(deliver, hotel, done)
+        return {"screen": done["screen"], "interactive": done["interactive"], "message": done["message"],
+                "template_key": done["template_key"], "purpose": done["purpose"]}
+    screen = await run_in_threadpool(open_action, ident, chosen)
     if not screen:
         return JSONResponse(content={"error": "Action was not found"}, status_code=400)
     await run_in_threadpool(_copy_function, hotel, screen)
