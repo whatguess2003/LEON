@@ -37,6 +37,7 @@ ACCESS = [
     ("GET /api/guests/record", "front_desk", "view"),
     ("POST /api/payments/update", "front_desk", "operate"),
     ("POST /api/payments/refund", "front_desk", "manage"),
+    ("POST /api/payments/void", "front_desk", "manage"),
     ("GET /api/payments/ledger", "front_desk", "view"),
 ]
 
@@ -365,11 +366,24 @@ class RefundPayload(BaseModel):
 
 @router.post("/api/payments/refund")
 def payments_refund(payload: RefundPayload, s: dict = Depends(session)):
-    """Refund the booking's payment number payment_seq in full."""
+    """Refund what is still left of the booking's payment number payment_seq."""
     made = payment_manager.record_refund(s["hotel_id"], s["user_id"], payload.booking_id, payload.payment_seq, payload.refund_type or None)
     if made.get("error"):
         return _refused(made)
     return dict(made, result="Payment " + str(payload.payment_seq) + " refunded: " + made["currency"] + " " + format(made["amount"], ".2f"))
+
+
+class VoidPayload(BaseModel):
+    payment_id: str
+
+
+@router.post("/api/payments/void")
+def payments_void(payload: VoidPayload, s: dict = Depends(session)):
+    """Void a received payment or refund that was entered in error."""
+    made = payment_manager.void_payment(s["hotel_id"], s["user_id"], payload.payment_id)
+    if made.get("error"):
+        return _refused(made)
+    return dict(made, result="Payment " + payload.payment_id + " voided")
 
 
 @router.get("/api/payments/ledger")

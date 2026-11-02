@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from booking_system import housekeeping_manager as hk, maintenance_manager as mm, staff_manager
+from booking_system.stay_rules import mark_stale_clean_rooms
 from booking_system.access import session
 
 router = APIRouter()
@@ -30,6 +31,7 @@ ACCESS = [
     ("GET /api/housekeeping/staff_status", "housekeeping", "view"),
     ("GET /api/housekeeping/room_status", "housekeeping", "view"),
     ("POST /api/housekeeping/create_task", "housekeeping", "operate"),
+    ("POST /api/housekeeping/auto_dirty", "housekeeping", "operate"),
     ("POST /api/housekeeping/update_progress", "housekeeping", "operate"),
     ("GET /api/staff/available", "housekeeping", "view"),
     ("POST /api/maintenance/create", "maintenance", "operate"),
@@ -150,6 +152,12 @@ def hk_staff_status(staff_phone: str = Query(...), room_number: Optional[str] = 
 @router.get("/api/housekeeping/room_status")
 def hk_room_status(room_number: str = Query(...), s: dict = Depends(session)):
     return _result(hk.read_room_current_cleaning(s["hotel_id"], room_number))
+
+
+@router.post("/api/housekeeping/auto_dirty")
+def hk_auto_dirty(s: dict = Depends(session)):
+    """Mark vacant rooms dirty once they have been clean for their auto_dirty_days."""
+    return _result(mark_stale_clean_rooms(s["hotel_id"], s["user_id"]))
 
 
 @router.post("/api/housekeeping/create_task")

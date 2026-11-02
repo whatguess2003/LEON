@@ -43,6 +43,9 @@ ACCESS = [
     ("POST /api/hotels/{hotel_id}/pricing/update", "reservations", "operate"),
     ("POST /api/hotels/{hotel_id}/inventory/update-date", "reservations", "operate"),
     ("POST /api/hotels/{hotel_id}/inventory/update-dates", "reservations", "operate"),
+    ("POST /api/hotels/{hotel_id}/inventory/night-rules", "reservations", "operate"),
+    ("POST /api/hotels/{hotel_id}/inventory/allotment", "reservations", "operate"),
+    ("POST /api/hotels/{hotel_id}/inventory/allotments/release", "reservations", "operate"),
     ("GET /api/kite", "reservations", "view"),
     ("POST /api/kite", "reservations", "operate"),
     ("POST /api/kite/day", "reservations", "operate"),
@@ -356,6 +359,32 @@ async def update_inventory_dates(hotel_id: str, request: Request, s: dict = Depe
         return {"success": False, "error": result["error"]}
     result["aiosell"] = await run_in_threadpool(push_dates, s["hotel_id"], dates)
     return result
+
+
+@router.post("/api/hotels/{hotel_id}/inventory/night-rules")
+def inventory_night_rules(hotel_id: str, request: Dict[str, Any] = Body(...), s: dict = Depends(session)):
+    """Stop-sell, minimum stay and closed-to-arrival on one night that already has inventory."""
+    result = inventory_manager.update_night_rules(s["hotel_id"], s["user_id"], request.get("room_type"), request.get("stay_date"),
+                                                  request.get("stop_sell"), request.get("min_stay"), request.get("closed_to_arrival"))
+    if result.get("error"):
+        return {"success": False, "error": result["error"]}
+    return result
+
+
+@router.post("/api/hotels/{hotel_id}/inventory/allotment")
+def inventory_allotment(hotel_id: str, request: Dict[str, Any] = Body(...), s: dict = Depends(session)):
+    """Hold rooms for one channel on one night."""
+    result = inventory_manager.save_allotment(s["hotel_id"], s["user_id"], request.get("channel"), request.get("room_type"),
+                                              request.get("stay_date"), request.get("rooms_allotted"), request.get("release_date"))
+    if result.get("error"):
+        return {"success": False, "error": result["error"]}
+    return result
+
+
+@router.post("/api/hotels/{hotel_id}/inventory/allotments/release")
+def inventory_release_allotments(hotel_id: str, s: dict = Depends(session)):
+    """Stamp allotments whose release date has arrived. Availability already ignores those nights."""
+    return inventory_manager.release_allotments(s["hotel_id"], s["user_id"], inventory_manager.hotel_today(s["hotel_timezone"]))
 
 
 # ---------- Kite and named dynamic pricing ----------

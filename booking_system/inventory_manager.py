@@ -38,30 +38,46 @@ def count_rooms(cur, hotel_id, room_type_id):
     return int(cur.fetchone()["n"])
 
 
-def availability(cur, hotel_id, room_type_id, start, end):
-    """{stay_date: {total, blocked, booked, stop_sell, available}} for the nights on file between start and end."""
+def availability(cur, hotel_id, room_type_id, start, end, channel=None):
+    """{stay_date: {total, blocked, booked, held, stop_sell, available}} between start and end.
+
+    A channel allotment holds max(0, rooms_allotted - live nights already on that channel). The hold is ignored once released_at
+    is set, or once the stay date is on or after release_date. channel=None subtracts every hold. A named channel keeps its own
+    hold and subtracts the others."""
+    viewing = str(channel).strip().upper() if channel else None
     cur.execute(
         """SELECT n.stay_date, n.total_inventory, n.blocked_quantity, n.stop_sell,
                   (SELECT COUNT(*) FROM booking_room_night b
-                   WHERE b.room_type_id = n.room_type_id AND b.stay_date = n.stay_date AND b.night_status = ANY(%s)) AS booked
+                   WHERE b.room_type_id = n.room_type_id AND b.stay_date = n.stay_date AND b.night_status = ANY(%s)) AS booked,
+                  (SELECT COALESCE(SUM(GREATEST(0, a.rooms_allotted - (
+                       SELECT COUNT(*) FROM booking_room_night b
+                       JOIN booking bk ON bk.booking_id = b.booking_id
+                       WHERE b.room_type_id = a.room_type_id AND b.stay_date = a.stay_date
+                         AND b.night_status = ANY(%s) AND bk.channel = a.channel))), 0)
+                   FROM room_allotments a
+                   WHERE a.room_type_id = n.room_type_id AND a.stay_date = n.stay_date
+                     AND a.released_at IS NULL
+                     AND (a.release_date IS NULL OR n.stay_date < a.release_date)
+                     AND (%s::varchar IS NULL OR a.channel <> %s)) AS held
            FROM room_inventory_nightly n
            WHERE n.hotel_id = %s AND n.room_type_id = %s AND n.stay_date BETWEEN %s AND %s""",
-        (list(LIVE_NIGHTS), hotel_id, room_type_id, start, end),
+        (list(LIVE_NIGHTS), list(LIVE_NIGHTS), viewing, viewing, hotel_id, room_type_id, start, end),
     )
     nights = {}
     for row in cur.fetchall():
-        open_rooms = row["total_inventory"] - row["blocked_quantity"] - row["booked"]
+        held = int(row["held"] or 0)
+        open_rooms = row["total_inventory"] - row["blocked_quantity"] - int(row["booked"]) - held
         nights[row["stay_date"]] = {
-            "total": row["total_inventory"], "blocked": row["blocked_quantity"], "booked": int(row["booked"]),
+            "total": row["total_inventory"], "blocked": row["blocked_quantity"], "booked": int(row["booked"]), "held": held,
             "stop_sell": row["stop_sell"], "available": 0 if row["stop_sell"] else max(open_rooms, 0),
         }
     return nights
 
 
-def available_rooms(cur, hotel_id, room_type_id, stay_date):
-    """total_inventory - blocked_quantity - live nights of the type; 0 on stop sell; None when the night has no inventory."""
+def available_rooms(cur, hotel_id, room_type_id, stay_date, channel=None):
+    """Rooms left to sell on stay_date for channel (every hold when channel is omitted); 0 on stop sell; None with no inventory."""
     day = _day(stay_date)
-    found = availability(cur, hotel_id, room_type_id, day, day).get(day)
+    found = availability(cur, hotel_id, room_type_id, day, day, channel).get(day)
     return found["available"] if found else None
 
 
@@ -329,12 +345,32 @@ def save_allotment(hotel_id, user_id, channel, room_type, stay_date, rooms_allot
             """INSERT INTO room_allotments (hotel_id, room_type_id, channel, stay_date, rooms_allotted, release_date, updated_by_user_id)
                VALUES (%s, %s, %s, %s, %s, %s, %s)
                ON CONFLICT (room_type_id, channel, stay_date) DO UPDATE SET
-                   rooms_allotted = EXCLUDED.rooms_allotted, release_date = EXCLUDED.release_date,
+                   rooms_allotted = EXCLUDED.rooms_allotted, release_date = EXCLUDED.release_date, released_at = NULL,
                    updated_at = now(), updated_by_user_id = EXCLUDED.updated_by_user_id""",
             (hotel_id, type_id, name, day, int(rooms_allotted), release, user_id),
         )
         return {"success": True, "channel": name, "stay_date": day.isoformat(), "rooms_allotted": int(rooms_allotted)}
     return db.transaction(run)
+
+
+def release_allotments_in(cur, hotel_id, user_id, today):
+    """Stamp released_at where release_date is on or before today."""
+    day = _day(today)
+    cur.execute(
+        """UPDATE room_allotments SET released_at = now(), updated_at = now(), updated_by_user_id = %s
+           WHERE hotel_id = %s AND released_at IS NULL AND release_date IS NOT NULL AND release_date <= %s""",
+        (user_id, hotel_id, day),
+    )
+    return {"released": cur.rowcount, "today": day.isoformat()}
+
+
+def release_allotments(hotel_id, user_id, today):
+    """release_allotments_in in its own transaction. A night on or after its release_date is already unsold by availability."""
+    try:
+        day = _day(today)
+    except ValueError:
+        return {"error": "today must be YYYY-MM-DD"}
+    return db.transaction(lambda cur: release_allotments_in(cur, hotel_id, user_id, day))
 
 
 # ---------- reads for the UI ----------
@@ -398,7 +434,7 @@ def read_prices(hotel_id, room_type, start_date, end_date):
 
 
 def read_availability(hotel_id, room_type, stay_date):
-    """{'total', 'blocked', 'booked', 'stop_sell', 'available'} for one night, or {'error'}."""
+    """{'total', 'blocked', 'booked', 'held', 'stop_sell', 'available'} for one night, or {'error'}."""
     try:
         day = _day(stay_date)
     except ValueError:

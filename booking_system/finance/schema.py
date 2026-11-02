@@ -114,6 +114,7 @@ TABLES = (
         cashier_shift_id    VARCHAR(48)   REFERENCES cashier_shift (cashier_shift_id),
         reason              VARCHAR(255),
         reference           VARCHAR(128),
+        desk_payment_id     VARCHAR(48),
         source_module       VARCHAR(32)   NOT NULL CHECK (source_module = lower(btrim(source_module)) AND source_module <> ''),
         source_ref          VARCHAR(128)  NOT NULL CHECK (btrim(source_ref) <> ''),
         posted_at           TIMESTAMPTZ   NOT NULL DEFAULT now(),
@@ -185,6 +186,7 @@ INDEXES = (
     ("finance_posting_booking_idx", "INDEX", "finance_posting (booking_id) WHERE booking_id IS NOT NULL"),
     ("finance_posting_shift_idx", "INDEX", "finance_posting (cashier_shift_id) WHERE cashier_shift_id IS NOT NULL"),
     ("finance_posting_parent_idx", "INDEX", "finance_posting (parent_posting_id) WHERE parent_posting_id IS NOT NULL"),
+    ("finance_posting_desk_payment_uq", "UNIQUE INDEX", "finance_posting (desk_payment_id) WHERE desk_payment_id IS NOT NULL"),
     ("ar_invoice_account_idx", "INDEX", "ar_invoice (ar_account_id)"),
     ("ar_allocation_credit_idx", "INDEX", "ar_allocation (credit_posting_id)"),
     ("transaction_code_department_idx", "INDEX", "transaction_code (department_id)"),
@@ -407,6 +409,7 @@ VIEWS = (
 # Columns added after a table was first created: (table, column, definition as in TABLES).
 COLUMNS = (
     ("cashier_shift", "variance_reason", "TEXT CHECK (variance_reason IS NULL OR btrim(variance_reason) <> '')"),
+    ("finance_posting", "desk_payment_id", "VARCHAR(48)"),
 )
 
 # (constraint, table, columns, target table, target columns). Targets belong to the core (booking_system/core_schema.py) and F&B;
@@ -417,6 +420,7 @@ LINKS = (
     ("cashier_shift_cashier_fk", "cashier_shift", "cashier_user_id", "user_account", "user_id"),
     ("finance_posting_posted_by_fk", "finance_posting", "posted_by_user_id", "user_account", "user_id"),
     ("finance_posting_booking_fk", "finance_posting", "hotel_id, booking_id", "booking", "hotel_id, booking_id"),
+    ("finance_posting_desk_payment_fk", "finance_posting", "desk_payment_id", "payment", "payment_id"),
     ("finance_posting_outlet_fk", "finance_posting", "outlet_id", "outlet", "outlet_id"),
     ("ar_invoice_issued_by_fk", "ar_invoice", "issued_by_user_id", "user_account", "user_id"),
     ("ar_invoice_voided_by_fk", "ar_invoice", "voided_by_user_id", "user_account", "user_id"),
