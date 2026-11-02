@@ -94,31 +94,10 @@
         mark.textContent = "E";
         wrap.appendChild(mark);
       }
-      if (row.template) {
-        var card = document.createElement("div");
-        card.className = "wa-list";
-        card.dataset.template = row.template;
-        var header = document.createElement("div");
-        header.className = "wa-list-header";
-        header.textContent = row.template;
-        var body = document.createElement("div");
-        body.className = "wa-list-body";
-        body.textContent = row.text;
-        var footer = document.createElement("div");
-        footer.className = "wa-list-footer";
-        var foot = document.createElement("span");
-        foot.textContent = "WhatsApp template";
-        footer.appendChild(foot);
-        card.appendChild(header);
-        card.appendChild(body);
-        card.appendChild(footer);
-        wrap.appendChild(card);
-      } else {
-        var text = document.createElement("div");
-        text.className = "rounded-lg px-3 py-2 text-sm max-w-lg " + (row.role === "guest" ? "bg-teal-600 text-white" : "bg-gray-100 text-gray-900");
-        text.textContent = row.text;
-        wrap.appendChild(text);
-      }
+      var text = document.createElement("div");
+      text.className = "rounded-lg px-3 py-2 text-sm max-w-lg " + (row.role === "guest" ? "bg-teal-600 text-white" : "bg-gray-100 text-gray-900");
+      text.textContent = row.text;
+      wrap.appendChild(text);
       box.appendChild(wrap);
     });
     whatsapp.forEach(function (row) {
@@ -174,7 +153,7 @@
   }
 
   function prior() {
-    return messages.filter(function (row) { return row.text && !row.template; });
+    return messages.filter(function (row) { return row.text && !row.source_ref; });
   }
 
   function placeConfirmed(rows) {
@@ -188,7 +167,6 @@
         role: "ella",
         text: row.body,
         source_ref: row.source_ref,
-        template: row.template_name || "confirmed_booking",
       });
     });
     if (!fresh.length) return false;
@@ -203,7 +181,7 @@
     }
     if (!found) {
       for (var j = messages.length - 1; j >= 0; j--) {
-        if (messages[j].role === "ella" && !messages[j].template) {
+        if (messages[j].role === "ella" && !messages[j].source_ref) {
           index = j + 1;
           break;
         }

@@ -1,8 +1,8 @@
-"""WhatsApp stay templates on the guest thread.
+"""Plain WhatsApp text for a stay, filed on the guest thread.
 
 confirmed_booking goes out once the guest profile is complete, one message for each confirmed booking.
-Check-in sends the welcome template. Check-out sends the checkout template.
-The same text is the WhatsApp message and a row on the guest thread, so the desk sees it.
+Check-in sends the welcome text. Check-out sends the checkout text.
+Meta template approval is not involved. The same sentence is the WhatsApp text and a row on the guest thread.
 """
 from datetime import datetime, timezone
 
@@ -10,21 +10,9 @@ from booking_system import db
 
 
 _SPECS = {
-    "confirmed_booking": (
-        "confirmed_booking",
-        "Your booking at {{hotel_name}} is confirmed. Check-in is {{check_in_date}}. The stay is {{total_night}} total nights. Your check-out date is {{check_out_date}}. We will have everything ready for your arrival.",
-        (("hotel_name", "Ella Hotel"), ("check_in_date", "2026-11-02"), ("total_night", "1"), ("check_out_date", "2026-11-03")),
-    ),
-    "welcome": (
-        "welcome_hotel",
-        "Welcome to {{hotel_name}}. Your room number is {{room_number}}. This stay is {{total_night}} total nights. Your check-out date is {{check_out_date}}. Please tell the front desk if you need anything during your stay.",
-        (("hotel_name", "Ella Hotel"), ("room_number", "101"), ("total_night", "1"), ("check_out_date", "2026-11-03")),
-    ),
-    "checkout": (
-        "checkout_stay",
-        "You are now checked out of {{hotel_name}}. Your room number was {{room_number}}. The stay was {{total_night}} total nights. Your check-out date was {{check_out_date}}. Thank you for staying with us and we hope to see you again.",
-        (("hotel_name", "Ella Hotel"), ("room_number", "101"), ("total_night", "1"), ("check_out_date", "2026-11-03")),
-    ),
+    "confirmed_booking": "Your booking at {{hotel_name}} is confirmed. Check-in is {{check_in_date}}. The stay is {{total_night}} total nights. Your check-out date is {{check_out_date}}. We will have everything ready for your arrival.",
+    "welcome": "Welcome to {{hotel_name}}. Your room number is {{room_number}}. This stay is {{total_night}} total nights. Your check-out date is {{check_out_date}}. Please tell the front desk if you need anything during your stay.",
+    "checkout": "You are now checked out of {{hotel_name}}. Your room number was {{room_number}}. The stay was {{total_night}} total nights. Your check-out date was {{check_out_date}}. Thank you for staying with us and we hope to see you again.",
 }
 
 
@@ -74,15 +62,6 @@ def _mark(hotel_id, phone, guest_id, key):
     write_guest_document(hotel_id, phone, {"stay_sent": keys[-80:]})
 
 
-def ensure_stay_templates():
-    """Create the three stay templates on the WhatsApp account when they are missing."""
-    from booking_system.whatsapp_templates import ensure_named_template
-    made = {}
-    for kind, (name, text, examples) in _SPECS.items():
-        made[kind] = ensure_named_template(name, text, examples)
-    return made
-
-
 def _source_ref(kind, booking_id, room):
     slug = {"confirmed_booking": "confirmed", "welcome": "welcome", "checkout": "checkout"}.get(kind, kind)
     ref = "stay-" + slug + "-" + booking_id
@@ -92,56 +71,50 @@ def _source_ref(kind, booking_id, room):
 
 
 def _sentence(text, context):
-    """Fill the template from the stay. The chat shows this sentence even while Meta has not approved it."""
-    from booking_system.whatsapp_templates import _fill
-    sentence, _values, _names = _fill(text, context, {}, [])
+    """Fill the stay sentence from the booking. A missing fact leaves the sentence unsent."""
+    sentence = str(text or "")
+    for name in ("hotel_name", "room_number", "total_night", "check_in_date", "check_out_date"):
+        marker = "{{" + name + "}}"
+        if marker not in sentence:
+            continue
+        value = str(context.get(name) or "").strip()
+        if not value:
+            return ""
+        sentence = sentence.replace(marker, value)
     return sentence
 
 
 def _file_card(phone, hotel_id, ref, sentence):
-    """One thread row per stay template. A later send keeps this row so the chat does not gain a second copy."""
+    """One thread row per stay. A later send keeps this row so the chat does not gain a second copy."""
     found = db.row("SELECT body FROM guest_message WHERE channel = 'whatsapp' AND source_ref = %s", (ref,))
     if found and str(found["body"] or "").strip():
         return str(found["body"])
     from booking_system.guest_manager import save_whatsapp_event
-    save_whatsapp_event(ref, phone, hotel_id, _now(), sentence, "out", "template")
+    save_whatsapp_event(ref, phone, hotel_id, _now(), sentence, "out", "text")
     return sentence
 
 
 def _card(hotel_id, booking_id, kind, room_number="", total_night=None, send=False):
-    """The filled stay sentence and its thread id. send also tries the approved WhatsApp template once."""
-    spec = _SPECS.get(kind)
+    """The filled stay sentence and its thread id. send delivers it as plain WhatsApp text once."""
+    text = _SPECS.get(kind)
     facts = _facts(hotel_id, booking_id)
-    if not spec or not facts or not facts.get("phone"):
+    if not text or not facts or not facts.get("phone"):
         return {"error": "Stay notice could not be addressed"}
     room = str(room_number or "").strip()
-    name, text, examples = spec
     context = _context(facts, room, total_night)
     sentence = _sentence(text, context)
     if not sentence:
         return {"error": "Stay notice fields are empty"}
     ref = _source_ref(kind, booking_id, room)
     body = _file_card(facts["phone"], hotel_id, ref, sentence)
-    card = {"body": body, "source_ref": ref, "booking_id": booking_id, "kind": kind, "template_name": name}
+    card = {"body": body, "source_ref": ref, "booking_id": booking_id, "kind": kind}
     key = kind + ":" + booking_id + (":" + room if room else "")
     if not send or key in _keys(facts["guest_id"]):
         if key in _keys(facts["guest_id"]):
             card["skipped"] = key
         return card
-    from booking_system.whatsapp_templates import ensure_named_template, render_named
-    ready = ensure_named_template(name, text, examples)
-    if isinstance(ready, dict) and ready.get("error"):
-        card["error"] = ready["error"]
-        return card
-    rendered = render_named(name, context)
-    if rendered.get("error"):
-        card["error"] = rendered["error"]
-        return card
     from booking_system.front_desk_manager import intelligent_front_desk
-    sent = intelligent_front_desk.send_whatsapp_template(
-        facts["phone"], rendered["template_name"], rendered["language"], rendered["values"],
-        rendered["button"], rendered["sentence"], rendered.get("names"), rendered.get("named"),
-    )
+    sent = intelligent_front_desk.send_whatsapp_text(facts["phone"], body)
     if sent.get("error"):
         card["error"] = sent["error"]
         return card
@@ -152,7 +125,7 @@ def _card(hotel_id, booking_id, kind, room_number="", total_night=None, send=Fal
 
 
 def deliver(hotel_id, booking_id, kind, room_number="", total_night=None):
-    """Send one stay template and file the sentence on the guest thread. A booking already sent this kind is left as it is."""
+    """Send one stay sentence as WhatsApp text and file it on the guest thread. A booking already sent this kind is left as it is."""
     return _card(hotel_id, booking_id, kind, room_number, total_night, send=True)
 
 
@@ -175,7 +148,7 @@ def _confirmed_ids(hotel_id, guest_id):
 
 
 def notify_confirmed_for_guest(hotel_id, guest_id):
-    """One confirmed_booking template for every confirmed stay, after the profile is complete."""
+    """One confirmed-booking text for every confirmed stay, after the profile is complete."""
     from booking_system.guest_manager import guest_row
     from booking_system.guest_onboard import profile_complete
     row = db.transaction(lambda cur: guest_row(cur, hotel_id, guest_id))
