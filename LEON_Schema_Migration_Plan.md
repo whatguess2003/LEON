@@ -16,7 +16,7 @@ Status (1 Nov 2026): **A0, A1, waves 2, 3 and 4 done** (see below). The whole da
 
 **Wave 4 (last hotel-name areas, 1 Nov): done.** Nothing outside `semantic/` and the runtime-state tables is keyed by hotel name.
 - **Documents.** `content_store.document_key` takes an explicit `_id` first, then the natural-key fields including `hotel_id` (a hotel_id-only body used to get an empty key, so hotels overwrote each other). Existing policy, profile and screen documents were re-keyed to `hotel_id`.
-- **Policies, registration card, property details.** `policy_manager` is module functions on `hotel_id` (`read_policies`, `create_policy` one per type, `update_policy`, `delete_policy`, `read_registration_card`, `save_registration_card`; keys `hotel_id|type` and `hotel_id`; writers recorded as `user_id`). Routes live in `booking_system/routes/property.py`. `hotel_info_manager` keeps contact, address, description, facilities and amenities on the `hotel_profile` document (key `hotel_id`); the time zone is the hotel row's (a different value is refused) and check-in / check-out come from the booking policy.
+- **Policies, registration card, property details.** `policy_manager` is module functions on `hotel_id` (`read_policies`, `create_policy` one per type, `update_policy`, `delete_policy`, `read_registration_card`, `save_registration_card`; keys `hotel_id|type` and `hotel_id`; writers recorded as `user_id`). Routes live in `booking_system/routes/property.py`. `hotel_info_manager` keeps contact, address, description, facilities and amenities on the `hotel_profile` document (key `hotel_id`); the time zone is the hotel row's (a different value is refused) and check-in / check-out are the hotel settings `front_desk.checkin_time` and `front_desk.checkout_time`.
 - **Channel manager.** `ota_mapping` and the channel manager's `/mapping` and `/room-mapping` take `hotel_id`. The UI calls the session routes `GET|POST /api/ota/mapping` and `POST /api/ota/room-mapping` on main, which forward with the session's hotel. `workers/cm.js` is a pure proxy and is unchanged.
 - **Onboarding.** `hotel_context_manager` and `manager_collection` are gone. `onboard_turn` creates and reads `user_account`, `user_identity`, `hotel`, `hotel_user` and the roles and modules through `user_manager`; definitions are saved on the `usr_` profile; the guide is `hotel_guide` keyed by `hotel_id`. Writers act only for the signed-in person (`/api/onboard/turn` passes the cookie's `user_id`); an existing phone without its password gets no token and no writes.
 - **Guest links.** They carry `{hotel_id, guest_phone, exp}`, are HMAC-signed and expire after 7 days; expired or altered links are refused.
@@ -1799,7 +1799,7 @@ Verification, rollback and risk mirror FB-1. Effort is 3–5 days each.
 Operational choices belong to each hotel and are captured from the hotel's own answers, at onboarding or later. Nothing in code chooses them, and nothing falls back to a default.
 
 **Schema (`booking_system/settings/schema.py`)**
-- `setting_catalog` (data, seeded from `settings/catalog.py`) has one row per choice. Columns:
+- `setting_catalog` is the question catalog, one row per choice. A key missing from the table is inserted from `settings/catalog.py`; a row already stored keeps its question, options and status, and a key that exists only in the table stays active. Columns:
   - `setting_key` and `module_name`;
   - `question` and `explanation`;
   - `value_type` (boolean, choice, choices, time, amount, tax_codes) and `options [{value, meaning}]`;
@@ -1815,6 +1815,7 @@ Operational choices belong to each hotel and are captured from the hotel's own a
 - SQL functions:
   - `hotel_local_date`, `hotel_setting_at(hotel, key, day)`;
   - `hotel_setting_required`, which raises an error naming the setting and its question;
+  - `hotel_setting_accept(hotel, key, value)`, which returns the canonical jsonb for the catalog row (and, for `tax_codes`, the hotel's active tax codes) or raises 22023. A BEFORE INSERT trigger applies it, so every writer is checked by the schema;
   - `hotel_module_state(hotel, module, day)`;
   - `hr_worked_hours`, and `hr_leave_days(hotel, from, to, rule_day)` (PL/pgSQL, so it reads only the branch the setting selects).
 - Migration: the three `hotel` time columns became `hotel_setting` rows (source `migration`) and were dropped.

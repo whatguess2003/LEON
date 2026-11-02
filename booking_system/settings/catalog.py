@@ -1,5 +1,6 @@
-"""The operating-settings catalog as data: the questions a hotel answers before a module operates. Rows are upserted into
-setting_catalog at startup; per-hotel answers are versioned rows in hotel_setting. Nothing here is a hotel's value.
+"""Bootstrap rows for setting_catalog. The table is the catalog the backend reads: startup inserts a key only when the table has
+no row for it, and never rewrites or retires a row that is already stored. Per-hotel answers are versioned rows in hotel_setting.
+Nothing here is a hotel's value.
 
 Fields: setting_key, module_name (whose operation reads it), question, explanation, value_type (boolean | choice | choices | time |
 amount | tax_codes), options [{value, meaning}], required (the module refuses while unset), required_when {other_key: value} (required

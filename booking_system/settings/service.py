@@ -6,8 +6,8 @@ Results: {"ok": True, ...} or {"ok": False, "error": ...}."""
 
 import json
 from datetime import date, datetime, time, timezone
-from decimal import Decimal, InvalidOperation
 
+import psycopg2
 from psycopg2.extras import Json
 
 from booking_system import db, hotel_registry
@@ -49,64 +49,14 @@ def _plain(value):
     return value.isoformat() if isinstance(value, (date, time)) else value
 
 
-# ---------- value checks, one per value type ----------
-
-def _boolean(cur, hotel_id, row, value):
-    if isinstance(value, bool):
-        return value
-    raise Refused(row["setting_key"] + " is yes or no (true or false)")
-
-
-def _choice(cur, hotel_id, row, value):
-    allowed = [option["value"] for option in row["options"]]
-    if value in allowed:
-        return value
-    raise Refused(row["setting_key"] + " must be one of " + ", ".join(allowed))
-
-
-def _choices(cur, hotel_id, row, value):
-    allowed = [option["value"] for option in row["options"]]
-    picked = list(value) if isinstance(value, (list, tuple)) else []
-    if picked and all(item in allowed for item in picked) and len(set(picked)) == len(picked):
-        return [item for item in allowed if item in picked]
-    raise Refused(row["setting_key"] + " is a non-empty list of distinct values from " + ", ".join(allowed))
-
-
-def _time(cur, hotel_id, row, value):
-    try:
-        return time.fromisoformat(str(value)).strftime("%H:%M")
-    except ValueError:
-        raise Refused(row["setting_key"] + " is a local time HH:MM, not " + str(value))
-
-
-def _amount(cur, hotel_id, row, value):
-    try:
-        amount = Decimal(str(value))
-    except InvalidOperation:
-        raise Refused(row["setting_key"] + " is an amount, not " + str(value))
-    if amount < 0 or amount != amount.quantize(Decimal("0.01")):
-        raise Refused(row["setting_key"] + " is a non-negative amount with at most 2 decimals")
-    return str(amount.quantize(Decimal("0.01")))
-
-
-def _tax_codes(cur, hotel_id, row, value):
-    """Every active tax code of the hotel, each once, in the order given."""
-    cur.execute("SELECT tax_code FROM tax_code WHERE hotel_id = %s AND status = 'active' ORDER BY tax_code", (hotel_id,))
-    active = [found["tax_code"] for found in cur.fetchall()]
-    picked = [str(item).strip().upper() for item in value] if isinstance(value, (list, tuple)) else []
-    if sorted(picked) != active:
-        raise Refused(row["setting_key"] + " must list every active tax code once, in the order they apply: " + ", ".join(active))
-    return picked
-
-
-CHECKS = {"boolean": _boolean, "choice": _choice, "choices": _choices, "time": _time, "amount": _amount, "tax_codes": _tax_codes}
+# A stated value is accepted by hotel_setting_accept, which reads the catalog row and the hotel's tax codes.
 
 
 def _listed(text):
     return [part.strip() for part in str(text).split(",") if part.strip()]
 
 
-# A value as chat text (what an extraction step returns) and back, per value type; the CHECKS above then judge the value.
+# A value as chat text (what an extraction step returns) and back, per value type; hotel_setting_accept then judges the value.
 FROM_TEXT = {"boolean": json.loads, "choice": str, "choices": _listed, "time": str, "amount": str, "tax_codes": _listed}
 TO_TEXT = {"boolean": json.dumps, "choice": str, "choices": ", ".join, "time": str, "amount": str, "tax_codes": ", ".join}
 
@@ -293,9 +243,25 @@ def _level_ok(cur, hotel_id, user_id, module, level):
     return bool(found and found["ok"])
 
 
+def _accepted(cur, hotel_id, key, value):
+    """The canonical value from hotel_setting_accept. A 22023 refusal rolls back to a savepoint so the caller's transaction can continue."""
+    cur.execute("SAVEPOINT setting_value")
+    try:
+        cur.execute("SELECT hotel_setting_accept(%s, %s, %s) AS value", (hotel_id, key, Json(value)))
+        accepted = cur.fetchone()["value"]
+    except psycopg2.Error as err:
+        cur.execute("ROLLBACK TO SAVEPOINT setting_value")
+        if err.pgcode == "22023":
+            raise Refused(err.diag.message_primary or "invalid setting value")
+        raise
+    cur.execute("RELEASE SAVEPOINT setting_value")
+    return accepted
+
+
 def write_setting(cur, hotel_id, user_id, key, value, effective_from, source, note="", sop_text=None):
-    """On the caller's cursor. READ the catalog row, the user's access and the value in effect; refuse a bad value, missing access or a
-    date before the operating date; record a new row only when the value changes. Returns the outcome with the module's new follow-ups."""
+    """On the caller's cursor. READ the catalog row, the user's access and the value in effect; hotel_setting_accept refuses a bad
+    value; a missing access or a date before the operating date is refused; a new row is recorded only when the value changes.
+    Returns the outcome with the module's new follow-ups."""
     rows = _catalog(cur, key)
     if not rows:
         raise Refused("unknown setting " + str(key))
@@ -304,7 +270,7 @@ def write_setting(cur, hotel_id, user_id, key, value, effective_from, source, no
         raise Refused("source must be one of " + ", ".join(SOURCES))
     if source not in _RECORDED and not _level_ok(cur, hotel_id, user_id, row["set_module"], row["set_level"]):
         raise Refused(key + " can be changed only with " + row["set_level"] + " access to " + row["set_module"])
-    stored = CHECKS[row["value_type"]](cur, hotel_id, row, value)
+    stored = _accepted(cur, hotel_id, key, value)
     on = date.fromisoformat(str(effective_from)[:10])
     earliest = earliest_date(cur, hotel_id, row["effective_basis"])
     if source not in _RECORDED and on < earliest:

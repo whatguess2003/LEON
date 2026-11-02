@@ -1,10 +1,12 @@
-"""Operating-settings DDL (core area hook). setting_catalog is the question catalog (data, upserted from catalog.CATALOG);
-hotel_setting keeps every answer as its own row with an effective_from date: rows are never updated, so history is kept and the
-value in effect on a day is the latest effective_from on or before it (latest set_at breaks a tie).
+"""Operating-settings DDL (core area hook). setting_catalog is the question catalog: a key already stored there keeps its
+question, options and status, and a key that exists only in the table stays active. catalog.CATALOG inserts a key only when the
+table has no row for it. hotel_setting keeps every answer as its own row with an effective_from date: rows are never updated, so
+history is kept and the value in effect on a day is the latest effective_from on or before it (latest set_at breaks a tie).
 
 SQL functions (also used by recipes):
   hotel_setting_at(hotel_id, key, day)        -> jsonb value in effect, or NULL
   hotel_setting_required(hotel_id, key, day)  -> jsonb value, or raises 22023 naming the setting and its question
+  hotel_setting_accept(hotel_id, key, value)  -> canonical jsonb value, or raises 22023 (BEFORE INSERT applies it)
   hotel_module_state(hotel_id, module, day)   -> {"governed", "enabled", "missing": [{setting_key, question}]}
   hotel_local_date(hotel_id)                  -> the hotel's local calendar date"""
 
@@ -112,12 +114,117 @@ CREATE OR REPLACE FUNCTION hotel_setting_append_only() RETURNS trigger LANGUAGE 
 BEGIN
   RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'hotel_setting rows are history; record a new value with its effective_from instead';
 END $$;
+
+-- The catalog row decides the shape. A writer stores the jsonb this returns; a bad value raises 22023 and is not stored.
+CREATE OR REPLACE FUNCTION hotel_setting_accept(p_hotel VARCHAR, p_key VARCHAR, p_value JSONB) RETURNS JSONB LANGUAGE plpgsql STABLE AS $$
+DECLARE
+  kind TEXT;
+  opts JSONB;
+  allowed TEXT[];
+  picked TEXT[];
+  active TEXT[];
+  clock TIME;
+  amount NUMERIC;
+  asked TEXT;
+BEGIN
+  SELECT value_type, options, question INTO kind, opts, asked
+  FROM setting_catalog WHERE setting_key = p_key AND status = 'active';
+  IF kind IS NULL THEN
+    RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'unknown setting ' || COALESCE(p_key, '');
+  END IF;
+
+  IF kind = 'boolean' THEN
+    IF jsonb_typeof(p_value) = 'boolean' THEN
+      RETURN p_value;
+    END IF;
+    RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = p_key || ' is yes or no (true or false)';
+  END IF;
+
+  IF kind IN ('choice', 'choices') THEN
+    SELECT COALESCE(array_agg(o->>'value' ORDER BY ord), ARRAY[]::text[]) INTO allowed
+    FROM jsonb_array_elements(opts) WITH ORDINALITY AS e(o, ord);
+  END IF;
+
+  IF kind = 'choice' THEN
+    IF jsonb_typeof(p_value) = 'string' AND (p_value #>> '{}') = ANY (allowed) THEN
+      RETURN to_jsonb(p_value #>> '{}');
+    END IF;
+    RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = p_key || ' must be one of ' || array_to_string(allowed, ', ');
+  END IF;
+
+  IF kind = 'choices' THEN
+    IF jsonb_typeof(p_value) = 'array' THEN
+      SELECT COALESCE(array_agg(item), ARRAY[]::text[]) INTO picked FROM jsonb_array_elements_text(p_value) AS item;
+    ELSE
+      picked := ARRAY[]::text[];
+    END IF;
+    IF cardinality(picked) > 0 AND cardinality(picked) = (SELECT count(DISTINCT item) FROM unnest(picked) AS item)
+       AND NOT EXISTS (SELECT 1 FROM unnest(picked) AS item WHERE NOT (item = ANY (allowed))) THEN
+      RETURN (SELECT jsonb_agg(item ORDER BY ord) FROM unnest(allowed) WITH ORDINALITY AS u(item, ord) WHERE item = ANY (picked));
+    END IF;
+    RAISE EXCEPTION USING ERRCODE = '22023',
+      MESSAGE = p_key || ' is a non-empty list of distinct values from ' || array_to_string(allowed, ', ');
+  END IF;
+
+  IF kind = 'time' THEN
+    BEGIN
+      clock := (p_value #>> '{}')::time;
+    EXCEPTION WHEN OTHERS THEN
+      clock := NULL;
+    END;
+    IF clock IS NOT NULL AND clock < time '24:00' THEN
+      RETURN to_jsonb(to_char(clock, 'HH24:MI'));
+    END IF;
+    RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = p_key || ' is a local time HH:MM, not ' || COALESCE(p_value #>> '{}', p_value::text, '');
+  END IF;
+
+  IF kind = 'amount' THEN
+    BEGIN
+      amount := (p_value #>> '{}')::numeric;
+    EXCEPTION WHEN OTHERS THEN
+      RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = p_key || ' is an amount, not ' || COALESCE(p_value #>> '{}', p_value::text, '');
+    END;
+    IF amount < 0 OR amount <> round(amount, 2) THEN
+      RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = p_key || ' is a non-negative amount with at most 2 decimals';
+    END IF;
+    RETURN to_jsonb(trim(to_char(amount, 'FM999999999990.00')));
+  END IF;
+
+  IF kind = 'tax_codes' THEN
+    IF jsonb_typeof(p_value) = 'array' THEN
+      SELECT COALESCE(array_agg(upper(btrim(item)) ORDER BY ord), ARRAY[]::text[]) INTO picked
+      FROM jsonb_array_elements_text(p_value) WITH ORDINALITY AS e(item, ord);
+    ELSE
+      picked := ARRAY[]::text[];
+    END IF;
+    SELECT COALESCE(array_agg(tax_code ORDER BY tax_code), ARRAY[]::text[]) INTO active
+    FROM tax_code WHERE hotel_id = p_hotel AND status = 'active';
+    IF (SELECT COALESCE(array_agg(item ORDER BY item), ARRAY[]::text[]) FROM unnest(picked) AS item)
+       = active THEN
+      RETURN COALESCE((SELECT jsonb_agg(item ORDER BY ord) FROM unnest(picked) WITH ORDINALITY AS u(item, ord)), '[]'::jsonb);
+    END IF;
+    RAISE EXCEPTION USING ERRCODE = '22023',
+      MESSAGE = p_key || ' must list every active tax code once, in the order they apply: ' || array_to_string(active, ', ');
+  END IF;
+
+  RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = p_key || ' (' || asked || ') has no value rule';
+END $$;
+
+CREATE OR REPLACE FUNCTION hotel_setting_apply() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  NEW.value := hotel_setting_accept(NEW.hotel_id, NEW.setting_key, NEW.value);
+  RETURN NEW;
+END $$;
 """
-TRIGGERS = (("hotel_setting_no_update", "hotel_setting", "BEFORE UPDATE", "hotel_setting_append_only"),)
+TRIGGERS = (
+    ("hotel_setting_no_update", "hotel_setting", "BEFORE UPDATE", "hotel_setting_append_only"),
+    ("hotel_setting_value", "hotel_setting", "BEFORE INSERT", "hotel_setting_apply"),
+)
 
 
 def seed_catalog(cur):
-    """Upsert every catalog row in one statement; a row no longer in CATALOG is retired, never deleted (answers reference it)."""
+    """Insert keys the table does not have yet. setting_catalog is the catalog: a stored row is left as it is, including a key this
+    bootstrap list does not name."""
     rows = [dict(row, required_when=row.get("required_when", {}), status="active") for row in CATALOG]
     cur.execute(
         """INSERT INTO setting_catalog (setting_key, module_name, question, explanation, value_type, options, required, required_when,
@@ -127,13 +234,8 @@ def seed_catalog(cur):
            FROM jsonb_to_recordset(%s) AS r(setting_key varchar, module_name varchar, question text, explanation text, value_type varchar,
                 options jsonb, required boolean, required_when jsonb, set_module varchar, set_level varchar, sop_prompt text,
                 display_order integer, effective_basis varchar, status varchar)
-           ON CONFLICT (setting_key) DO UPDATE SET module_name = EXCLUDED.module_name, question = EXCLUDED.question,
-                explanation = EXCLUDED.explanation, value_type = EXCLUDED.value_type, options = EXCLUDED.options, required = EXCLUDED.required,
-                required_when = EXCLUDED.required_when, set_module = EXCLUDED.set_module, set_level = EXCLUDED.set_level,
-                sop_prompt = EXCLUDED.sop_prompt, display_order = EXCLUDED.display_order, effective_basis = EXCLUDED.effective_basis,
-                status = EXCLUDED.status;
-           UPDATE setting_catalog SET status = 'retired' WHERE NOT (setting_key = ANY(%s))""",
-        (Json(rows), [row["setting_key"] for row in rows]),
+           ON CONFLICT (setting_key) DO NOTHING""",
+        (Json(rows),),
     )
 
 
