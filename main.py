@@ -374,6 +374,20 @@ async def api_guide(req: Request):
         return JSONResponse(content={"error": str(error)}, status_code=500)
 
 
+@app.get("/api/onboard/template")
+async def api_onboard_template(id: str = "read.onboarding", req: Request = None):
+    """The interactive message for the onboard page, filled from this hotel. id is a template key or template_key/record_id."""
+    from booking_system.interactive.agent import complete
+    chosen = str(id or "").strip() or "read.onboarding"
+    done = await run_in_threadpool(complete, req.state.session["hotel_id"], chosen)
+    if not done:
+        return JSONResponse(content={"error": "no template"}, status_code=404)
+    return {
+        "screen": done["screen"], "interactive": done["interactive"], "message": done["message"],
+        "template_key": done["template_key"], "purpose": done["purpose"], "text": done["text"],
+    }
+
+
 @app.post("/api/auth/signin")
 async def signin_endpoint(request: SigninRequest, req: Request):
     """Sign in by phone, email or username; all three resolve to the same person."""
@@ -995,6 +1009,7 @@ for _area in (rooms_routes, bookings_routes, frontdesk_routes, operations_routes
 access.PUBLIC_ROUTES.update(guests_routes.PUBLIC)
 access.register([
     ("GET /api/guide", "front_desk", "view"),
+    ("GET /api/onboard/template", "front_desk", "view"),
     ("POST /api/chat/start", "front_desk", "view"), ("POST /api/chat/complete", "front_desk", "view"),
     ("GET /api/chat/history", "front_desk", "view"), ("POST /api/chat/clear", "front_desk", "view"),
     ("POST /api/chat/menu", "front_desk", "view"), ("GET /api/chat/desk", "front_desk", "view"),

@@ -5,6 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Onboarding - LEON-INAP PMS</title>
   <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+  <style>
+    #messages { background-color: #efeae2; background-image: radial-gradient(#e4dcd0 1.2px, transparent 1.2px); background-size: 16px 16px; }
+    .wa-action { display: block; width: 100%; background: transparent; border: 0; border-top: 1px solid #e9edef; color: #00a884; padding: 10px 0; font-size: 15px; text-align: center; cursor: pointer; }
+    .wa-list { background: #fff; border-radius: 8px; border-bottom-left-radius: 2px; box-shadow: 0 1px 0.5px rgba(11,20,26,.13); max-width: 92%; }
+    .wa-list-header { font-weight: 700; font-size: 16px; padding: 8px 10px 0; color: #111b21; }
+    .wa-list-body { font-size: 15px; padding: 4px 10px 0; color: #111b21; white-space: pre-wrap; }
+    .wa-list-footer { display: flex; justify-content: space-between; font-size: 12px; color: #667781; padding: 6px 10px 8px; }
+  </style>
 </head>
 <body class="h-full bg-white text-gray-900">
   <main id="onboard" class="h-full flex flex-col">
@@ -19,7 +28,19 @@
     </header>
     <div class="flex-1 flex flex-col md:flex-row min-h-0">
       <section class="flex-1 flex flex-col min-h-0">
-        <div id="messages" class="flex-1 overflow-y-auto px-4 py-6"></div>
+        <div id="thread" class="flex-1 min-h-0 relative">
+          <div id="messages" class="h-full overflow-y-auto px-4 py-6"></div>
+          <div id="onboard-sheet" class="hidden absolute inset-0 flex flex-col justify-end" style="background:rgba(11,20,26,.45);z-index:6">
+            <div class="bg-white flex flex-col" style="max-height:78%;border-top-left-radius:16px;border-top-right-radius:16px">
+              <div class="relative py-3 border-b flex-shrink-0">
+                <div id="onboard-sheet-title" class="text-center text-sm font-semibold"></div>
+                <button id="onboard-sheet-close" type="button" class="absolute right-3 top-2 w-8 h-8 rounded-full" style="background:#f0f2f5;color:#54656f">×</button>
+              </div>
+              <div id="onboard-sheet-rows" class="overflow-y-auto"></div>
+              <div class="text-center text-xs py-3 flex-shrink-0" style="color:#8696a0">Tap an item to select it</div>
+            </div>
+          </div>
+        </div>
         <form id="composer" class="border-t border-gray-200 px-4 py-3">
           <div id="suggestion-row" class="max-w-3xl mx-auto mb-2"></div>
           <div id="composer-row" class="max-w-3xl mx-auto flex items-end">
@@ -36,7 +57,7 @@
       </aside>
     </div>
   </main>
-  <script src="js/components/onboard.js?v=account"></script>
+  <script src="js/components/onboard.js?v=template"></script>
 </body>
 <script src="js/subpage-embed.js"></script>
 </html>
