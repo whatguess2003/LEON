@@ -83,7 +83,9 @@
     list.innerHTML = "";
     facts.innerHTML = "";
     chips.innerHTML = "";
+    var inline = {};
     messages.forEach(function (row) {
+      if (row.source_ref) inline[row.source_ref] = true;
       var wrap = document.createElement("div");
       wrap.className = "max-w-3xl mx-auto flex mb-4" + (row.role === "guest" ? " justify-end" : "");
       if (row.role !== "guest") {
@@ -92,13 +94,35 @@
         mark.textContent = "E";
         wrap.appendChild(mark);
       }
-      var text = document.createElement("div");
-      text.className = "rounded-lg px-3 py-2 text-sm max-w-lg " + (row.role === "guest" ? "bg-teal-600 text-white" : "bg-gray-100 text-gray-900");
-      text.textContent = row.text;
-      wrap.appendChild(text);
+      if (row.template) {
+        var card = document.createElement("div");
+        card.className = "wa-list";
+        card.dataset.template = row.template;
+        var header = document.createElement("div");
+        header.className = "wa-list-header";
+        header.textContent = row.template;
+        var body = document.createElement("div");
+        body.className = "wa-list-body";
+        body.textContent = row.text;
+        var footer = document.createElement("div");
+        footer.className = "wa-list-footer";
+        var foot = document.createElement("span");
+        foot.textContent = "WhatsApp template";
+        footer.appendChild(foot);
+        card.appendChild(header);
+        card.appendChild(body);
+        card.appendChild(footer);
+        wrap.appendChild(card);
+      } else {
+        var text = document.createElement("div");
+        text.className = "rounded-lg px-3 py-2 text-sm max-w-lg " + (row.role === "guest" ? "bg-teal-600 text-white" : "bg-gray-100 text-gray-900");
+        text.textContent = row.text;
+        wrap.appendChild(text);
+      }
       box.appendChild(wrap);
     });
     whatsapp.forEach(function (row) {
+      if (row.source_ref && inline[row.source_ref]) return;
       var wrap = document.createElement("div");
       var inbound = row.direction === "in";
       wrap.className = "max-w-3xl mx-auto flex mb-4" + (inbound ? " justify-end" : "");
@@ -150,7 +174,46 @@
   }
 
   function prior() {
-    return messages.filter(function (row) { return row.text; });
+    return messages.filter(function (row) { return row.text && !row.template; });
+  }
+
+  function placeConfirmed(rows) {
+    var seen = {};
+    messages.forEach(function (row) { if (row.source_ref) seen[row.source_ref] = true; });
+    var fresh = [];
+    (rows || []).forEach(function (row) {
+      if (!row || !row.body || !row.source_ref || seen[row.source_ref]) return;
+      seen[row.source_ref] = true;
+      fresh.push({
+        role: "ella",
+        text: row.body,
+        source_ref: row.source_ref,
+        template: row.template_name || "confirmed_booking",
+      });
+    });
+    if (!fresh.length) return false;
+    var index = messages.length;
+    var found = false;
+    for (var i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].complete) {
+        index = i + 1;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      for (var j = messages.length - 1; j >= 0; j--) {
+        if (messages[j].role === "ella" && !messages[j].template) {
+          index = j + 1;
+          break;
+        }
+      }
+    }
+    fresh.forEach(function (row) {
+      messages.splice(index, 0, row);
+      index += 1;
+    });
+    return true;
   }
 
   function sendText(text) {
@@ -174,7 +237,12 @@
         messages.push({ role: "ella", text: data.error || "I could not save that." });
       } else {
         apply(data);
-        messages.push({ role: "ella", text: data.reply || "Say that once more." });
+        messages.push({
+          role: "ella",
+          text: data.reply || "Say that once more.",
+          complete: Object.prototype.hasOwnProperty.call(data, "confirmed_bookings"),
+        });
+        placeConfirmed(data.confirmed_bookings);
       }
       persist();
     }).catch(function () {
@@ -197,7 +265,8 @@
         messages = [{ role: "ella", text: (result.data && result.data.error) || "This link is not valid." }];
       } else {
         apply(result.data);
-        messages = [{ role: "ella", text: result.data.greeting || "Hey, I'm Ella." }];
+        messages = [{ role: "ella", text: result.data.greeting || "Hey, I'm Ella.", complete: !!result.data.complete }];
+        placeConfirmed(result.data.confirmed_bookings);
       }
       persist();
       paint();
@@ -213,7 +282,8 @@
       return response.json();
     }).then(function (data) {
       if (!data || data.error) return;
-      if (mergeWhatsapp(data.whatsapp)) {
+      var placed = placeConfirmed(data.confirmed_bookings);
+      if (mergeWhatsapp(data.whatsapp) || placed) {
         persist();
         paint();
       }

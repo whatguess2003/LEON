@@ -351,7 +351,7 @@ def guest_open(token):
     fields = _from_guest(guest)
     guide = _guide(fields)
     phone = guest.get("guest_phone") or ""
-    return {
+    body = {
         "greeting": _greeting(fields, guest["hotel_name"]),
         "guest_name": fields["guest_name"],
         "guest_phone": phone,
@@ -359,6 +359,10 @@ def guest_open(token):
         "whatsapp": whatsapp_thread(hotel_id, phone),
         **guide,
     }
+    if guide["complete"]:
+        from booking_system.stay_notice import confirmed_cards
+        body["confirmed_bookings"] = confirmed_cards(hotel_id, guest.get("guest_id") or "")
+    return body
 
 
 def guest_turn(token, message, history):

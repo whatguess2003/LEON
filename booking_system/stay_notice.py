@@ -83,36 +83,77 @@ def ensure_stay_templates():
     return made
 
 
-def deliver(hotel_id, booking_id, kind, room_number="", total_night=None):
-    """Send one stay template and file it on the guest thread. A booking already sent this kind is left as it is."""
+def _source_ref(kind, booking_id, room):
+    slug = {"confirmed_booking": "confirmed", "welcome": "welcome", "checkout": "checkout"}.get(kind, kind)
+    ref = "stay-" + slug + "-" + booking_id
+    if room:
+        ref += "-" + room
+    return ref[:255]
+
+
+def _sentence(text, context):
+    """Fill the template from the stay. The chat shows this sentence even while Meta has not approved it."""
+    from booking_system.whatsapp_templates import _fill
+    sentence, _values, _names = _fill(text, context, {}, [])
+    return sentence
+
+
+def _file_card(phone, hotel_id, ref, sentence):
+    """One thread row per stay template. A later send keeps this row so the chat does not gain a second copy."""
+    found = db.row("SELECT body FROM guest_message WHERE channel = 'whatsapp' AND source_ref = %s", (ref,))
+    if found and str(found["body"] or "").strip():
+        return str(found["body"])
+    from booking_system.guest_manager import save_whatsapp_event
+    save_whatsapp_event(ref, phone, hotel_id, _now(), sentence, "out", "template")
+    return sentence
+
+
+def _card(hotel_id, booking_id, kind, room_number="", total_night=None, send=False):
+    """The filled stay sentence and its thread id. send also tries the approved WhatsApp template once."""
     spec = _SPECS.get(kind)
     facts = _facts(hotel_id, booking_id)
     if not spec or not facts or not facts.get("phone"):
         return {"error": "Stay notice could not be addressed"}
     room = str(room_number or "").strip()
-    key = kind + ":" + booking_id + (":" + room if room else "")
-    if key in _keys(facts["guest_id"]):
-        return {"skipped": key}
-    from booking_system.whatsapp_templates import ensure_named_template, render_named
     name, text, examples = spec
+    context = _context(facts, room, total_night)
+    sentence = _sentence(text, context)
+    if not sentence:
+        return {"error": "Stay notice fields are empty"}
+    ref = _source_ref(kind, booking_id, room)
+    body = _file_card(facts["phone"], hotel_id, ref, sentence)
+    card = {"body": body, "source_ref": ref, "booking_id": booking_id, "kind": kind, "template_name": name}
+    key = kind + ":" + booking_id + (":" + room if room else "")
+    if not send or key in _keys(facts["guest_id"]):
+        if key in _keys(facts["guest_id"]):
+            card["skipped"] = key
+        return card
+    from booking_system.whatsapp_templates import ensure_named_template, render_named
     ready = ensure_named_template(name, text, examples)
     if isinstance(ready, dict) and ready.get("error"):
-        return ready
-    context = _context(facts, room, total_night)
+        card["error"] = ready["error"]
+        return card
     rendered = render_named(name, context)
     if rendered.get("error"):
-        return rendered
+        card["error"] = rendered["error"]
+        return card
     from booking_system.front_desk_manager import intelligent_front_desk
-    from booking_system.guest_manager import save_whatsapp_event
     sent = intelligent_front_desk.send_whatsapp_template(
         facts["phone"], rendered["template_name"], rendered["language"], rendered["values"],
         rendered["button"], rendered["sentence"], rendered.get("names"), rendered.get("named"),
     )
     if sent.get("error"):
-        return sent
-    save_whatsapp_event(sent["message_id"], facts["phone"], hotel_id, _now(), sent.get("body") or rendered["sentence"], "out")
+        card["error"] = sent["error"]
+        return card
+    db.execute("UPDATE guest_message SET status = %s WHERE channel = 'whatsapp' AND source_ref = %s", ("sent", ref))
     _mark(hotel_id, facts["phone"], facts["guest_id"], key)
-    return {"message_id": sent["message_id"], "body": sent.get("body") or rendered["sentence"], "kind": kind}
+    card["message_id"] = sent["message_id"]
+    return card
+
+
+def deliver(hotel_id, booking_id, kind, room_number="", total_night=None):
+    """Send one stay template and file the sentence on the guest thread. A booking already sent this kind is left as it is."""
+    return _card(hotel_id, booking_id, kind, room_number, total_night, send=True)
 
 
 def notify_welcome(hotel_id, booking_id, room_number, total_night):
@@ -146,6 +187,20 @@ def notify_confirmed_for_guest(hotel_id, guest_id):
     if not profile_complete(guest):
         return [{"skipped": "profile"}]
     return [deliver(hotel_id, booking_id, "confirmed_booking") for booking_id in _confirmed_ids(hotel_id, guest_id)]
+
+
+def confirmed_cards(hotel_id, guest_id):
+    """Filled confirmed_booking lines already owed to this guest. Does not send."""
+    from booking_system.guest_manager import guest_row, read_document
+    from booking_system.guest_onboard import profile_complete
+    row = db.transaction(lambda cur: guest_row(cur, hotel_id, guest_id))
+    if not row:
+        return []
+    guest = dict(read_document(guest_id), **dict(row))
+    guest["guest_email"] = row["email"] or ""
+    if not profile_complete(guest):
+        return []
+    return [_card(hotel_id, booking_id, "confirmed_booking", send=False) for booking_id in _confirmed_ids(hotel_id, guest_id)]
 
 
 def notify_booking_confirmed(hotel_id, guest_id, booking_id):
