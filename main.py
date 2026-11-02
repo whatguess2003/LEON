@@ -127,6 +127,17 @@ class SigninRequest(BaseModel):
     hotel_id: Optional[str] = None
 
 
+class OtpSendRequest(BaseModel):
+    channel: str  # whatsapp | email
+    address: str
+
+
+class OtpConfirmRequest(BaseModel):
+    channel: str  # whatsapp | email
+    address: str
+    code: str
+
+
 class SwitchHotelRequest(BaseModel):
     hotel_id: str
 
@@ -360,6 +371,7 @@ async def api_onboard_turn(payload: Dict[str, Any] = Body(default={}), req: Requ
     token = str(result.pop("token", "") or "")
     hotel = str(result.pop("cookie_hotel", "") or "")
     if token:
+        result["token"] = token
         return _session_response(result, token, hotel, req)
     return JSONResponse(content=result)
 
@@ -393,6 +405,46 @@ async def api_onboard_template(id: str = "read.onboarding", req: Request = None)
 async def signin_endpoint(request: SigninRequest, req: Request):
     """Sign in by phone, email or username; all three resolve to the same person."""
     result = await run_in_threadpool(user_manager.signin, request.auth_type, request.auth_value, request.password, request.hotel_id)
+    return _signed_in(result, req, "Signed in")
+
+
+def _otp_channel(channel: str):
+    return {"whatsapp": "phone", "email": "email"}.get(str(channel or "").strip())
+
+
+@app.post("/api/auth/signin/otp/send")
+async def signin_otp_send(request: OtpSendRequest):
+    """Send a sign-in code to a WhatsApp number or email that already belongs to an account. The code is not in the response."""
+    from booking_system import contact_otp, db
+    kind = _otp_channel(request.channel)
+    if not kind:
+        return JSONResponse(content={"success": False, "message": "Choose WhatsApp or email."})
+    user = await run_in_threadpool(db.transaction, lambda cur: user_manager.find_user(cur, kind, request.address))
+    if not user or user["status"] != "active":
+        place = "WhatsApp number" if kind == "phone" else "email"
+        return JSONResponse(content={"success": False, "message": "No account uses that " + place + "."})
+    state = await run_in_threadpool(contact_otp.issue, request.channel, request.address)
+    if state == "invalid":
+        return JSONResponse(content={"success": False, "message": "That address is not usable."})
+    if state == "waiting":
+        return JSONResponse(content={"success": True, "message": "A code is already on its way. Share it here."})
+    return JSONResponse(content={"success": True, "message": "A code was sent. Share it here to sign in."})
+
+
+@app.post("/api/auth/signin/otp")
+async def signin_otp_confirm(request: OtpConfirmRequest, req: Request):
+    """Confirm a sign-in code and open the session. The path stays under /auth/signin so the page keeps the token."""
+    from booking_system import contact_otp, db
+    kind = _otp_channel(request.channel)
+    if not kind:
+        return JSONResponse(content={"success": False, "message": "Choose WhatsApp or email."})
+    matched = await run_in_threadpool(contact_otp.check, request.channel, request.address, request.code)
+    if not matched:
+        return JSONResponse(content={"success": False, "message": "That code did not match."})
+    user = await run_in_threadpool(db.transaction, lambda cur: user_manager.find_user(cur, kind, request.address))
+    if not user or user["status"] != "active":
+        return JSONResponse(content={"success": False, "message": "No account uses that address."})
+    result = await run_in_threadpool(user_manager.session_for, user["user_id"])
     return _signed_in(result, req, "Signed in")
 
 

@@ -13,7 +13,7 @@ _FIELDS = (
     "hotel_name",
     "manager_name",
     "manager_phone",
-    "password",
+    "manager_email",
     "role",
     "nationality",
     "primary_language",
@@ -31,7 +31,7 @@ _FIELDS = (
     "stay_night",
 ) + _DEFINITION_FIELDS
 _STEPS = (
-    ("account", ("manager_phone", "manager_name", "password", "role", "nationality", "primary_language")),
+    ("account", ("manager_phone", "manager_email", "manager_name", "role", "nationality", "primary_language")),
     ("hotel", ("hotel_name", "hotel_timezone", "hotel_currency")),
     ("rooms", ("room_type", "room_numbers", "nightly_price", "price_from", "price_to")),
     ("policies", ("payment_percent",)),
@@ -55,7 +55,9 @@ _INSTRUCTIONS = (
     "A time of day is HH:MM. room_numbers are separated by commas. Dates are YYYY-MM-DD. "
     "Tomorrow and a month ahead are the offered dates. price_from and price_to are the first and last night the price covers. stay_night is the night the guest sleeps. "
     "When the person mentions several values, copy each of them. "
-    "Do not invent a phone, a password, a hotel, a guest, or a date. "
+    "Do not invent a phone, an email, a hotel, a guest, a date, or a code. "
+    "otp_phone and otp_email are codes. Copy otp_phone only when the person's latest message is the WhatsApp code, and otp_email only when it is the email code. "
+    "Leave both empty when that message is not a code. Never copy a code from earlier in the chat. "
     "The def_ fields are what this manager means when asking Leon about arrivals, in-house guests, departures, and reservations. "
     "A def_ field holds the offer they accepted, or what they mean. "
     "The set_ fields are how this hotel operates, one per setting question listed under Settings. They have no offer: copy only what "
@@ -70,7 +72,15 @@ _REWRITE = (
     "Say that something is saved, stored, set up, created, booked or open only when a Results line says Saved or Open. "
     "When Results says nothing was saved this turn, do not say or imply that anything was saved; thank them at most, then ask. "
     "When a result says Saved, say what is now in place, then ask for the next field. "
-    "Ask for the next field with its question. When it has an offer, offer that value the way you would say it. "
+    "Ask for the next field in your own words, keeping the meaning of its question. When it has an offer, offer that value the way you would say it. "
+    "Before an account exists, answer what they just said first. Use their name once you know it. "
+    "Say in a few words why the next thing matters. The phone is how you reach them on WhatsApp and open the account. "
+    "The email is another way to reach them and to sign in. "
+    "When a result says OTP sent, tell them a code was sent to that WhatsApp or email and ask them to share it here to confirm. "
+    "When a result says OTP waiting, ask again for the code already sent. "
+    "When a result says OTP failed, say the reason in that line. "
+    "When a result says OTP confirmed, say that contact is confirmed, then ask the next question. "
+    "Never invent a code and never repeat a code. "
     "When a result says Failed or Already, say it was not done and include the reason. Do not ask for a later step. "
     "When a result says Open, say the hotel is open and include the booking id from the result. Do not ask another question."
 )
@@ -103,10 +113,13 @@ def _property(name):
 
 def _schema():
     names = _all_fields()
+    properties = {name: _property(name) for name in names}
+    properties["otp_phone"] = {"type": "string"}
+    properties["otp_email"] = {"type": "string"}
     return {
         "type": "object",
-        "properties": {name: _property(name) for name in names},
-        "required": list(names),
+        "properties": properties,
+        "required": list(names) + ["otp_phone", "otp_email"],
         "additionalProperties": False,
     }
 
@@ -118,6 +131,7 @@ def _clean(fields):
     for name in _UPPER:
         stored[name] = stored[name].upper()
     stored["manager_phone"] = "".join(stored["manager_phone"].split())
+    stored["manager_email"] = stored["manager_email"].lower()
     stored["guest_phone"] = "".join(stored["guest_phone"].split())
     return stored
 
@@ -233,29 +247,73 @@ def _profile_definitions(user_id):
     return {field: known[item["key"]] for field, item in _DEFINITION_BY_FIELD.items() if known.get(item["key"])}
 
 
-def _write_account(fields, owner):
-    """READ the phone first. A new phone creates the person; an existing one is the signed-in person, or signs in with its password."""
-    from booking_system import user_manager
+def _code_step(channel, address_value, given):
+    """(ready, line). Ready once this address is confirmed. A live code that does not match is a miss; otherwise a code is sent."""
+    from booking_system import contact_otp
+    if contact_otp.confirmed(channel, address_value):
+        return True, ""
+    place = "WhatsApp" if channel == "whatsapp" else "email"
+    noun = "WhatsApp number" if channel == "whatsapp" else "email"
+    typed = str(given or "").strip()
+    if typed and contact_otp.check(channel, address_value, typed):
+        return True, "OTP confirmed. Their " + noun + " is confirmed."
+    if typed and contact_otp.exhausted(channel, address_value):
+        contact_otp.issue(channel, address_value)
+        return False, "OTP sent. A new code was sent to their " + place + "."
+    state = contact_otp.issue(channel, address_value)
+    if typed and state == "waiting":
+        return False, "OTP failed. That code did not match."
+    if state == "waiting":
+        return False, "OTP waiting. A code was already sent to their " + place + "."
+    if state == "sent":
+        return False, "OTP sent. A code was sent to their " + place + "."
+    return False, "OTP failed. That address is not usable."
+
+
+def _write_account(fields, owner, otp=None):
+    """READ the phone first. A code confirms it, then an existing person signs in. A new person confirms an email, then the account is created with no password."""
+    from booking_system import contact_otp, user_manager
+    phone = fields["manager_phone"]
+    if owner and phone:
+        held = _account_by_phone(fields)
+        if held and held["user_id"] == owner:
+            return "saved", "", {"user_id": owner}
+    if not phone:
+        return "missing", "", {}
+    note = ""
+    if not contact_otp.confirmed("whatsapp", phone):
+        ready, note = _code_step("whatsapp", phone, (otp or {}).get("phone"))
+        if not ready:
+            return "clarify", note, {}
     doc = _account_by_phone(fields)
-    if doc and doc["user_id"] == owner:
-        return "saved", "", {"user_id": owner}
-    if doc and not fields["password"]:
-        return "clarify", "Already on record. Phone " + fields["manager_phone"] + " has an account; give its password to sign in.", {}
     if doc:
-        signed = user_manager.signin("phone", fields["manager_phone"], fields["password"])
+        if owner and doc["user_id"] != owner:
+            return "failed", "Failed account. That WhatsApp number belongs to another account.", {}
+        if not fields["manager_name"]:
+            fields["manager_name"] = doc["manager_name"]
+        signed = user_manager.session_for(doc["user_id"])
         if signed.get("error"):
             return "failed", "Failed account. " + signed["error"], {}
-        return "saved", "", {"token": signed.get("token") or "", "user_id": doc["user_id"]}
+        line = (note + " " if note else "") + "Saved account. " + fields["manager_name"] + " is signed in on " + phone + "."
+        return "saved", line.strip(), {"token": signed.get("token") or "", "user_id": doc["user_id"]}
+    email = fields["manager_email"]
+    if not email:
+        return "missing", note, {}
+    if not contact_otp.confirmed("email", email):
+        ready, email_line = _code_step("email", email, (otp or {}).get("email"))
+        note = " ".join(part for part in (note, email_line) if part)
+        if not ready:
+            return "clarify", note, {}
     if _missing(fields, _STEPS[0][1]):
-        return "missing", "", {}
-    created = user_manager.signup(fields["manager_name"], {"phone": fields["manager_phone"]}, fields["password"],
+        return "missing", note, {}
+    created = user_manager.signup(fields["manager_name"], {"phone": phone, "email": email}, None,
                                   fields["primary_language"], fields["nationality"])
     if created.get("error"):
         return "failed", "Failed account. " + created["error"], {}
-    signed = user_manager.signin("phone", fields["manager_phone"], fields["password"])
+    signed = user_manager.session_for(created["user_id"])
     if signed.get("error"):
         return "failed", "Failed account. " + signed["error"], {}
-    line = "Saved account. " + fields["manager_name"] + " is signed in on " + fields["manager_phone"] + "."
+    line = " ".join(part for part in (note, "Saved account. " + fields["manager_name"] + " is signed in on " + phone + " and " + email + ".") if part)
     return "saved", line, {"token": signed.get("token") or "", "user_id": created["user_id"]}
 
 
@@ -612,13 +670,16 @@ _WRITERS = {
 _ASKED = {"settings": _setting_asks}
 
 
-def _apply(fields, owner):
+def _apply(fields, owner, otp=None):
     """Run each step in order as the signed-in person; the account step may sign them in for the steps after it."""
     lines = []
     saved = []
     extra = {}
     for step, _names in _STEPS:
-        outcome, line, more = _WRITERS[step](fields, extra.get("user_id") or owner)
+        if step == "account":
+            outcome, line, more = _write_account(fields, extra.get("user_id") or owner, otp)
+        else:
+            outcome, line, more = _WRITERS[step](fields, extra.get("user_id") or owner)
         if more:
             extra.update(more)
         if outcome == "saved":
@@ -635,12 +696,7 @@ def _apply(fields, owner):
 
 
 def _public(fields, saved):
-    shown = {}
-    for name in _all_fields():
-        if name == "password" and "account" in saved:
-            continue
-        shown[name] = fields[name]
-    return shown
+    return {name: fields[name] for name in _all_fields()}
 
 
 def _step_names(step, names, fields):
@@ -682,8 +738,10 @@ def _prompt(message, history, fields, offers, saved, booking_id):
 _QUESTIONS = {
     "hotel_name": "What's the hotel called?",
     "manager_name": "What's your name?",
-    "manager_phone": "What's your WhatsApp number, with the country code?",
-    "password": "What password do you want?",
+    "manager_phone": "What's the WhatsApp number for your account, with the country code?",
+    "manager_email": "What's your email?",
+    "otp_phone": "An OTP has been sent to your WhatsApp. Please share it here to confirm your phone number.",
+    "otp_email": "An OTP has been sent to your email. Please share it here to confirm your email.",
     "role": "Are you the hotel manager?",
     "nationality": "Are you Malaysian?",
     "primary_language": "Is English the language you use?",
@@ -716,6 +774,7 @@ _HIGHLIGHTS = {
     "hotel_name": "Hotel",
     "manager_name": "Manager",
     "manager_phone": "WhatsApp",
+    "manager_email": "Email",
     "role": "Role",
     "nationality": "Nationality",
     "primary_language": "Language",
@@ -751,6 +810,14 @@ def _question(name):
 
 
 def _next_name(fields, saved):
+    if "account" not in saved:
+        from booking_system import contact_otp
+        phone = str(fields.get("manager_phone") or "").strip()
+        email = str(fields.get("manager_email") or "").strip()
+        if phone and not contact_otp.confirmed("whatsapp", phone):
+            return "otp_phone"
+        if phone and email and contact_otp.confirmed("whatsapp", phone) and not _account_by_phone(fields) and not contact_otp.confirmed("email", email):
+            return "otp_email"
     for step, names in _STEPS:
         if step in saved:
             continue
@@ -774,13 +841,11 @@ def _recap(step, fields, booking_id):
 
 
 def build_guide(fields, saved, booking_id):
-    """The to-do, the accepted facts, and the one offered answer. The password value is never included."""
+    """The to-do, the accepted facts, and the one offered answer."""
     highlights = []
-    if "account" in saved or fields.get("password"):
-        highlights.append({"label": "Password", "value": "Password set"})
     labels = dict(_HIGHLIGHTS, **{name: row["setting_key"] for name, row in _setting_fields().items() if name.startswith(_SETTING)})
     for name in _all_fields():
-        if name == "password" or name not in labels:
+        if name not in labels:
             continue
         value = str(fields.get(name) or "").strip()
         if value:
@@ -889,7 +954,7 @@ def _speak(message, history, lines, offers, fields, saved):
     return spoken or " ".join(list(lines) + [_question(gap)]).strip()
 
 
-def _signup_graph(message, history, incoming, offers, known_saved, known_booking, client_password, signed_user_id):
+def _signup_graph(message, history, incoming, offers, known_saved, known_booking, signed_user_id):
     """Signup extract, writes, and reply are nodes. The model calls stay inside read and reply."""
     from typing import TypedDict
 
@@ -916,23 +981,21 @@ def _signup_graph(message, history, incoming, offers, known_saved, known_booking
         return {"parsed": json.loads(response_text)}
 
     def apply(state: State):
+        parsed = state.get("parsed") or {}
         stored = dict(incoming)
         for name in _all_fields():
-            value = str((state.get("parsed") or {}).get(name) or "").strip()
+            value = str(parsed.get(name) or "").strip()
             if value:
                 stored[name] = value
         stored = _clean(stored)
-        if "account" in known_saved and not client_password:
-            stored["password"] = ""
-        lines, saved, extra = _apply(stored, signed_user_id)
+        otp = {"phone": str(parsed.get("otp_phone") or "").strip(), "email": str(parsed.get("otp_email") or "").strip()}
+        lines, saved, extra = _apply(stored, signed_user_id, otp)
         return {"stored": stored, "lines": lines, "saved": saved, "extra": extra}
 
     def reply(state: State):
         stored = state.get("stored") or {}
         saved = state.get("saved") or []
         text = _speak(message, history, state.get("lines") or [], offers, stored, saved)
-        if "account" in saved:
-            stored = dict(stored, password="")
         return {"reply": text, "stored": stored}
 
     builder = StateGraph(State)
@@ -948,12 +1011,11 @@ def _signup_graph(message, history, incoming, offers, known_saved, known_booking
 
 def onboard_turn(message, history, fields, signed_user_id=None):
     """Read the chat, keep the stated fields, then create the step that is complete. signed_user_id is the person on the
-    request's token; without it, an existing phone must give its password before anything about it is read or written."""
+    request's token. A phone is confirmed with a code before an existing account is opened or a new one is created."""
     incoming = _recall(_clean(fields), signed_user_id)
-    client_password = incoming["password"]
     known_saved, known_booking = _already(incoming, signed_user_id)
     offers = _offers(date.today())
-    found = _signup_graph(message, history, incoming, offers, known_saved, known_booking, client_password, signed_user_id)
+    found = _signup_graph(message, history, incoming, offers, known_saved, known_booking, signed_user_id)
     stored = found.get("stored") or {}
     saved = found.get("saved") or []
     extra = found.get("extra") or {}

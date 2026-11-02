@@ -63,19 +63,19 @@
                             <!-- Auth Input -->
                             <div>
                                 <div class="flex space-x-2 mb-2">
-                                  <template x-for="kind in ['phone','email','username']" :key="kind">
-                                    <button type="button" @click="signinType = kind"
+                                  <template x-for="kind in ['phone','email']" :key="kind">
+                                    <button type="button" @click="setChannel(kind)"
                                             :class="signinType === kind ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600'"
                                             class="px-3 py-1 rounded-md text-xs font-medium" x-text="getSigninLabel(kind)"></button>
                                   </template>
                                 </div>
                                 <div class="flex space-x-2" x-show="signinType === 'phone'">
                                   <div id="signin-cc-picker" class="relative w-28"></div>
-                                  <input type="tel" x-model="signinLocal" placeholder="123456789" 
+                                  <input type="tel" x-model="signinLocal" placeholder="123456789" @input="onAddressInput()"
                                          class="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
                                 </div>
-                                <input x-show="signinType !== 'phone'" :type="signinType === 'email' ? 'email' : 'text'" x-model="signinValue"
-                                       :placeholder="getSigninPlaceholder()" autocomplete="username"
+                                <input x-show="signinType === 'email'" type="email" x-model="signinValue" @input="onAddressInput()"
+                                       placeholder="you@example.com" autocomplete="email"
                                        class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
                             </div>
                             <div x-show="signinHotels.length" class="space-y-2">
@@ -88,17 +88,17 @@
                                     </button>
                                 </template>
                             </div>
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-2">Password</label>
-                                <input type="password" x-model="signinPassword" placeholder="Password" autocomplete="current-password"
-                                       class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                                       required>
+                            <div x-show="codeSent">
+                                <label class="block text-sm font-medium text-gray-700 mb-2">Code</label>
+                                <input type="text" inputmode="numeric" autocomplete="one-time-code" x-model="signinCode" placeholder="6-digit code"
+                                       class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
                             </div>
                             <button type="submit" :disabled="loading" 
                                     class="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-200">
                                 <i class="fas fa-spinner fa-spin mr-2" x-show="loading"></i>
-                                <span x-show="!loading">Sign In</span>
-                                <span x-show="loading">Signing In...</span>
+                                <span x-show="!loading && !codeSent">Send code</span>
+                                <span x-show="!loading && codeSent">Sign in</span>
+                                <span x-show="loading" x-text="codeSent ? 'Signing in...' : 'Sending code...'"></span>
                             </button>
                         </div>
                     </form>
@@ -129,7 +129,9 @@
                 authMode: 'signin',
                 signinCountry: '+60',
                 signinLocal: '',
-                signinPassword: '',
+                signinCode: '',
+                codeSent: false,
+                sentAddress: '',
                 signinType: 'phone',
                 signinValue: '',
                 signinHotels: [],
@@ -304,8 +306,30 @@
                     } catch(_) {}
                 },
 
+                setChannel(kind) {
+                    this.signinType = kind;
+                    this.resetCode();
+                },
+
+                resetCode() {
+                    this.codeSent = false;
+                    this.signinCode = '';
+                    this.sentAddress = '';
+                },
+
+                onAddressInput() {
+                    if (this.codeSent && this.signinAddress() !== this.sentAddress) this.resetCode();
+                },
+
+                signinAddress() {
+                    if (this.signinType === 'phone') {
+                        return (this.signinCountry || '') + String(this.signinLocal || '').replace(/\D+/g, '');
+                    }
+                    return String(this.signinValue || '').trim();
+                },
+
                 getSigninLabel(kind) {
-                    const labels = { phone: 'Phone', email: 'Email', username: 'Username' };
+                    const labels = { phone: 'WhatsApp', email: 'Email' };
                     return labels[kind || this.signinType];
                 },
 
@@ -396,7 +420,7 @@
                                     // Parse emoji to SVG for cross-platform visibility
                                     try { if (window.twemoji) { twemoji.parse(el, {folder: 'svg', ext: '.svg'}); twemoji.parse(document, {folder: 'svg', ext: '.svg'}); } } catch(_) {}
                                 };
-                                makePicker('signin-cc-picker', (v)=>{ this.signinCountry = v; }, this.signinCountry || (this.countryCodes[0]?.dial));
+                                makePicker('signin-cc-picker', (v)=>{ this.signinCountry = v; this.onAddressInput(); }, this.signinCountry || (this.countryCodes[0]?.dial));
                                 makePicker('signup-cc-picker', (v)=>{ this.signupCountry = v; }, this.signupCountry || (this.countryCodes[0]?.dial));
                             } catch(_) {}
                             return;
@@ -599,36 +623,50 @@
                 },
 
                 async signIn() {
-                    const fullPhone = (this.signinCountry || '') + String(this.signinLocal || '').replace(/\D+/g,'');
-                    const value = this.signinType === 'phone' ? fullPhone : String(this.signinValue || '').trim();
-                    if (!value.trim() || !this.signinPassword.trim()) {
-                        this.showMessage(`Please enter your ${this.getSigninLabel().toLowerCase()} and password`, 'error');
+                    const value = this.signinAddress();
+                    const channel = this.signinType === 'phone' ? 'whatsapp' : 'email';
+                    if (!value.trim()) {
+                        this.showMessage(`Please enter your ${this.getSigninLabel().toLowerCase()}`, 'error');
+                        return;
+                    }
+                    if (this.codeSent && !String(this.signinCode || '').trim()) {
+                        this.showMessage('Enter the code you received', 'error');
                         return;
                     }
                     this.loading = true;
                     try {
-                        const response = await fetch(`${apiBase}/auth/signin`, {
+                        const response = await fetch(`${apiBase}/auth/signin/otp${this.codeSent ? '' : '/send'}`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                auth_type: this.signinType,
-                                auth_value: value,
-                                password: this.signinPassword
-                            }),
-                            credentials: "include" // <-- REQUIRED for cookies
+                            body: JSON.stringify(this.codeSent
+                                ? { channel: channel, address: value, code: String(this.signinCode || '').trim() }
+                                : { channel: channel, address: value }),
+                            credentials: "include"
                         });
                         const data = await response.json();
-                        if (data.success && data.hotels) {
+                        if (!this.codeSent) {
+                            if (data.success) {
+                                this.sentAddress = value;
+                                this.codeSent = true;
+                                this.showMessage(data.message || 'A code was sent.', 'success');
+                            } else {
+                                this.showMessage(data.message || 'Could not send the code', 'error');
+                            }
+                            return;
+                        }
+                        if (data.success && Array.isArray(data.hotels) && data.hotels.length) {
                             this.signinHotels = data.hotels;
                             this.showMessage(`Welcome back, ${data.manager_name}! Choose a hotel.`, 'success');
+                        } else if (data.success && Array.isArray(data.hotels)) {
+                            this.showMessage(`Welcome, ${data.manager_name}! Let's open your hotel.`, 'success');
+                            setTimeout(() => { window.location.href = 'onboard.html'; }, 1000);
                         } else if (data.success) {
-                            // No need to store JWT; cookie is set by backend and sent automatically
                             this.showMessage(`Welcome back, ${data.manager_name}!`, 'success');
                             setTimeout(() => {
                                 window.location.href = 'index.html';
                             }, 1000);
                         } else {
-                            this.showMessage(data.message || 'Invalid credentials', 'error');
+                            this.showMessage(data.message || 'That code did not match', 'error');
                         }
                     } catch (error) {
                         this.showMessage('Sign in failed. Please try again.', 'error');

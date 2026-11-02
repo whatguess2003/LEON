@@ -40,7 +40,7 @@ ROLES = {
 
 PUBLIC_ROUTES = {
     "GET /", "GET /health", "GET /api/status", "POST /api/auth/signup", "POST /api/auth/signin", "POST /api/auth/logout",
-    "POST /api/auth/signout",
+    "POST /api/auth/signout", "POST /api/auth/signin/otp/send", "POST /api/auth/signin/otp",
     "GET /api/meta/country_codes", "GET /api/meta/languages", "GET /webhook/whatsapp", "POST /webhook/whatsapp",
     "POST /update_reservation", "POST /api/onboard/turn", "GET /openapi.json", "GET /docs", "GET /docs/oauth2-redirect", "GET /redoc",
 }

@@ -3,12 +3,12 @@
   var local = host === "localhost" || host === "127.0.0.1" || host === "::1";
   var api = (local ? "http://localhost:8002" : "https://api.inap.ai") + "/api";
   var storeKey = "leon_onboard_chat";
-  var greeting = "Hey. I'll open your account first. What's your WhatsApp number, with the country code?";
+  var greeting = "Hey, I'm Leon. I'll open the hotel with you, one piece at a time. What should I call you?";
   var rootTemplate = "read.onboarding";
   var fresh = new URLSearchParams(window.location.search).get("fresh") === "1";
   var draft = {
     todos: [
-      { step: "account", label: "Account", state: "now", detail: "What's your WhatsApp number, with the country code?" },
+      { step: "account", label: "Account", state: "now", detail: "What should I call you?" },
       { step: "hotel", label: "Hotel", state: "later", detail: "" },
       { step: "rooms", label: "Rooms", state: "later", detail: "" },
       { step: "policies", label: "Policies", state: "later", detail: "" },
@@ -90,7 +90,7 @@
     if (!line) return;
     var current = todos.filter(function (row) { return row.state === "now"; })[0];
     var open = todos.filter(function (row) { return row.state !== "done"; }).length === 0 && todos.length;
-    line.textContent = current && current.detail ? current.detail : (open ? "The hotel is open" : "What's your WhatsApp number, with the country code?");
+    line.textContent = current && current.detail ? current.detail : (open ? "The hotel is open" : "What should I call you?");
   }
 
   function paintGuide() {
@@ -261,7 +261,7 @@
   }
 
   function prior() {
-    return messages.filter(function (row) { return row.text !== greeting && !row.nav; }).slice(-16).map(function (row) {
+    return messages.filter(function (row) { return !row.nav; }).slice(-16).map(function (row) {
       return { role: row.role, text: row.text };
     });
   }
@@ -327,6 +327,7 @@
       var data = result.data;
       applyGuide(data);
       if (data.saved) saved = data.saved;
+      keepToken(data.token);
       messages.push({ role: "leon", text: data.reply || "Say that once more." });
       persist();
       ensureTemplate();
@@ -336,6 +337,20 @@
       busy = false;
       paint();
     });
+  }
+
+  function keepToken(token) {
+    if (!token) return;
+    try { localStorage.setItem("leon_jwt", token); } catch (error) {}
+    var parts = String(token).split(".");
+    if (parts.length < 2) return;
+    var body = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    while (body.length % 4) body += "=";
+    try {
+      var data = JSON.parse(atob(body));
+      if (data.hotel_name) localStorage.setItem("leon_hotel", data.hotel_name);
+      if (data.hotel_id && data.hotel_name) localStorage.setItem("leon_hotel_id", JSON.stringify({ hotel: data.hotel_name, id: data.hotel_id }));
+    } catch (error) {}
   }
 
   function send(event) {

@@ -67,16 +67,17 @@ def _create_user(cur, user_name, identities, password, primary_language, nationa
     for identity_type, stored in kept:
         cur.execute("INSERT INTO user_identity (identity_id, user_id, identity_type, identity_value) VALUES (%s, %s, %s, %s)",
                     (hotel_registry.new_id("uid"), user_id, identity_type, stored))
-    key, body = profile_col.staged_insert({"user_id": user_id, "password_hash": bcrypt.hash(password),
-                                           "primary_language": primary_language, "nationality": nationality})
+    body = {"user_id": user_id, "primary_language": primary_language, "nationality": nationality}
+    if str(password or ""):
+        body["password_hash"] = bcrypt.hash(str(password))
+    key, body = profile_col.staged_insert(body)
     profile_col.write_in(cur, key, body)
     return user_id, ""
 
 
 def signup(user_name, identities, password, primary_language, nationality):
-    """identities: {'phone': ..., 'email': ..., 'username': ...}. Returns {'user_id'} or {'error'}."""
-    if not str(password or ""):
-        return {"error": "password is required"}
+    """identities: {'phone': ..., 'email': ..., 'username': ...}. A password may be empty when a code confirmed the person.
+    Returns {'user_id'} or {'error'}."""
     if not str(user_name or "").strip():
         return {"error": "name is required"}
     try:
@@ -199,6 +200,25 @@ def signin(identity_type, value, password, hotel_id=None):
         token, claims = access.issue_token(cur, chosen[0]["hotel_id"], user["user_id"], language)
         cur.execute("UPDATE user_account SET last_hotel_id = %s WHERE user_id = %s", (chosen[0]["hotel_id"], user["user_id"]))
         return {"user_id": user["user_id"], "token": token, "claims": claims}
+    return db.transaction(run)
+
+
+def session_for(user_id):
+    """A session after a code confirmed the person. One hotel signs straight in; several (or none yet) leave the choice open."""
+    def run(cur):
+        cur.execute("SELECT user_id, user_name, status FROM user_account WHERE user_id = %s", (user_id,))
+        user = cur.fetchone()
+        if not user or user["status"] != "active":
+            return {"error": "account is not active"}
+        profile = _profile(user_id)
+        hotels = hotels_of(cur, user_id)
+        language = profile.get("primary_language")
+        if len(hotels) == 1:
+            token, claims = access.issue_token(cur, hotels[0]["hotel_id"], user_id, language)
+            cur.execute("UPDATE user_account SET last_hotel_id = %s WHERE user_id = %s", (hotels[0]["hotel_id"], user_id))
+            return {"user_id": user_id, "token": token, "claims": claims}
+        return {"user_id": user_id, "user_name": user["user_name"], "choose": hotels,
+                "token": access.account_token(user_id, user["user_name"], language)}
     return db.transaction(run)
 
 

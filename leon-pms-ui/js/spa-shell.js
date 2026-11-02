@@ -118,7 +118,7 @@
       ]},
       {id:'settings', label:'Settings', icon:'fa-cog', color:'#0ea5e9', items:[
         {href:'settings.html', icon:'fa-sliders-h', label:'Operating Settings', color:'#0ea5e9'},
-        {href:'onboard.html?v=turn', icon:'fa-door-open', label:'Onboarding', color:'#0ea5e9'},
+        {href:'onboard.html?v=otp', icon:'fa-door-open', label:'Onboarding', color:'#0ea5e9'},
         {href:'rooms.html', icon:'fa-bed', label:'Rooms Setup', color:'#10b981'},
         {href:'property_setup.html', icon:'fa-building', label:'Property Setup', color:'#0ea5e9'},
         {href:'ota_mapping.html', icon:'fa-random', label:'OTA Mapping', color:'#2563eb'}
