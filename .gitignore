@@ -9,3 +9,9 @@ __pycache__/
 .wrangler/
 node_modules/
 .dev.vars
+
+# sandbox manager runtime output
+sandbox_manager/data/
+sandbox_manager/report.txt
+sandbox_manager/report.json
+sandbox_manager/reask.txt

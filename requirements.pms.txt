@@ -3,7 +3,7 @@ uvicorn[standard]==0.24.0
 pydantic==2.7.4
 python-dotenv==1.0.0
 langchain==0.3.20
-langchain-core==0.3.74
+langchain-core>=0.3.78,<1.0.0
 langchain-openai==0.3.30
 langchain-anthropic==0.3.22
 anthropic>=0.69,<1
