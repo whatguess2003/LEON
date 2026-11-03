@@ -1311,6 +1311,10 @@ def workflow_ddl(cur):
         )
         """
     )
+    # The ALTERs below touch tables queued above; create them first so a fresh database can start.
+    cur.execute(";\n".join(tables))
+    tables = []
+    seen = schema_catalog.snapshot(cur)
     if seen.exists("catalog_proposals"):
         add_column(cur, "catalog_proposals", "content_hash", "VARCHAR NOT NULL DEFAULT ''", seen)
     if seen.exists("catalog_test_runs"):
@@ -1363,6 +1367,7 @@ def workflow_ddl(cur):
         """
     )
     cur.execute(";\n".join(tables))
+    seen = schema_catalog.snapshot(cur)
     _owner_column(cur, "gap_candidates", seen)
     for table in ("events", "tasks", "evidence", "investigations", "problem_specs", "execution_runs", "composition_plans"):
         hotel_column(cur, table, seen=seen)
