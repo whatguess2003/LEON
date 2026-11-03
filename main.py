@@ -435,10 +435,11 @@ async def chat_start(request: ChatRequest, leon_jwt: str = Cookie(None)):
             "screen": response.get("screen"),
             "pins": response.get("pins") or [],
             "pin_count": response.get("pin_count") or 0,
+            "finished": response.get("finished") is True,
         }
     except Exception as e:
         logger.error(f"Exception in /api/chat/start: {e}\n{traceback.format_exc()}")
-        return {"final_message": f"Backend error: {str(e)}"}
+        return {"final_message": f"Backend error: {str(e)}", "finished": False}
 
 @app.post("/api/chat/complete")
 async def chat_complete(payload: dict = Body(...), leon_jwt: str = Cookie(None)):
@@ -453,10 +454,11 @@ async def chat_complete(payload: dict = Body(...), leon_jwt: str = Cookie(None))
             "screen": response.get("screen"),
             "pins": response.get("pins") or [],
             "pin_count": response.get("pin_count") or 0,
+            "finished": response.get("finished") is True,
         }
     except Exception as e:
         logger.error(f"Exception in /api/chat/complete: {e}\n{traceback.format_exc()}")
-        return {"final_message": f"Backend error: {str(e)}"}
+        return {"final_message": f"Backend error: {str(e)}", "finished": False}
 
 # --- Chat history endpoints (sync UI with backend dialog_history) ---
 @app.get("/api/chat/history")

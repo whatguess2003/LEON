@@ -163,6 +163,7 @@ DIALOG HISTORY:
             "screen": screen,
             "pins": pins["shown"],
             "pin_count": pins["count"],
+            "finished": pins.get("finished") is True,
         }
 
     def process_request(self, message: str, jwt_token: str = None) -> str:

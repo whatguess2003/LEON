@@ -69,8 +69,14 @@ _TOOLS = (
 
 def handle_user_message(hotel, manager, message, history, idempotency_key="", dates=None, catalog_followup=False):
     """One desk turn. The model may call get_recipe, run_sql, and audit_answer. audit_answer runs only when the model calls it."""
-    reply = _converse(str(hotel or ""), str(manager or ""), str(message or ""), history)
-    return reply, False, None, {"shown": [], "count": 0, "search_ms": 0, "retrieval_status": "desk"}
+    turn = _converse(str(hotel or ""), str(manager or ""), str(message or ""), history)
+    return turn["reply"], False, None, {
+        "shown": [],
+        "count": 0,
+        "search_ms": 0,
+        "retrieval_status": "desk",
+        "finished": turn["finished"] is True,
+    }
 
 
 def answer_after_publication(trace_id):
@@ -371,6 +377,51 @@ def _public(block):
     return None
 
 
+_THINKING = {"thinking", "redacted_thinking"}
+
+
+def _create(client, messages, tools):
+    """One Haiku turn. The tool rounds keep the same tools list, which thinking signatures are bound to."""
+    kwargs = {
+        "model": HAIKU_MODEL,
+        "max_tokens": 4096,
+        "system": _SYSTEM,
+        "messages": messages,
+    }
+    if tools is not None:
+        kwargs["tools"] = list(tools)
+    return client.messages.create(**kwargs)
+
+
+def _closing_messages(messages):
+    """Thinking signatures are bound to the tool list. The closing call sends neither, so those blocks cannot be replayed."""
+    cleaned = []
+    for message in messages:
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            cleaned.append(message)
+            continue
+        kept = [block for block in content if block.get("type") not in _THINKING]
+        if kept:
+            cleaned.append({"role": message.get("role"), "content": kept})
+    return cleaned
+
+
+def _close(client, messages):
+    """One sentence after the tool rounds. Tools are withheld and thinking is off, so the reply is a text block."""
+    return client.messages.create(
+        model=HAIKU_MODEL,
+        max_tokens=4096,
+        system=_SYSTEM,
+        messages=_closing_messages(messages),
+        thinking={"type": "disabled"},
+    )
+
+
+def _blocks(response):
+    return [replay for replay in (_public(block) for block in response.content) if replay]
+
+
 def _converse(hotel, manager, message, history):
     import anthropic
     from booking_system.semantic.hotel import session_hotel_id
@@ -391,18 +442,11 @@ def _converse(hotel, manager, message, history):
     spoken = ""
     finished = False
     for _round in range(_ROUNDS):
-        response = client.messages.create(
-            model=HAIKU_MODEL,
-            max_tokens=4096,
-            system=_SYSTEM,
-            tools=list(_TOOLS),
-            messages=messages,
-        )
-        blocks = [replay for replay in (_public(block) for block in response.content) if replay]
-        spoken = _text(blocks) or spoken
+        response = _create(client, messages, _TOOLS)
+        blocks = _blocks(response)
         calls = [block for block in blocks if block["type"] == "tool_use"]
         if not calls:
-            spoken = spoken or "I could not answer that from the hotel data."
+            spoken = _text(blocks) or "I could not answer that from the hotel data."
             finished = True
             break
         messages.append({"role": "assistant", "content": blocks})
@@ -418,6 +462,13 @@ def _converse(hotel, manager, message, history):
             ],
         })
     if not finished:
-        spoken = spoken or "I could not finish that from the hotel data."
+        try:
+            response = _close(client, messages)
+        except Exception:
+            spoken = ""
+        else:
+            spoken = _text(_blocks(response))
+            if spoken:
+                finished = True
     _remember_turn(hotel, manager, history, ctx["pending"])
-    return spoken
+    return {"reply": spoken, "finished": finished}
