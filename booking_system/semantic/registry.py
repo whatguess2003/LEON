@@ -1322,7 +1322,6 @@ def workflow_ddl(cur):
     _owner_column(cur, "investigations", seen)
     add_column(cur, "investigations", "closed_at", "TIMESTAMPTZ", seen)
     add_column(cur, "investigations", "tokens_used", "BIGINT NOT NULL DEFAULT 0", seen)
-    add_column(cur, "execution_runs", "definition_versions", "JSONB NOT NULL DEFAULT '[]'::jsonb", seen)
     if seen.exists("catalogs"):
         add_column(cur, "catalogs", "scope", "VARCHAR NOT NULL DEFAULT 'general'", seen)
         _owner_column(cur, "catalogs", seen)
@@ -1363,6 +1362,8 @@ def workflow_ddl(cur):
         """
     )
     cur.execute(";\n".join(tables))
+    if seen.exists("execution_runs"):
+        add_column(cur, "execution_runs", "definition_versions", "JSONB NOT NULL DEFAULT '[]'::jsonb", seen)
     _owner_column(cur, "gap_candidates", seen)
     for table in ("events", "tasks", "evidence", "investigations", "problem_specs", "execution_runs", "composition_plans"):
         hotel_column(cur, table, seen=seen)
