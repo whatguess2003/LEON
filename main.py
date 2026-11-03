@@ -833,7 +833,7 @@ async def reset_conversation():
     else:
         raise HTTPException(status_code=500, detail="LEON not initialized")
 
-# PMS Data Endpoints for leon-pms-ui
+# PMS Data Endpoints for the LEON UI (whatguess2003/leon_ui)
 
 # Place this static endpoint BEFORE any /api/hotels/{hotel_id} or similar dynamic endpoints
 
