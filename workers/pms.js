@@ -4,8 +4,11 @@ const PORT = 8080;
 const IDLE_MS = 60 * 60 * 1000;
 const NAMES = [
   "DATABASE_URL",
+  "MONGO_URL",
+  "REDIS_URL",
   "JWT_SECRET",
   "OPENAI_API_KEY",
+  "ANTHROPIC_API_KEY",
   "AIOSSELL_USERNAME",
   "AIOSSELL_PASSWORD",
   "AIOSSELL_PARTNER_ID",
@@ -66,6 +69,11 @@ export class PmsService extends DurableObject {
 
   async startAndWait() {
     const container = this.ctx.container;
+    const stamp = "anthropic-key";
+    const booted = await this.ctx.storage.get("containerEnv");
+    if (booted !== stamp && container.running) {
+      await container.destroy("reload container env");
+    }
     if (!container.running) {
       const env = passedEnv(this.env);
       console.log("starting container", Object.keys(env).join(","));
@@ -73,6 +81,7 @@ export class PmsService extends DurableObject {
         enableInternet: true,
         env,
       });
+      await this.ctx.storage.put("containerEnv", stamp);
     }
     await container.setInactivityTimeout(IDLE_MS);
   }
