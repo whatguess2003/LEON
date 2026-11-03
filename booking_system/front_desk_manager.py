@@ -389,6 +389,13 @@ class FrontDesk:
                 raise Refused("Check-in opens on " + booking["check_in_date"].isoformat())
             if today >= booking["check_out_date"]:
                 raise Refused("The stay ended on " + booking["check_out_date"].isoformat())
+            from booking_system.stay_rules import checkin_clock_refusal, deposit_refusal
+            clock = checkin_clock_refusal(cur, hotel_id, zone, today, booking["check_in_date"])
+            if clock:
+                raise Refused(clock)
+            deposit = deposit_refusal(cur, hotel_id, today, booking)
+            if deposit:
+                raise Refused(deposit)
             tonight = [night for night in _nights(cur, hotel_id, booking_id)
                        if night["stay_date"] == today and night["night_status"] == "booked" and night["room_id"]
                        and (not wanted or night["room_number"] == wanted) and (not chosen or night["booking_night_id"] == chosen)]
@@ -437,7 +444,12 @@ class FrontDesk:
         return _run(run)
 
     def update_guest_check_out_status_internal(self, hotel_id: str, user_id: str, booking_id: str, room_number: str = None) -> dict:
-        """Refused while a balance is due. The in-house nights of the room (or of every room) become checked_out; the room turns dirty."""
+        """Refused while a balance is due. A late departure records its fee in its own transaction first, so the refusal leaves the fee
+        to be paid. The in-house nights of the room (or of every room) become checked_out; the room turns dirty."""
+        from booking_system.stay_rules import apply_late_fee
+        fee = _run(lambda cur: apply_late_fee(cur, hotel_id, user_id, booking_id))
+        if fee.get("error"):
+            return fee
         wanted = str(room_number or "").strip().upper()
 
         def run(cur):
@@ -459,6 +471,8 @@ class FrontDesk:
             return {"result": "Checked out " + booking_id + " from room " + ", ".join(label for label, _ in rooms),
                     "booking_id": booking_id, "rooms": [label for label, _ in rooms], "nights": len(in_house)}
         result = _run(run)
+        if fee.get("late_fee_amount") is not None:
+            result = dict(result, late_fee_amount=fee["late_fee_amount"])
         if result.get("rooms") and not result.get("error"):
             notices = []
             for label in result["rooms"]:

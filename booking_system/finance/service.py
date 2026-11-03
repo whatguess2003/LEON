@@ -553,7 +553,7 @@ def _children(cur, posting_id):
 
 def _posting(hotel_id, folio_type, folio_ref, transaction_code, amount, types, source_module, source_ref, user_id, system,
              quantity=1, booking_id=None, outlet_id=None, ar_account_id=None, cashier_shift_id=None, units=None, reference=None, reason=None,
-             business_date=None, expected_tax=None, expected_tax_codes=None):
+             business_date=None, expected_tax=None, expected_tax_codes=None, desk_payment_id=None):
     """The posting as run(cur). business_date, expected_tax and expected_tax_codes, when given, must equal the open date, the
     computed tax total and the code's tax codes; a caller that computed its own tax is checked, never trusted."""
     def run(cur):
@@ -584,9 +584,12 @@ def _posting(hotel_id, folio_type, folio_ref, transaction_code, amount, types, s
         computed = sum((v for _t, _r, v in taxes), Decimal(0))
         if expected_tax is not None and _money(expected_tax) != computed:
             raise Refused("tax " + str(expected_tax) + " differs from the tax rules' " + str(computed) + " for " + code["transaction_code"])
-        posting = _insert(cur, dict(base, posting_id=new_id("pst"), transaction_code_id=code["transaction_code_id"],
-                                    transaction_type=code["transaction_type"], amount=value, cashier_shift_id=cashier_shift_id,
-                                    reference=reference, reason=reason))
+        posted = dict(base, posting_id=new_id("pst"), transaction_code_id=code["transaction_code_id"],
+                      transaction_type=code["transaction_type"], amount=value, cashier_shift_id=cashier_shift_id,
+                      reference=reference, reason=reason)
+        if desk_payment_id:
+            posted["desk_payment_id"] = desk_payment_id
+        posting = _insert(cur, posted)
         tax_rows = []
         for tax, rule, tax_amount in taxes:
             tax_rows.append(_insert(cur, dict(base, posting_id=new_id("pst"), transaction_code_id=tax["tax_transaction_code_id"],
@@ -642,20 +645,20 @@ def post_adjustment_in(cur, hotel_id, folio_type, folio_ref, transaction_code, a
 
 
 def post_payment(hotel_id, folio_type, folio_ref, transaction_code, amount, source_module, source_ref, user_id=None, system=None,
-                 cashier_shift_id=None, booking_id=None, outlet_id=None, ar_account_id=None, reference=None):
+                 cashier_shift_id=None, booking_id=None, outlet_id=None, ar_account_id=None, reference=None, desk_payment_id=None):
     """A payment (code type payment, stored negative) or a refund (code type refund, stored positive). amount is positive.
-    Cash needs the poster's open cashier_shift_id."""
+    Cash needs the poster's open cashier_shift_id. desk_payment_id links a desk receipt, set only on this insert."""
     return _post(hotel_id, folio_type, folio_ref, transaction_code, amount, ("payment", "refund"), source_module, source_ref, user_id, system,
-                 1, booking_id, outlet_id, ar_account_id, cashier_shift_id, None, reference)
+                 1, booking_id, outlet_id, ar_account_id, cashier_shift_id, None, reference, desk_payment_id=desk_payment_id)
 
 
 def post_payment_in(cur, hotel_id, folio_type, folio_ref, transaction_code, amount, source_module, source_ref, user_id=None, system=None,
-                    cashier_shift_id=None, booking_id=None, outlet_id=None, ar_account_id=None, reference=None):
+                    cashier_shift_id=None, booking_id=None, outlet_id=None, ar_account_id=None, reference=None, desk_payment_id=None):
     """post_payment on the caller's cursor (dict rows); refusals return {'ok': False, ...} and write nothing."""
     try:
         return _plain(dict({"ok": True}, **_posting(hotel_id, folio_type, folio_ref, transaction_code, amount, ("payment", "refund"), source_module,
                                                     source_ref, user_id, system, 1, booking_id, outlet_id, ar_account_id, cashier_shift_id, None,
-                                                    reference)(cur)))
+                                                    reference, desk_payment_id=desk_payment_id)(cur)))
     except Refused as refusal:
         return _plain(dict({"ok": False, "error": refusal.error}, **refusal.details))
 

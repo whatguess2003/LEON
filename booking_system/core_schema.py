@@ -160,6 +160,7 @@ TABLES = (
         stay_date          DATE        NOT NULL,
         rooms_allotted     INTEGER     NOT NULL CHECK (rooms_allotted >= 0),
         release_date       DATE,
+        released_at        TIMESTAMPTZ,
         updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
         updated_by_user_id VARCHAR(48) REFERENCES user_account (user_id),
         PRIMARY KEY (room_type_id, channel, stay_date),
@@ -183,6 +184,8 @@ TABLES = (
         children            SMALLINT      CHECK (children >= 0),
         currency            CHAR(3)       CHECK (currency = UPPER(currency)),
         gross_amount        NUMERIC(12,2) CHECK (gross_amount >= 0),
+        penalty_amount      NUMERIC(12,2) CHECK (penalty_amount >= 0),
+        late_fee_amount     NUMERIC(12,2) CHECK (late_fee_amount >= 0),
         commission_amount   NUMERIC(12,2) CHECK (commission_amount >= 0),
         commission_rate     NUMERIC(5,2)  CHECK (commission_rate >= 0 AND commission_rate <= 100),
         booked_at           TIMESTAMPTZ   NOT NULL DEFAULT now(),
@@ -386,11 +389,19 @@ VIEWS = (
         SELECT b.hotel_id, b.booking_id, b.currency, b.gross_amount,
                COALESCE(SUM(p.amount) FILTER (WHERE p.payment_status = 'received' AND p.payment_kind = 'payment'), 0)
              - COALESCE(SUM(p.amount) FILTER (WHERE p.payment_status = 'received' AND p.payment_kind = 'refund'), 0) AS amount_paid,
-               b.gross_amount
+               (CASE WHEN b.penalty_amount IS NOT NULL THEN b.penalty_amount
+                     ELSE b.gross_amount + COALESCE(b.late_fee_amount, 0) END)
              - COALESCE(SUM(p.amount) FILTER (WHERE p.payment_status = 'received' AND p.payment_kind = 'payment'), 0)
              + COALESCE(SUM(p.amount) FILTER (WHERE p.payment_status = 'received' AND p.payment_kind = 'refund'), 0) AS balance_due
         FROM booking b LEFT JOIN payment p ON p.booking_id = b.booking_id
         GROUP BY b.booking_id"""),
+)
+
+# Columns added after a table first shipped. CREATE TABLE above already includes them for a new database.
+COLUMNS = (
+    ("booking", "penalty_amount", "NUMERIC(12,2) CHECK (penalty_amount >= 0)"),
+    ("booking", "late_fee_amount", "NUMERIC(12,2) CHECK (late_fee_amount >= 0)"),
+    ("room_allotments", "released_at", "TIMESTAMPTZ"),
 )
 
 FUNCTIONS = (
@@ -483,8 +494,13 @@ def ensure_schema(cur):
             deferred = " DEFERRABLE INITIALLY DEFERRED" if kind else ""
             cur.execute("CREATE " + (kind + " " if kind else "") + "TRIGGER " + name + " " + timing + deferred
                         + " FOR EACH ROW EXECUTE FUNCTION " + function + "()")
+    from booking_system.content_store import add_column
+    for table, column, definition in COLUMNS:
+        add_column(cur, table, column, definition)
     for name, body in VIEWS:
-        if name not in seen["relations"]:
+        if name == "booking_balance":
+            cur.execute("CREATE OR REPLACE VIEW " + name + " AS " + body)
+        elif name not in seen["relations"]:
             cur.execute("CREATE VIEW " + name + " AS " + body)
     _seed(cur)
     _link(cur, seen)

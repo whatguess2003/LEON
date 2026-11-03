@@ -96,11 +96,11 @@ def _rate(cur, room_type_id, stay_date, nightly_rate):
     return found["price"], "desk"
 
 
-def _check_available(cur, hotel_id, need):
-    """need: {(room_type_id, stay_date): rooms}. Refuses a night with no inventory on file or too few rooms."""
+def _check_available(cur, hotel_id, need, channel):
+    """need: {(room_type_id, stay_date): rooms}. Refuses a night with no inventory on file or too few rooms for this channel."""
     from booking_system.inventory_manager import available_rooms
     for (room_type_id, stay_date), rooms in sorted(need.items()):
-        free = available_rooms(cur, hotel_id, room_type_id, stay_date)
+        free = available_rooms(cur, hotel_id, room_type_id, stay_date, channel)
         if free is None:
             raise Refused("No inventory on file for " + _type_name(cur, room_type_id) + " on " + stay_date.isoformat())
         if free < rooms:
@@ -108,7 +108,7 @@ def _check_available(cur, hotel_id, need):
                           + ": " + str(free) + " free, " + str(rooms) + " needed")
 
 
-def _write_nights(cur, hotel_id, booking_id, wanted, currency, check):
+def _write_nights(cur, hotel_id, booking_id, wanted, currency, check, channel=None):
     """Make the booking's nights equal wanted {(stay_date, room_seq): (room_type_id, sell_rate, rate_source)}. A live night of the
     same room type is kept with its room; any other night is replaced. check: refuse added nights beyond availability.
     Returns every stay date the booking held before or holds now."""
@@ -125,7 +125,7 @@ def _write_nights(cur, hotel_id, booking_id, wanted, currency, check):
         for stay_date, _seq in added:
             slot = (wanted[(stay_date, _seq)][0], stay_date)
             need[slot] = need.get(slot, 0) + 1
-        _check_available(cur, hotel_id, need)
+        _check_available(cur, hotel_id, need, channel)
     for key in kept:
         _room_type_id, rate, source = wanted[key]
         cur.execute("UPDATE booking_room_night SET sell_rate = %s, rate_source = %s, currency = %s WHERE booking_night_id = %s",
@@ -192,6 +192,8 @@ def _create(cur, hotel_id, user_id, guest, room_type_name, check_in, check_out, 
     ref = str(channel_booking_ref or "").strip() or None
     if ref and booking_by_ref(cur, hotel_id, channel, ref):
         raise Refused(channel + " reference " + ref + " is already booked")
+    from booking_system.stay_rules import assert_stay_length
+    assert_stay_length(cur, hotel_id, room_type_id, nights)
     currency = _currency(cur, hotel_id)
     rates = {day: _rate(cur, room_type_id, day, nightly_rate) for day in nights}
     guest_id = ensure_guest(cur, hotel_id, user_id, **guest)
@@ -205,7 +207,7 @@ def _create(cur, hotel_id, user_id, guest, room_type_name, check_in, check_out, 
          gross, commission_amount, commission_rate, user_id),
     )
     wanted = {(day, seq): (room_type_id,) + rates[day] for day in nights for seq in range(1, int(rooms) + 1)}
-    stay_dates = _write_nights(cur, hotel_id, booking_id, wanted, currency, check=True)
+    stay_dates = _write_nights(cur, hotel_id, booking_id, wanted, currency, check=True, channel=channel)
     _write_document(cur, booking_docs, hotel_id, booking_id, {"booking_notes": notes} if notes else {})
     return {"booking_id": booking_id, "guest_id": guest_id, "room_type_name": _type_name(cur, room_type_id), "check_in": nights[0].isoformat(),
             "check_out": _day(check_out).isoformat(), "stay_dates": stay_dates, "rooms": int(rooms), "currency": currency,
@@ -260,10 +262,14 @@ def _close(cur, hotel_id, user_id, booking_id, status, stamp, reason):
         return dict(result, unchanged=True)
     if booking["booking_status"] != "confirmed":
         raise Refused("Booking " + booking_id + " is " + booking["booking_status"] + "; only a confirmed booking can become " + status)
+    from booking_system.stay_rules import settle_close
+    settled = settle_close(cur, hotel_id, user_id, booking_id, status, reason)
     cur.execute("UPDATE booking SET booking_status = %s, " + stamp + " = now(), updated_at = now(), updated_by_user_id = %s "
                 "WHERE booking_id = %s", (status, user_id, booking_id))
     cur.execute("UPDATE booking_room_night SET night_status = %s WHERE booking_id = %s AND night_status = 'booked'", (status, booking_id))
     _log(cur, hotel_id, booking_id, user_id, "booking_status", booking["booking_status"], status, reason)
+    if settled:
+        result.update(settled)
     return result
 
 
@@ -316,7 +322,7 @@ def modify_booking(hotel_id, user_id, booking_id, changes, reason=None):
         if set(changed) & set(LAYOUT):
             if not wanted["room_type_name"]:
                 raise Refused("Booking " + booking_id + " holds several room types; name the room type")
-            stay_dates = _rebuild(cur, hotel_id, booking_id, booking["currency"], nights, wanted)
+            stay_dates = _rebuild(cur, hotel_id, booking_id, booking["currency"], nights, wanted, wanted["channel"])
             gross = _gross(cur, booking_id)
         cur.execute(
             """UPDATE booking SET adults = %s, children = %s, rate_plan = %s, group_name = %s, channel = %s, gross_amount = %s,
@@ -330,16 +336,19 @@ def modify_booking(hotel_id, user_id, booking_id, changes, reason=None):
     return run(write)
 
 
-def _rebuild(cur, hotel_id, booking_id, currency, nights, wanted):
+def _rebuild(cur, hotel_id, booking_id, currency, nights, wanted, channel):
     room_type_id = _room_type(cur, hotel_id, wanted["room_type_name"])
     have = {(row["stay_date"], row["room_seq"]): row for row in nights}
     plan = {}
-    for day in _nights(wanted["check_in"], wanted["check_out"]):
+    stay = _nights(wanted["check_in"], wanted["check_out"])
+    from booking_system.stay_rules import assert_stay_length
+    assert_stay_length(cur, hotel_id, room_type_id, stay)
+    for day in stay:
         for seq in range(1, wanted["rooms"] + 1):
             old = have.get((day, seq))
             keep = wanted["nightly_rate"] is None and old is not None and old["room_type_id"] == room_type_id
             plan[(day, seq)] = (room_type_id,) + ((old["sell_rate"], old["rate_source"]) if keep else _rate(cur, room_type_id, day, wanted["nightly_rate"]))
-    return _write_nights(cur, hotel_id, booking_id, plan, currency, check=True)
+    return _write_nights(cur, hotel_id, booking_id, plan, currency, check=True, channel=channel)
 
 
 def write_booking_notes(hotel_id, user_id, booking_id, notes):

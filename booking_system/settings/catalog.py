@@ -33,6 +33,10 @@ _ROWS = [
      "question": "Can a clean room be checked in before it is inspected, or only inspected rooms?",
      "explanation": "Which housekeeping readiness a room needs before check-in or a room move of an in-house guest.",
      "set_module": "front_desk", "set_level": "manage", "sop_prompt": "Describe your room release and inspection procedure.", "display_order": 13},
+    {"setting_key": "front_desk.late_checkout_fee", "module_name": "front_desk", "value_type": "amount", "options": [], "required": False,
+     "question": "What late-departure fee, in the hotel currency, applies after check-out time?",
+     "explanation": "Charged once when a guest departs after the check-out time. Leave it unset, or set it to zero, when a late departure has no fee.",
+     "set_module": "front_desk", "set_level": "manage", "sop_prompt": "", "display_order": 14},
 
     {"setting_key": "finance.enabled", "module_name": "finance", "value_type": "boolean", "options": [], "required": True,
      "question": "Will you post folio charges, payments, cashier shifts and the night audit in LEON (the finance module)?",

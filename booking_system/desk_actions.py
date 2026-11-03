@@ -249,8 +249,8 @@ def _payments(hotel_id, booking_id):
     """The booking's payments in ledger order with payment_seq and whether a received refund points at each."""
     return db.rows(
         """SELECT p.payment_id, p.amount, p.payment_method, p.payment_status, ROW_NUMBER() OVER (ORDER BY p.paid_at, p.payment_id) AS payment_seq,
-                  EXISTS (SELECT 1 FROM payment r WHERE r.booking_id = p.booking_id AND r.payment_kind = 'refund'
-                          AND r.payment_status = 'received' AND r.reference = p.payment_id) AS refunded
+                  COALESCE((SELECT SUM(r.amount) FROM payment r WHERE r.booking_id = p.booking_id AND r.payment_kind = 'refund'
+                            AND r.payment_status = 'received' AND r.reference = p.payment_id), 0) >= p.amount AS refunded
            FROM payment p WHERE p.hotel_id = %s AND p.booking_id = %s AND p.payment_kind = 'payment' ORDER BY payment_seq""",
         (hotel_id, booking_id))
 
@@ -442,8 +442,8 @@ def _open_payments(hotel_id):
         """SELECT booking_id, payment_seq, amount, payment_method FROM (
                SELECT p.booking_id, p.amount, p.payment_method, p.payment_status, p.paid_at,
                       ROW_NUMBER() OVER (PARTITION BY p.booking_id ORDER BY p.paid_at, p.payment_id) AS payment_seq,
-                      EXISTS (SELECT 1 FROM payment r WHERE r.booking_id = p.booking_id AND r.payment_kind = 'refund'
-                              AND r.payment_status = 'received' AND r.reference = p.payment_id) AS refunded
+                      COALESCE((SELECT SUM(r.amount) FROM payment r WHERE r.booking_id = p.booking_id AND r.payment_kind = 'refund'
+                                AND r.payment_status = 'received' AND r.reference = p.payment_id), 0) >= p.amount AS refunded
                FROM payment p WHERE p.hotel_id = %s AND p.payment_kind = 'payment') x
            WHERE payment_status = 'received' AND NOT refunded ORDER BY paid_at DESC LIMIT 10""",
         (hotel_id,))
