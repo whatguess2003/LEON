@@ -1,6 +1,7 @@
 .env
 booking_system/manager_context.json
 .venv/
+.venv-cm/
 __pycache__/
 *.pyc
 .vs/
