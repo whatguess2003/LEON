@@ -1311,6 +1311,8 @@ def workflow_ddl(cur):
         )
         """
     )
+    cur.execute(";\n".join(tables))
+    tables.clear()
     if seen.exists("catalog_proposals"):
         add_column(cur, "catalog_proposals", "content_hash", "VARCHAR NOT NULL DEFAULT ''", seen)
     if seen.exists("catalog_test_runs"):
