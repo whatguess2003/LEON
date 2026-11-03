@@ -59,6 +59,7 @@ class Desk:
         return {
             "status": status,
             "reply": str(body.get("final_message") or ""),
+            "finished": body.get("finished") is True,
             "refresh": bool(body.get("refresh")),
             "screen": (body.get("screen") or {}).get("title") if isinstance(body.get("screen"), dict) else bool(body.get("screen")),
             "ttfb_ms": int(((first or ended) - started) * 1000),
