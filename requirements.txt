@@ -1,1 +1,2 @@
--r requirements.pms.txt
+# Static UI (wrangler.ui.jsonc serves leon-pms-ui/ as assets): no Python packages.
+# PMS server: requirements.pms.txt. Channel manager: requirements.cm.txt.
