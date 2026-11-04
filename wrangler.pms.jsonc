@@ -2,7 +2,6 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "pms",
   "main": "workers/pms.js",
-  "workers_dev": true,
   "compatibility_date": "2026-10-22",
   "observability": {
     "enabled": true
@@ -14,7 +13,7 @@
     {
       "class_name": "PmsService",
       "scheduling_policy": "default",
-      "image": "registry.cloudflare.com/332c5e41cdaf724cedc69e812890fa6d/pms:20261104h",
+      "image": "registry.cloudflare.com/332c5e41cdaf724cedc69e812890fa6d/pms:20261104i",
       "instance_type": "standard-1",
       "max_instances": 2
     }

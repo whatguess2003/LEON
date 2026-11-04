@@ -72,9 +72,13 @@ def _send_email(address_value, code):
     if not secret:
         return "Email sending is not configured"
     request = urllib.request.Request(
-        "https://pms.whatguess2003.workers.dev/internal/otp-mail",
+        "https://api.inap.ai/internal/otp-mail",
         data=json.dumps({"to": address_value, "code": str(code)}).encode(),
-        headers={"Content-Type": "application/json", "x-otp-mail": secret},
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "leon-pms",
+            "x-otp-mail": secret,
+        },
     )
     try:
         with urllib.request.urlopen(request, timeout=20) as response:
@@ -85,7 +89,7 @@ def _send_email(address_value, code):
             parsed = json.loads(raw)
         except json.JSONDecodeError:
             parsed = {}
-        message = str(parsed.get("error") or parsed.get("detail") or "Email send failed") + " (" + str(exc.code) + ")"
+        message = str(parsed.get("error") or parsed.get("detail") or raw.strip() or "Email send failed")
         print("email otp send failed: " + message, flush=True)
         return message
     except Exception as exc:
