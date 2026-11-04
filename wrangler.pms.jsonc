@@ -6,11 +6,14 @@
   "observability": {
     "enabled": true
   },
+  "send_email": [
+    { "name": "EMAIL" }
+  ],
   "containers": [
     {
       "class_name": "PmsService",
       "scheduling_policy": "default",
-      "image": "registry.cloudflare.com/332c5e41cdaf724cedc69e812890fa6d/pms:20261104f",
+      "image": "registry.cloudflare.com/332c5e41cdaf724cedc69e812890fa6d/pms:20261104g",
       "instance_type": "standard-1",
       "max_instances": 2
     }
@@ -39,7 +42,7 @@
   },
   "vars": {
     "CLOUDFLARE_ACCOUNT_ID": "332c5e41cdaf724cedc69e812890fa6d",
-    "OTP_FROM": "otp@inap.ai",
+    "OTP_FROM": "otp@otp.inap.ai",
     "CHANNEL_MANAGER_URL": "https://cm.inap.ai",
     "FRONTEND_ORIGINS": "https://inap.ai,https://leon.whatguess2003.workers.dev,https://static.whatguess2003.workers.dev,https://beta.inap.ai",
     "AIOSSELL_PARTNER_ID": "sample-pms"

@@ -1,6 +1,6 @@
 """One-time codes for a WhatsApp number or an email address.
 
-An email code goes out from otp@inap.ai. WhatsApp is not used for the code. A confirmed code stays valid for the rest of onboarding."""
+An email code goes out from otp@otp.inap.ai. WhatsApp is not used for the code. A confirmed code stays valid for the rest of onboarding."""
 
 import hashlib
 import hmac
@@ -68,39 +68,31 @@ def _send_email(address_value, code):
     import os
     import urllib.error
     import urllib.request
-    token = str(os.getenv("CLOUDFLARE_API_TOKEN") or "").strip()
-    account = str(os.getenv("CLOUDFLARE_ACCOUNT_ID") or "").strip()
-    sender = str(os.getenv("OTP_FROM") or "otp@inap.ai").strip()
-    if not token or not account:
+    secret = str(os.getenv("OTP_MAIL_SECRET") or "").strip()
+    if not secret:
         return "Email sending is not configured"
-    payload = {
-        "from": {"address": sender, "name": "Leon"},
-        "to": address_value,
-        "subject": "Your Leon code",
-        "text": "Your Leon code is " + str(code) + ". It expires in 10 minutes.",
-    }
     request = urllib.request.Request(
-        "https://api.cloudflare.com/client/v4/accounts/" + account + "/email/sending/send",
-        data=json.dumps(payload).encode(),
-        headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+        "https://api.inap.ai/internal/otp-mail",
+        data=json.dumps({"to": address_value, "code": str(code)}).encode(),
+        headers={"Content-Type": "application/json", "x-otp-mail": secret},
     )
     try:
         with urllib.request.urlopen(request, timeout=20) as response:
-            body = json.loads(response.read().decode())
+            body = json.loads(response.read().decode() or "{}")
     except urllib.error.HTTPError as exc:
         raw = exc.read().decode()
         try:
             parsed = json.loads(raw)
         except json.JSONDecodeError:
             parsed = {}
-        message = str(((parsed.get("errors") or [{}])[0] or {}).get("message") or "Email send failed")
+        message = str(parsed.get("error") or "Email send failed")
         print("email otp send failed: " + message, flush=True)
         return message
     except Exception as exc:
         print("email otp send failed: " + str(exc), flush=True)
         return str(exc)
-    if not body.get("success"):
-        message = str(((body.get("errors") or [{}])[0] or {}).get("message") or "Email send failed")
+    if not body.get("ok"):
+        message = str(body.get("error") or "Email send failed")
         print("email otp send failed: " + message, flush=True)
         return message
     print("email otp sent", flush=True)
