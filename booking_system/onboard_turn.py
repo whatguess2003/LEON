@@ -23,6 +23,7 @@ _FIELDS = (
     "room_type",
     "room_numbers",
     "nightly_price",
+    "room_rates",
     "price_from",
     "price_to",
     "payment_percent",
@@ -54,8 +55,12 @@ _INSTRUCTIONS = (
     "city_name is the city they named, in capitals. hotel_timezone is an IANA name for that city. hotel_currency is three letters. payment_percent is digits. "
     "A time of day is HH:MM. room_numbers are separated by commas. Dates are YYYY-MM-DD. "
     "Tomorrow and a month ahead are the offered dates. price_from and price_to are the first and last night the price covers. stay_night is the night the guest sleeps. "
+    "today is the Today date above. N month or N months runs from price_from for that many months: price_to is one day before the same calendar day N months later. "
     "When the person mentions several values, copy each of them. "
-    "Do not invent a phone, an email, a hotel, a guest, a date, or a code. "
+    "room_rates lists every room type with its nightly amount. Each pair is the type then the digits, and pairs are separated by a semicolon: STANDARD ROOM 100; FAMILY ROOM 150. "
+    "An amount is digits only. RM100 is 100. When they name one type, room_type is that type and nightly_price is its digits. "
+    "When they name several, room_rates holds every pair, room_type is the first type, and nightly_price is that type's digits. Never put two amounts in nightly_price. "
+    "Do not invent a phone, an email, a hotel, a guest, a date, a code, or a room number. "
     "otp_phone and otp_email are codes. Copy otp_phone only when the person's latest message is the WhatsApp code, and otp_email only when it is the email code. "
     "Leave both empty when that message is not a code. Never copy a code from earlier in the chat. "
     "The def_ fields are what this manager means when asking Leon about arrivals, in-house guests, departures, and reservations. "
@@ -430,42 +435,103 @@ def _room_numbers_by_type(hotel_id):
     return {row["room_type"]: [room["room_number"] for room in row["room_numbers"]] for row in read_portfolio(hotel_id)["room_types"]}
 
 
+def _amount(token):
+    """A nightly amount, or None. A leading RM is the currency, not part of the number."""
+    text = str(token or "").strip().upper().replace("RM", "").replace(",", "")
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _pairs(text):
+    """[(TYPE, amount)] from 'STANDARD ROOM 100; FAMILY ROOM 150' or the same pairs separated by commas."""
+    rows = []
+    for chunk in str(text or "").split(";"):
+        for piece in chunk.split(","):
+            tokens = [token for token in piece.split() if token and token.upper() != "RM"]
+            amounts = [token for token in tokens if _amount(token) is not None]
+            if len(amounts) != 1 or len(tokens) < 2:
+                continue
+            name = " ".join(token for token in tokens if _amount(token) is None).strip().upper()
+            if not name or name in [row[0] for row in rows]:
+                continue
+            rows.append((name, _amount(amounts[0])))
+    return rows
+
+
+def _rate_rows(fields):
+    """Every stated room type and its nightly amount. One amount stays on room_type."""
+    rows = _pairs(fields.get("room_rates")) or _pairs(fields.get("nightly_price"))
+    if rows:
+        return rows
+    amount = _amount(fields.get("nightly_price"))
+    name = str(fields.get("room_type") or "").strip().upper()
+    if amount is None or not name:
+        return []
+    return [(name, amount)]
+
+
+def _remember_rates(fields, rates):
+    fields["room_rates"] = "; ".join(name + " " + _money(amount) for name, amount in rates)
+    fields["room_type"] = rates[0][0]
+    fields["nightly_price"] = _money(rates[0][1])
+
+
 def _write_rooms(fields, owner):
     from booking_system import inventory_manager, room_manager
     hotel, user_id = _owner(fields, owner)
     if not user_id:
         return "missing", "", {}
-    room_type = fields["room_type"]
+    rates = _rate_rows(fields)
     numbers = _numbers(fields["room_numbers"])
-    if not room_type and not numbers:
+    named = str(fields.get("room_type") or "").strip().upper()
+    if not rates:
+        fields["nightly_price"] = ""
         return "missing", "", {}
-    by_type = _room_numbers_by_type(hotel["hotel_id"])
-    base = room_type in by_type
-    owned = by_type.get(room_type) or []
-    other = [number + " " + kind for kind, rooms in by_type.items() if kind != room_type for number in rooms if number in numbers]
-    same = base and bool(numbers) and set(numbers) == set(owned)
-    if same and _price_exists(hotel["hotel_id"], room_type, fields["price_from"]):
-        return "saved", "", {}
-    if other or (base and numbers and not same):
-        listed = ", ".join(owned) or "none"
-        extra = (" Also used: " + ", ".join(other)) if other else ""
-        return "clarify", "Already on record. " + room_type + " rooms at " + fields["hotel_name"] + ": " + listed + "." + extra, {}
-    if _missing(fields, _NAMES["rooms"]):
+    _remember_rates(fields, rates)
+    if not fields["price_from"] or not fields["price_to"]:
         return "missing", "", {}
     if not _nights(fields["price_from"], fields["price_to"]):
         return "failed", "Failed rooms. The price dates are not a range of nights.", {}
-    try:
-        price = float(fields["nightly_price"])
-    except ValueError:
-        return "failed", "Failed rooms. The nightly price is not a number.", {}
-    if not base:
-        created = room_manager.create_room_type(hotel["hotel_id"], user_id, hotel["timezone"], room_type, {}, numbers, price)
-        if created.get("error"):
-            return "failed", "Failed rooms. " + created["error"], {}
-    priced = inventory_manager.set_prices(hotel["hotel_id"], user_id, room_type, fields["price_from"], fields["price_to"], price)
-    if priced.get("error"):
-        return "failed", "Failed rooms. " + priced["error"], {}
-    return "saved", "Saved rooms. Room number " + ", ".join(numbers) + ", type " + room_type + ", at " + str(price) + " each night.", {}
+    by_type = _room_numbers_by_type(hotel["hotel_id"])
+    saved = []
+    pending = []
+    for name, amount in rates:
+        owned = by_type.get(name) or []
+        use_numbers = numbers if name == named and numbers else []
+        if owned and use_numbers and set(use_numbers) != set(owned):
+            return "clarify", "Already on record. " + name + " rooms at " + fields["hotel_name"] + ": " + ", ".join(owned) + ".", {}
+        if not owned and not use_numbers:
+            pending.append((name, amount))
+            continue
+        other = [number + " " + kind for kind, rooms in by_type.items() if kind != name for number in rooms if number in use_numbers]
+        if other:
+            return "clarify", "Already on record. " + ", ".join(other) + " at " + fields["hotel_name"] + ".", {}
+        if not owned:
+            created = room_manager.create_room_type(hotel["hotel_id"], user_id, hotel["timezone"], name, {}, use_numbers, amount)
+            if created.get("error"):
+                return "failed", "Failed rooms. " + created["error"], {}
+            by_type[name] = use_numbers
+        priced = inventory_manager.set_prices(hotel["hotel_id"], user_id, name, fields["price_from"], fields["price_to"], amount)
+        if priced.get("error"):
+            return "failed", "Failed rooms. " + priced["error"], {}
+        listed = ", ".join(by_type.get(name) or use_numbers)
+        saved.append(name + " " + listed + " at " + _money(amount))
+    if pending:
+        fields["room_type"] = pending[0][0]
+        fields["nightly_price"] = _money(pending[0][1])
+        fields["room_numbers"] = ""
+        note = ("Saved rooms. " + "; ".join(saved) + ". ") if saved else ""
+        return "missing", note + "Need room numbers for " + pending[0][0] + ".", {}
+    if not saved:
+        return "saved", "", {}
+    fields["room_type"] = rates[0][0]
+    fields["nightly_price"] = _money(rates[0][1])
+    fields["room_numbers"] = ", ".join(by_type.get(rates[0][0]) or [])
+    return "saved", "Saved rooms. " + "; ".join(saved) + ".", {}
 
 
 def _booking_doc(hotel_id, fields):
@@ -543,13 +609,20 @@ def _already(fields, owner):
         return saved, ""
     saved.append("hotel")
     hotel = _hotel_row(hotel_on_file)
-    room_type = fields["room_type"]
-    numbers = _numbers(fields["room_numbers"])
-    if not room_type or not numbers:
-        return saved, ""
-    owned = _room_numbers_by_type(hotel["hotel_id"]).get(room_type)
-    if owned is None or set(numbers) != set(owned) or not _price_exists(hotel["hotel_id"], room_type, fields["price_from"]):
-        return saved, ""
+    rates = _rate_rows(fields)
+    if rates:
+        by_type = _room_numbers_by_type(hotel["hotel_id"])
+        ready = [name for name, _amount in rates if by_type.get(name) and _price_exists(hotel["hotel_id"], name, fields["price_from"])]
+        if len(ready) != len(rates):
+            return saved, ""
+    else:
+        room_type = fields["room_type"]
+        numbers = _numbers(fields["room_numbers"])
+        if not room_type or not numbers:
+            return saved, ""
+        owned = _room_numbers_by_type(hotel["hotel_id"]).get(room_type)
+        if owned is None or set(numbers) != set(owned) or not _price_exists(hotel["hotel_id"], room_type, fields["price_from"]):
+            return saved, ""
     saved.append("rooms")
     if not _policies_on_file(hotel["hotel_id"]):
         return saved, ""
@@ -851,6 +924,7 @@ _HIGHLIGHTS = {
     "room_type": "Room",
     "room_numbers": "Room numbers",
     "nightly_price": "Nightly price",
+    "room_rates": "Rates",
     "price_from": "Price from",
     "price_to": "Price to",
     "payment_percent": "Deposit",
