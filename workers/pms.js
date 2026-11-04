@@ -50,6 +50,7 @@ export class PmsService extends DurableObject {
       this.starting = undefined;
     });
     await this.starting;
+    await this.waitUntilListening();
     const url = new URL(request.url);
     url.protocol = "http:";
     url.host = "container";
@@ -86,6 +87,22 @@ export class PmsService extends DurableObject {
       await this.ctx.storage.put("containerEnv", stamp);
     }
     await container.setInactivityTimeout(IDLE_MS);
+  }
+
+  async waitUntilListening() {
+    const port = this.ctx.container.getTcpPort(PORT);
+    let lastError;
+    for (let attempt = 0; attempt < 90; attempt++) {
+      try {
+        const response = await port.fetch("http://container/health");
+        if (response.ok) return;
+        lastError = new Error("health " + response.status);
+      } catch (error) {
+        lastError = error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    throw lastError || new Error("container is not ready");
   }
 }
 
