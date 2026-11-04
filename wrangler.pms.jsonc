@@ -47,6 +47,7 @@
   "vars": {
     "DATABASE_ORIGIN_HOST": "aws-ap-southeast-1-2.pg.psdb.cloud",
     "DATABASE_ORIGIN_PORT": "5432",
+    "DATABASE_ORIGIN_USER": "pscale_api_v32ys5j32ygv.phl6g5lt1ubh",
     "CHANNEL_MANAGER_URL": "https://cm.inap.ai",
     "FRONTEND_ORIGINS": "https://inap.ai,https://leon.whatguess2003.workers.dev,https://static.whatguess2003.workers.dev,https://beta.inap.ai",
     "AIOSSELL_PARTNER_ID": "sample-pms"

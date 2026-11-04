@@ -31,7 +31,7 @@ const NAMES = [
 function databaseUrl(value, env) {
   const host = env.DATABASE_ORIGIN_HOST;
   const port = env.DATABASE_ORIGIN_PORT;
-  const user = value && value.user;
+  const user = typeof env.DATABASE_ORIGIN_USER === "string" && env.DATABASE_ORIGIN_USER !== "" ? env.DATABASE_ORIGIN_USER : value && value.user;
   const password = value && value.password;
   const database = value && value.database;
   const parts = [host, port, user, password, database];
@@ -95,7 +95,7 @@ export class PmsService extends DurableObject {
 
   async startAndWait() {
     const container = this.ctx.container;
-    const stamp = "database-origin";
+    const stamp = "database-user";
     const booted = await this.ctx.storage.get("containerEnv");
     if (booted !== stamp && container.running) {
       await container.destroy("reload container env");
