@@ -46,6 +46,10 @@
     {
       "pattern": "api.inap.ai/*",
       "zone_name": "inap.ai"
+    },
+    {
+      "pattern": "api.beta.inap.ai/*",
+      "zone_name": "inap.ai"
     }
   ]
 }
