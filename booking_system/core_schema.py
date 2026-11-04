@@ -249,7 +249,8 @@ TABLES = (
     # ---------- money (the desk ledger; folios and transaction codes belong to finance) ----------
     ("payment", _id("payment_id", "pay") + """,
         hotel_id            VARCHAR(48)   NOT NULL,
-        booking_id          VARCHAR(48)   NOT NULL,
+        guest_id            VARCHAR(48)   NOT NULL,
+        booking_id          VARCHAR(48),
         payment_kind        VARCHAR(8)    NOT NULL CHECK (payment_kind IN ('payment','refund')),
         amount              NUMERIC(12,2) NOT NULL CHECK (amount > 0),
         currency            CHAR(3)       NOT NULL CHECK (currency = UPPER(currency)),
@@ -258,6 +259,7 @@ TABLES = (
         reference           VARCHAR(128),
         paid_at             TIMESTAMPTZ   NOT NULL DEFAULT now(),
         recorded_by_user_id VARCHAR(48)   REFERENCES user_account (user_id),
+        FOREIGN KEY (hotel_id, guest_id) REFERENCES guest (hotel_id, guest_id),
         FOREIGN KEY (hotel_id, booking_id) REFERENCES booking (hotel_id, booking_id)"""),
     # ---------- operations ----------
     ("room_readiness_status", """
@@ -395,6 +397,12 @@ VIEWS = (
              + COALESCE(SUM(p.amount) FILTER (WHERE p.payment_status = 'received' AND p.payment_kind = 'refund'), 0) AS balance_due
         FROM booking b LEFT JOIN payment p ON p.booking_id = b.booking_id
         GROUP BY b.booking_id"""),
+    ("guest_account", """
+        SELECT g.hotel_id, g.guest_id,
+               COALESCE(SUM(p.amount) FILTER (WHERE p.payment_status = 'received' AND p.payment_kind = 'payment'), 0)
+             - COALESCE(SUM(p.amount) FILTER (WHERE p.payment_status = 'received' AND p.payment_kind = 'refund'), 0) AS amount_held
+        FROM guest g LEFT JOIN payment p ON p.hotel_id = g.hotel_id AND p.guest_id = g.guest_id
+        GROUP BY g.hotel_id, g.guest_id"""),
 )
 
 # Columns added after a table first shipped. CREATE TABLE above already includes them for a new database.
@@ -402,6 +410,7 @@ COLUMNS = (
     ("booking", "penalty_amount", "NUMERIC(12,2) CHECK (penalty_amount >= 0)"),
     ("booking", "late_fee_amount", "NUMERIC(12,2) CHECK (late_fee_amount >= 0)"),
     ("room_allotments", "released_at", "TIMESTAMPTZ"),
+    ("payment", "guest_id", "VARCHAR(48)"),
 )
 
 FUNCTIONS = (
@@ -468,6 +477,34 @@ def _seed(cur):
                 ([name for name, _rank in LEVELS], [rank for _name, rank in LEVELS]))
 
 
+def _guest_payments(cur):
+    """A payment belongs to the guest. The booking is optional and does not follow booking status."""
+    cur.execute(
+        """SELECT column_name, is_nullable FROM information_schema.columns
+           WHERE table_schema = current_schema() AND table_name = 'payment' AND column_name IN ('guest_id', 'booking_id')"""
+    )
+    columns = {row[0]: row[1] for row in cur.fetchall()}
+    if "guest_id" not in columns:
+        return
+    cur.execute(
+        """UPDATE payment p SET guest_id = b.guest_id FROM booking b
+           WHERE p.booking_id = b.booking_id AND p.guest_id IS NULL"""
+    )
+    if columns.get("booking_id") == "NO":
+        cur.execute("ALTER TABLE payment ALTER COLUMN booking_id DROP NOT NULL")
+    cur.execute("SELECT 1 FROM payment WHERE guest_id IS NULL")
+    if cur.fetchone() is None and columns.get("guest_id") == "YES":
+        cur.execute("ALTER TABLE payment ALTER COLUMN guest_id SET NOT NULL")
+    cur.execute("SELECT 1 FROM pg_constraint WHERE conname = 'payment_guest_fk'")
+    if cur.fetchone() is None:
+        cur.execute(
+            """ALTER TABLE payment ADD CONSTRAINT payment_guest_fk
+               FOREIGN KEY (hotel_id, guest_id) REFERENCES guest (hotel_id, guest_id) NOT VALID"""
+        )
+        cur.execute("ALTER TABLE payment VALIDATE CONSTRAINT payment_guest_fk")
+    cur.execute("CREATE INDEX IF NOT EXISTS payment_guest_idx ON payment (hotel_id, guest_id)")
+
+
 def ensure_schema(cur):
     """Autocommit cursor on a direct connection."""
     cur.execute("SET lock_timeout = '" + DDL_LOCK_TIMEOUT + "'")
@@ -498,10 +535,11 @@ def ensure_schema(cur):
     for table, column, definition in COLUMNS:
         add_column(cur, table, column, definition)
     for name, body in VIEWS:
-        if name == "booking_balance":
+        if name in ("booking_balance", "guest_account"):
             cur.execute("CREATE OR REPLACE VIEW " + name + " AS " + body)
         elif name not in seen["relations"]:
             cur.execute("CREATE VIEW " + name + " AS " + body)
+    _guest_payments(cur)
     _seed(cur)
     _link(cur, seen)
     from booking_system import schema_areas

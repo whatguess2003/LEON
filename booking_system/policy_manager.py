@@ -9,10 +9,7 @@ from booking_system.hotel_registry import read_hotel_by_id
 
 TEMPLATES = {
     "payment": {
-        "payment_threshold_percent": 30,
-        "payment_window_days": 7,
         "methods_allowed": ["CASH", "CARD", "BANK TRANSFER", "OTA"],
-        "deadline_policy": "before_check_in",
         "notes": "",
     },
     "booking": {

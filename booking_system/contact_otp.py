@@ -1,7 +1,6 @@
 """One-time codes for a WhatsApp number or an email address.
 
-dispatch is the send. The WhatsApp Cloud API and the email sender are not connected in this stage, so a send is recorded
-as done and the code is printed for the test. A confirmed code stays valid for the rest of onboarding."""
+An email code goes out from otp@otp.inap.ai. WhatsApp is not used for the code. A confirmed code stays valid for the rest of onboarding."""
 
 import hashlib
 import hmac
@@ -58,36 +57,96 @@ def _now():
     return datetime.now(timezone.utc)
 
 
+def _send_whatsapp(address_value, code):
+    from booking_system.front_desk_manager import intelligent_front_desk
+    sent = intelligent_front_desk.send_whatsapp_otp(address_value, code)
+    return str(sent.get("error") or "")
+
+
+def _send_email(address_value, code):
+    import json
+    import os
+    import urllib.error
+    import urllib.request
+    secret = str(os.getenv("OTP_MAIL_SECRET") or "").strip()
+    if not secret:
+        return "Email sending is not configured"
+    request = urllib.request.Request(
+        "https://api.inap.ai/internal/otp-mail",
+        data=json.dumps({"to": address_value, "code": str(code)}).encode(),
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "leon-pms",
+            "x-otp-mail": secret,
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            body = json.loads(response.read().decode() or "{}")
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode()
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = {}
+        message = str(parsed.get("error") or parsed.get("detail") or raw.strip() or "Email send failed")
+        print("email otp send failed: " + message, flush=True)
+        return message
+    except Exception as exc:
+        print("email otp send failed: " + str(exc), flush=True)
+        return str(exc)
+    if not body.get("ok"):
+        message = str(body.get("error") or "Email send failed")
+        print("email otp send failed: " + message, flush=True)
+        return message
+    print("email otp sent", flush=True)
+    return ""
+
+
+_SEND = {"whatsapp": _send_whatsapp, "email": _send_email}
+
+
 def dispatch(channel, address_value, code):
-    """Hand the code to the person. WhatsApp is the Cloud API and email is the mail sender; neither is called yet."""
-    print("pretend otp " + channel + " " + address_value + " " + code, flush=True)
-    return "pretend"
+    """Hand the code to the person. Empty when the message was accepted, otherwise the reason it was not."""
+    sender = _SEND.get(channel)
+    if sender is None:
+        return "That channel is not usable"
+    return sender(address_value, code)
 
 
 def issue(channel, address_value):
-    """Store a code and pretend to send it. 'waiting' when a live code is already out, 'invalid' when the address is not usable."""
+    """Store a code after it is sent. 'waiting' when a live code is already out, 'invalid' when the address is not usable, otherwise the send error."""
     stored = address(channel, address_value)
     if not stored:
         return "invalid"
 
-    def run(cur):
+    def waiting(cur):
         cur.execute("SELECT code_hash, expires_at, attempts, confirmed_at FROM contact_otp WHERE channel = %s AND address = %s",
                     (channel, stored))
         row = cur.fetchone()
         moment = _now()
         if row and not row["confirmed_at"] and row["expires_at"] > moment and row["attempts"] < _TRIES and row["code_hash"]:
             return "waiting"
-        code = str(secrets.randbelow(1000000)).zfill(6)
+        return ""
+
+    held = db.transaction(waiting)
+    if held:
+        return held
+    code = str(secrets.randbelow(1000000)).zfill(6)
+    error = dispatch(channel, stored, code)
+    if error:
+        return error
+
+    def store(cur):
         cur.execute(
             """INSERT INTO contact_otp (channel, address, code_hash, expires_at, attempts, confirmed_at)
                VALUES (%s, %s, %s, %s, 0, NULL)
                ON CONFLICT (channel, address) DO UPDATE
                  SET code_hash = EXCLUDED.code_hash, expires_at = EXCLUDED.expires_at, attempts = 0, confirmed_at = NULL""",
-            (channel, stored, _hash(code), moment + _LIFE),
+            (channel, stored, _hash(code), _now() + _LIFE),
         )
-        dispatch(channel, stored, code)
-        return "sent"
-    return db.transaction(run)
+    db.transaction(store)
+    return "sent"
 
 
 def check(channel, address_value, code):

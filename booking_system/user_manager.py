@@ -77,9 +77,13 @@ def _create_user(cur, user_name, identities, password, primary_language, nationa
 
 def signup(user_name, identities, password, primary_language, nationality):
     """identities: {'phone': ..., 'email': ..., 'username': ...}. A password may be empty when a code confirmed the person.
-    Returns {'user_id'} or {'error'}."""
+    An email is accepted only after the Leon code confirmed it. Returns {'user_id'} or {'error'}."""
+    from booking_system import contact_otp
     if not str(user_name or "").strip():
         return {"error": "name is required"}
+    email = normalize("email", (identities or {}).get("email"))
+    if email and not contact_otp.confirmed("email", email):
+        return {"error": "confirm the email with the Leon code first"}
     try:
         user_id, reason = db.transaction(lambda cur: _create_user(cur, user_name, identities, password, primary_language, nationality))
     except ValueError as error:

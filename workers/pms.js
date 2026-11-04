@@ -26,6 +26,8 @@ const NAMES = [
   "WHATSAPP_APP_SECRET",
   "SERPER_API_KEY",
   "TAVILY_API_KEY",
+  "OTP_MAIL_SECRET",
+  "OTP_FROM",
 ];
 
 function passedEnv(env) {
@@ -48,6 +50,13 @@ export class PmsService extends DurableObject {
       this.starting = undefined;
     });
     await this.starting;
+    const listening = await this.waitUntilListening();
+    if (!listening) {
+      return new Response(JSON.stringify({ error: "The hotel system is waking up. Try again." }), {
+        status: 503,
+        headers: { "content-type": "application/json" },
+      });
+    }
     const url = new URL(request.url);
     url.protocol = "http:";
     url.host = "container";
@@ -69,7 +78,7 @@ export class PmsService extends DurableObject {
 
   async startAndWait() {
     const container = this.ctx.container;
-    const stamp = "anthropic-key";
+    const stamp = "email-otp";
     const booted = await this.ctx.storage.get("containerEnv");
     if (booted !== stamp && container.running) {
       await container.destroy("reload container env");
@@ -85,10 +94,55 @@ export class PmsService extends DurableObject {
     }
     await container.setInactivityTimeout(IDLE_MS);
   }
+
+  async waitUntilListening() {
+    const port = this.ctx.container.getTcpPort(PORT);
+    const started = Date.now();
+    let attempt = 0;
+    while (Date.now() - started < 75000) {
+      try {
+        const response = await port.fetch("http://container/health", { signal: AbortSignal.timeout(2000) });
+        if (response.ok) return true;
+      } catch (error) {
+        if (attempt === 0) console.log("container not listening yet");
+      }
+      attempt += 1;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    console.log("container not listening yet", attempt);
+    return false;
+  }
+}
+
+async function sendOtpMail(request, env) {
+  if (request.headers.get("x-otp-mail") !== env.OTP_MAIL_SECRET) {
+    return new Response("unauthorized", { status: 401 });
+  }
+  const body = await request.json();
+  const to = String(body.to || "");
+  const code = String(body.code || "");
+  const from = env.OTP_FROM || "otp@otp.inap.ai";
+  if (!to || !code) return Response.json({ error: "missing" }, { status: 400 });
+  try {
+    await env.EMAIL.send({
+      from,
+      to,
+      subject: "Your Leon code",
+      text: "Your Leon code is " + code + ". It expires in 10 minutes.",
+    });
+  } catch (error) {
+    const message = error && error.message ? error.message : "Email send failed";
+    console.log("email otp send failed", message);
+    return Response.json({ error: message }, { status: 502 });
+  }
+  console.log("email otp sent");
+  return Response.json({ ok: true });
 }
 
 export default {
-  fetch(request, env) {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    if (url.pathname === "/internal/otp-mail") return sendOtpMail(request, env);
     return env.PMS.getByName("leon-pms").fetch(request);
   },
 };

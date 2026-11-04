@@ -389,13 +389,10 @@ class FrontDesk:
                 raise Refused("Check-in opens on " + booking["check_in_date"].isoformat())
             if today >= booking["check_out_date"]:
                 raise Refused("The stay ended on " + booking["check_out_date"].isoformat())
-            from booking_system.stay_rules import checkin_clock_refusal, deposit_refusal
+            from booking_system.stay_rules import checkin_clock_refusal
             clock = checkin_clock_refusal(cur, hotel_id, zone, today, booking["check_in_date"])
             if clock:
                 raise Refused(clock)
-            deposit = deposit_refusal(cur, hotel_id, today, booking)
-            if deposit:
-                raise Refused(deposit)
             tonight = [night for night in _nights(cur, hotel_id, booking_id)
                        if night["stay_date"] == today and night["night_status"] == "booked" and night["room_id"]
                        and (not wanted or night["room_number"] == wanted) and (not chosen or night["booking_night_id"] == chosen)]
@@ -947,9 +944,13 @@ class FrontDesk:
         if not token or not phone_number_id:
             return {"error": "WhatsApp access token is not configured"}
         version = str(os.getenv("WHATSAPP_GRAPH_VERSION") or "v26.0").strip()
+        recipient = "".join(ch for ch in str(payload.get("to") or "") if ch.isdigit())
+        if not recipient:
+            return {"error": "WhatsApp number needs a country code"}
+        body_payload = dict(payload, to=recipient)
         request = urllib.request.Request(
             "https://graph.facebook.com/" + version + "/" + phone_number_id + "/messages",
-            data=json.dumps(payload).encode(),
+            data=json.dumps(body_payload).encode(),
             headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
         )
         try:
@@ -968,6 +969,10 @@ class FrontDesk:
         message_id = str((sent or {}).get("id") or "")
         if not message_id:
             return {"error": "WhatsApp did not accept the message"}
+        contacts = body.get("contacts") or []
+        wa_id = str((contacts[0] or {}).get("wa_id") or "") if contacts else ""
+        if contacts and not wa_id:
+            return {"error": "That number is not on WhatsApp"}
         return {"message_id": message_id}
 
     def send_whatsapp_text(self, guest_phone: str, text: str) -> dict:
@@ -1080,6 +1085,15 @@ class FrontDesk:
         if sent.get("message_id"):
             sent["template_name"] = template_name
             sent["body"] = str(sentence or "").strip() or template_name
+        return sent
+
+    def send_whatsapp_otp(self, guest_phone: str, code: str) -> dict:
+        """Send the sign-in code as a normal WhatsApp message. The code is not written to the log."""
+        sent = self.send_whatsapp_text(guest_phone, "Leon code: " + str(code or "").strip() + ". It expires in 10 minutes.")
+        if sent.get("error"):
+            print("whatsapp otp send failed: " + sent["error"], flush=True)
+        elif sent.get("message_id"):
+            print("whatsapp otp sent " + sent["message_id"], flush=True)
         return sent
 
 
