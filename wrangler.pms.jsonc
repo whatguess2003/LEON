@@ -13,7 +13,7 @@
     {
       "class_name": "PmsService",
       "scheduling_policy": "default",
-      "image": "registry.cloudflare.com/332c5e41cdaf724cedc69e812890fa6d/pms:20261104n",
+      "image": "registry.cloudflare.com/332c5e41cdaf724cedc69e812890fa6d/pms:20261104o",
       "instance_type": "standard-1",
       "max_instances": 2
     }

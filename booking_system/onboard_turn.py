@@ -1029,6 +1029,32 @@ def _question(name):
     return _QUESTIONS.get(name) or (row or {}).get("question") or ""
 
 
+_PICKS = {
+    "role": ("Hotel Manager", "Owner"),
+    "nationality": ("Malaysian", "Singaporean", "Indonesian"),
+    "primary_language": ("English", "Malay", "Chinese"),
+    "hotel_timezone": ("Kuala Lumpur time", "Singapore time"),
+    "hotel_currency": ("ringgit", "Singapore dollar"),
+    "room_type": ("Standard room", "Family room", "Deluxe room"),
+    "price_from": ("today", "tomorrow"),
+    "price_to": ("a month ahead", "6 month"),
+    "stay_night": ("tonight", "tomorrow night"),
+}
+
+
+def _choice_rows(name):
+    """Tappable answers for this question. Each row is the words on the card and the words sent to the turn."""
+    if name in _PICKS:
+        return [{"label": item, "text": item} for item in _PICKS[name]]
+    row = _setting_fields().get(name) if name and name.startswith(_SETTING) else None
+    if row and row.get("value_type") == "boolean":
+        return [{"label": "Yes", "text": "true"}, {"label": "No", "text": "false"}]
+    if row and row.get("options"):
+        return [{"label": option.get("meaning") or option["value"], "text": option["value"]} for option in list(row["options"])[:6]]
+    chip = _CHIPS.get(name) if name else ""
+    return [{"label": chip, "text": chip}] if chip else []
+
+
 def _next_name(fields, saved):
     if "account" not in saved:
         from booking_system import contact_otp
@@ -1070,6 +1096,7 @@ def build_guide(fields, saved, booking_id):
     todos = []
     opened = False
     suggestion = ""
+    choices = []
     for step, _names in _STEPS:
         label = _STEP_LABELS[step]
         if step in saved:
@@ -1080,11 +1107,13 @@ def build_guide(fields, saved, booking_id):
             continue
         opened = True
         gap = _next_name(fields, saved)
-        suggestion = _CHIPS.get(gap) or ""
-        todos.append({"step": step, "label": label, "state": "now", "detail": _question(gap)})
+        choices = _choice_rows(gap)
+        suggestion = choices[0]["text"] if choices else ""
+        todos.append({"step": step, "label": label, "state": "now", "detail": _question(gap), "choices": choices})
     return {
         "hotel_name": str(fields.get("hotel_name") or ""),
         "highlights": highlights,
+        "choices": choices if opened else [],
         "todos": todos,
         "suggestion": suggestion,
         "booking_id": str(booking_id or ""),
@@ -1248,6 +1277,7 @@ def onboard_turn(message, history, fields, signed_user_id=None):
         "todos": guide["todos"],
         "highlights": guide["highlights"],
         "suggestion": guide["suggestion"],
+        "choices": guide.get("choices") or [],
         "token": extra.get("token") or "",
         "cookie_hotel": extra.get("hotel_name") or "",
     }
