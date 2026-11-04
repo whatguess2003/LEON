@@ -50,7 +50,13 @@ export class PmsService extends DurableObject {
       this.starting = undefined;
     });
     await this.starting;
-    await this.waitUntilListening();
+    const listening = await this.waitUntilListening();
+    if (!listening) {
+      return new Response(JSON.stringify({ error: "The hotel system is waking up. Try again." }), {
+        status: 503,
+        headers: { "content-type": "application/json" },
+      });
+    }
     const url = new URL(request.url);
     url.protocol = "http:";
     url.host = "container";
@@ -91,18 +97,20 @@ export class PmsService extends DurableObject {
 
   async waitUntilListening() {
     const port = this.ctx.container.getTcpPort(PORT);
-    let lastError;
-    for (let attempt = 0; attempt < 90; attempt++) {
+    const started = Date.now();
+    let attempt = 0;
+    while (Date.now() - started < 75000) {
       try {
-        const response = await port.fetch("http://container/health");
-        if (response.ok) return;
-        lastError = new Error("health " + response.status);
+        const response = await port.fetch("http://container/health", { signal: AbortSignal.timeout(2000) });
+        if (response.ok) return true;
       } catch (error) {
-        lastError = error;
+        if (attempt === 0) console.log("container not listening yet");
       }
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      attempt += 1;
+      await new Promise((resolve) => setTimeout(resolve, 500));
     }
-    throw lastError || new Error("container is not ready");
+    console.log("container not listening yet", attempt);
+    return false;
   }
 }
 
