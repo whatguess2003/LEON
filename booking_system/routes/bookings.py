@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
+import booking_system.cm_path
 from aiosell_channel_manager import push_dates
 from booking_system import booking_manager, guest_manager, payment_manager, service_token
 from booking_system.access import session

@@ -5,7 +5,12 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONIOENCODING=utf-8
 ENV PGCONNECT_TIMEOUT=10
 ENV PORT=8080
-RUN printf 'precedence ::ffff:0:0/96 100\n' >> /etc/gai.conf
+RUN printf 'precedence ::ffff:0:0/96 100\n' >> /etc/gai.conf \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && git clone --depth 1 https://github.com/whatguess2003/CM.git /opt/cm
+ENV CM_HOME=/opt/cm
 COPY requirements.pms.txt .
 RUN pip install --no-cache-dir -r requirements.pms.txt
 COPY . .
