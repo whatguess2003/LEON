@@ -186,35 +186,87 @@ def _hotel_row(hotel_name):
     return (read_hotel(hotel_name) if hotel_name else None) or {}
 
 
-def _account_by_phone(fields):
-    """The person holding this WhatsApp number: user_id, user_name, profile language and nationality, and their hotels; or None."""
+def _shaped(user, profile):
+    identities = {row["identity_type"]: row["identity_value"] for row in user.get("identities") or []}
+    first = user["hotels"][0] if user["hotels"] else {}
+    return {"user_id": user["user_id"], "manager_name": user["user_name"], "manager_phone": identities.get("phone") or "",
+            "manager_email": identities.get("email") or "", "hotels": user["hotels"],
+            "hotel_name": first.get("hotel_name") or "", "role": first.get("role_name") or "",
+            "nationality": profile.get("nationality") or "", "primary_language": profile.get("primary_language") or ""}
+
+
+def _load_person(cur, user):
+    from booking_system.user_manager import hotels_of
+    if not user or user.get("status") != "active":
+        return None
+    cur.execute("SELECT identity_type, identity_value FROM user_identity WHERE user_id = %s", (user["user_id"],))
+    return dict(user, hotels=hotels_of(cur, user["user_id"]), identities=cur.fetchall())
+
+
+def _account_from(read):
     from booking_system import db
-    from booking_system.user_manager import find_user, hotels_of, profile_col
+    from booking_system.user_manager import profile_col
+    user = db.transaction(read)
+    if not user:
+        return None
+    profile = profile_col.find_one({"user_id": user["user_id"]}) or {}
+    return _shaped(user, profile)
+
+
+def _account_by_phone(fields):
+    """The person holding this WhatsApp number, or None."""
+    from booking_system.user_manager import find_user
     phone = str(fields.get("manager_phone") or "").strip()
     if not phone:
         return None
 
     def read(cur):
-        user = find_user(cur, "phone", phone)
-        return dict(user, hotels=hotels_of(cur, user["user_id"])) if user else None
-    user = db.transaction(read)
-    if not user:
+        return _load_person(cur, find_user(cur, "phone", phone))
+    return _account_from(read)
+
+
+def _account_by_user(user_id):
+    """The active person for this user id, or None."""
+    if not user_id:
         return None
-    profile = profile_col.find_one({"user_id": user["user_id"]}) or {}
-    first = user["hotels"][0] if user["hotels"] else {}
-    return {"user_id": user["user_id"], "manager_name": user["user_name"], "manager_phone": phone, "hotels": user["hotels"],
-            "hotel_name": first.get("hotel_name") or "", "role": first.get("role_name") or "",
-            "nationality": profile.get("nationality") or "", "primary_language": profile.get("primary_language") or ""}
+
+    def read(cur):
+        cur.execute("SELECT user_id, user_name, status FROM user_account WHERE user_id = %s", (user_id,))
+        return _load_person(cur, cur.fetchone())
+    return _account_from(read)
+
+
+def _account_by_email(email):
+    """The person holding this email, or None."""
+    from booking_system.user_manager import find_user
+    if not email:
+        return None
+
+    def read(cur):
+        return _load_person(cur, find_user(cur, "email", email))
+    return _account_from(read)
 
 
 def _account_doc(fields, owner):
-    """The account on this phone only when it is the signed-in person (owner user_id); a phone alone proves nothing."""
-    doc = _account_by_phone(fields) if owner else None
-    return doc if doc and doc["user_id"] == owner else None
+    """The signed-in person. Their user id is enough, so an email account with no phone still continues."""
+    if owner:
+        found = _account_by_user(owner)
+        if found:
+            return found
+    email = str((fields or {}).get("manager_email") or "").strip()
+    if not email:
+        return None
+    from booking_system import contact_otp
+    if not contact_otp.confirmed("email", email):
+        return None
+    return _account_by_email(email)
 
 
 def _account_exact(doc, fields):
-    return str(doc.get("manager_phone") or "") == fields["manager_phone"] and str(doc.get("manager_name") or "").upper() == fields["manager_name"]
+    same_email = str(doc.get("manager_email") or "") == fields["manager_email"] or not fields["manager_email"]
+    return (str(doc.get("manager_phone") or "") == fields["manager_phone"]
+            and same_email
+            and str(doc.get("manager_name") or "").upper() == fields["manager_name"])
 
 
 def _hotel_of(doc, hotel_name):
@@ -279,7 +331,7 @@ def _code_step(channel, address_value, given):
 
 
 def _write_account(fields, owner, otp=None):
-    """READ the email first. The Leon code confirms it before a manager profile is created. An existing person then signs in."""
+    """READ the email first. The Leon code confirms it before a manager profile is created. A confirmed email that is already on file signs in."""
     from booking_system import contact_otp, user_manager
     email = fields["manager_email"]
     phone = fields["manager_phone"]
@@ -290,10 +342,20 @@ def _write_account(fields, owner, otp=None):
         ready, note = _code_step("email", email, (otp or {}).get("email"))
         if not ready:
             return "clarify", note, {}
-    if owner:
-        held = _account_doc(fields, owner)
-        if held and held["user_id"] == owner:
-            return "saved", note, {"user_id": owner}
+    person = _account_by_email(email)
+    if person:
+        if owner and person["user_id"] != owner:
+            return "failed", "Failed account. That email belongs to another account.", {}
+        if not fields["manager_name"]:
+            fields["manager_name"] = person["manager_name"]
+        if owner == person["user_id"] and not note:
+            return "saved", "", {"user_id": person["user_id"]}
+        signed = user_manager.session_for(person["user_id"])
+        if signed.get("error"):
+            return "failed", "Failed account. " + signed["error"], {}
+        signed_on = email + (" and " + phone if phone else "")
+        line = " ".join(part for part in (note, "Saved account. " + fields["manager_name"] + " is signed in on " + signed_on + ".") if part)
+        return "saved", line.strip(), {"token": signed.get("token") or "", "user_id": person["user_id"]}
     doc = _account_by_phone(fields) if phone else None
     if doc:
         if owner and doc["user_id"] != owner:
@@ -1013,7 +1075,7 @@ def _signup_graph(message, history, incoming, offers, known_saved, known_booking
 
 def onboard_turn(message, history, fields, signed_user_id=None):
     """Read the chat, keep the stated fields, then create the step that is complete. signed_user_id is the person on the
-    request's token. A phone is confirmed with a code before an existing account is opened or a new one is created."""
+    request's token. A confirmed email opens that account and the following step continues."""
     incoming = _recall(_clean(fields), signed_user_id)
     known_saved, known_booking = _already(incoming, signed_user_id)
     offers = _offers(date.today())
