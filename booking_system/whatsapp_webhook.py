@@ -139,5 +139,12 @@ def accept_webhook(payload: dict) -> list:
                 state = str((status or {}).get("status") or "")
                 if not source_ref or not state:
                     continue
-                guest_manager.save_whatsapp_event(source_ref, phone, _guest_hotel(phone), _sent_at(str((status or {}).get("timestamp") or "")), "", "out", state)
+                errors = (status or {}).get("errors") or []
+                first = errors[0] if errors else {}
+                detail = " ".join(part for part in (str((first or {}).get("code") or ""), str((first or {}).get("title") or (first or {}).get("message") or "")) if part)
+                if detail:
+                    print("whatsapp status " + state + " " + detail, flush=True)
+                else:
+                    print("whatsapp status " + state, flush=True)
+                guest_manager.save_whatsapp_event(source_ref, phone, _guest_hotel(phone), _sent_at(str((status or {}).get("timestamp") or "")), "", "out", state if not detail else state + " " + detail)
     return touched

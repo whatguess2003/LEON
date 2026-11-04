@@ -947,9 +947,13 @@ class FrontDesk:
         if not token or not phone_number_id:
             return {"error": "WhatsApp access token is not configured"}
         version = str(os.getenv("WHATSAPP_GRAPH_VERSION") or "v26.0").strip()
+        recipient = "".join(ch for ch in str(payload.get("to") or "") if ch.isdigit())
+        if not recipient:
+            return {"error": "WhatsApp number needs a country code"}
+        body_payload = dict(payload, to=recipient)
         request = urllib.request.Request(
             "https://graph.facebook.com/" + version + "/" + phone_number_id + "/messages",
-            data=json.dumps(payload).encode(),
+            data=json.dumps(body_payload).encode(),
             headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
         )
         try:
@@ -968,6 +972,10 @@ class FrontDesk:
         message_id = str((sent or {}).get("id") or "")
         if not message_id:
             return {"error": "WhatsApp did not accept the message"}
+        contacts = body.get("contacts") or []
+        wa_id = str((contacts[0] or {}).get("wa_id") or "") if contacts else ""
+        if contacts and not wa_id:
+            return {"error": "That number is not on WhatsApp"}
         return {"message_id": message_id}
 
     def send_whatsapp_text(self, guest_phone: str, text: str) -> dict:
