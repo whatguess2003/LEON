@@ -3,6 +3,7 @@ hotel_room_code_mapping."""
 
 from datetime import timedelta
 
+import booking_system.cm_path
 from booking_system import db, hotel_registry
 
 

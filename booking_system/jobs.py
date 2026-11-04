@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 from starlette.concurrency import run_in_threadpool
 
+import booking_system.cm_path
 from booking_system import db
 from booking_system.hotel_registry import new_id
 

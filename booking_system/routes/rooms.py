@@ -8,6 +8,7 @@ from fastapi import APIRouter, Body, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+import booking_system.cm_path
 from aiosell_channel_manager import push_dates, push_rates_for_date, push_rates_for_dates
 from booking_system import dynamic_pricing, hotel_registry, inventory_manager, room_manager
 from booking_system.access import session
