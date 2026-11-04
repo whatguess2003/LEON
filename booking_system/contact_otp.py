@@ -1,6 +1,6 @@
 """One-time codes for a WhatsApp number or an email address.
 
-A WhatsApp code goes out through the Cloud API. A confirmed code stays valid for the rest of onboarding."""
+A WhatsApp code goes out as a normal Cloud API message. A confirmed code stays valid for the rest of onboarding."""
 
 import hashlib
 import hmac
