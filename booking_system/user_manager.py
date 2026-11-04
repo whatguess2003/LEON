@@ -77,9 +77,13 @@ def _create_user(cur, user_name, identities, password, primary_language, nationa
 
 def signup(user_name, identities, password, primary_language, nationality):
     """identities: {'phone': ..., 'email': ..., 'username': ...}. A password may be empty when a code confirmed the person.
-    Returns {'user_id'} or {'error'}."""
+    A phone is accepted only after the Leon code confirmed it. Returns {'user_id'} or {'error'}."""
+    from booking_system import contact_otp
     if not str(user_name or "").strip():
         return {"error": "name is required"}
+    phone = normalize("phone", (identities or {}).get("phone"))
+    if phone and not contact_otp.confirmed("whatsapp", phone):
+        return {"error": "confirm the WhatsApp number with the Leon code first"}
     try:
         user_id, reason = db.transaction(lambda cur: _create_user(cur, user_name, identities, password, primary_language, nationality))
     except ValueError as error:

@@ -74,7 +74,8 @@ _REWRITE = (
     "When a result says Saved, say what is now in place, then ask for the next field. "
     "Ask for the next field in your own words, keeping the meaning of its question. When it has an offer, offer that value the way you would say it. "
     "Before an account exists, answer what they just said first. Use their name once you know it. "
-    "Say in a few words why the next thing matters. The phone is how you reach them on WhatsApp and open the account. "
+    "Say in a few words why the next thing matters. The phone is how you reach them on WhatsApp. "
+    "The Leon code confirms that number before any manager profile is created. "
     "The email is another way to reach them and to sign in. "
     "When a result says OTP sent, tell them a code was sent to that WhatsApp or email and ask them to share it here to confirm. "
     "When a result says OTP waiting, ask again for the code already sent. "
@@ -279,13 +280,9 @@ def _code_step(channel, address_value, given):
 
 
 def _write_account(fields, owner, otp=None):
-    """READ the phone first. A code confirms it, then an existing person signs in. A new person confirms an email, then the account is created with no password."""
+    """READ the phone first. The Leon code confirms it before a manager profile is created. An existing person then signs in."""
     from booking_system import contact_otp, user_manager
     phone = fields["manager_phone"]
-    if owner and phone:
-        held = _account_by_phone(fields)
-        if held and held["user_id"] == owner:
-            return "saved", "", {"user_id": owner}
     if not phone:
         return "missing", "", {}
     note = ""
@@ -293,6 +290,10 @@ def _write_account(fields, owner, otp=None):
         ready, note = _code_step("whatsapp", phone, (otp or {}).get("phone"))
         if not ready:
             return "clarify", note, {}
+    if owner and phone:
+        held = _account_by_phone(fields)
+        if held and held["user_id"] == owner:
+            return "saved", note, {"user_id": owner}
     doc = _account_by_phone(fields)
     if doc:
         if owner and doc["user_id"] != owner:
@@ -304,24 +305,20 @@ def _write_account(fields, owner, otp=None):
             return "failed", "Failed account. " + signed["error"], {}
         line = (note + " " if note else "") + "Saved account. " + fields["manager_name"] + " is signed in on " + phone + "."
         return "saved", line.strip(), {"token": signed.get("token") or "", "user_id": doc["user_id"]}
-    email = fields["manager_email"]
-    if not email:
-        return "missing", note, {}
-    if not contact_otp.confirmed("email", email):
-        ready, email_line = _code_step("email", email, (otp or {}).get("email"))
-        note = " ".join(part for part in (note, email_line) if part)
-        if not ready:
-            return "clarify", note, {}
     if _missing(fields, _STEPS[0][1]):
         return "missing", note, {}
-    created = user_manager.signup(fields["manager_name"], {"phone": phone, "email": email}, None,
+    identities = {"phone": phone}
+    if fields["manager_email"]:
+        identities["email"] = fields["manager_email"]
+    created = user_manager.signup(fields["manager_name"], identities, None,
                                   fields["primary_language"], fields["nationality"])
     if created.get("error"):
         return "failed", "Failed account. " + created["error"], {}
     signed = user_manager.session_for(created["user_id"])
     if signed.get("error"):
         return "failed", "Failed account. " + signed["error"], {}
-    line = " ".join(part for part in (note, "Saved account. " + fields["manager_name"] + " is signed in on " + phone + " and " + email + ".") if part)
+    signed_on = phone + (" and " + fields["manager_email"] if fields["manager_email"] else "")
+    line = " ".join(part for part in (note, "Saved account. " + fields["manager_name"] + " is signed in on " + signed_on + ".") if part)
     return "saved", line, {"token": signed.get("token") or "", "user_id": created["user_id"]}
 
 
@@ -821,11 +818,8 @@ def _next_name(fields, saved):
     if "account" not in saved:
         from booking_system import contact_otp
         phone = str(fields.get("manager_phone") or "").strip()
-        email = str(fields.get("manager_email") or "").strip()
         if phone and not contact_otp.confirmed("whatsapp", phone):
             return "otp_phone"
-        if phone and email and contact_otp.confirmed("whatsapp", phone) and not _account_by_phone(fields) and not contact_otp.confirmed("email", email):
-            return "otp_email"
     for step, names in _STEPS:
         if step in saved:
             continue
