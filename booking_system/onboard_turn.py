@@ -53,13 +53,14 @@ _INSTRUCTIONS = (
     "A phone starts with + and the country code, with no spaces. "
     "hotel_name, manager_name, room_type, and guest_name are capitals. "
     "city_name is the city they named, in capitals. hotel_timezone is an IANA name for that city. hotel_currency is three letters. payment_percent is digits. "
-    "A time of day is HH:MM. room_numbers are separated by commas. Dates are YYYY-MM-DD. "
+    "A time of day is HH:MM. room_numbers are separated by commas. A range 101-110 means every number from 101 through 110. Dates are YYYY-MM-DD. "
     "Tomorrow and a month ahead are the offered dates. price_from and price_to are the first and last night the price covers. stay_night is the night the guest sleeps. "
     "today is the Today date above. N month or N months runs from price_from for that many months: price_to is one day before the same calendar day N months later. "
     "When the person mentions several values, copy each of them. "
     "room_rates lists every room type with its nightly amount. Each pair is the type then the digits, and pairs are separated by a semicolon: STANDARD ROOM 100; FAMILY ROOM 150. "
     "An amount is digits only. RM100 is 100. When they name one type, room_type is that type and nightly_price is its digits. "
     "When they name several, room_rates holds every pair, room_type is the first type, and nightly_price is that type's digits. Never put two amounts in nightly_price. "
+    "When several types have room numbers, room_numbers keeps each type with its own numbers, separated by a semicolon: STANDARD ROOM 101-110; FAMILY ROOM 201-210. Do not put one type's numbers on another type. "
     "Do not invent a phone, an email, a hotel, a guest, a date, a code, or a room number. "
     "otp_phone and otp_email are codes. Copy otp_phone only when the person's latest message is the WhatsApp code, and otp_email only when it is the email code. "
     "Leave both empty when that message is not a code. Never copy a code from earlier in the chat. "
@@ -480,57 +481,157 @@ def _remember_rates(fields, rates):
     fields["nightly_price"] = _money(rates[0][1])
 
 
+def _span_numbers(token):
+    """Room numbers in one token: 101, or 101-110 meaning every integer from the first through the last."""
+    text = str(token or "").strip().replace("–", "-").replace("—", "-")
+    ends = text.split("-")
+    if len(ends) == 1:
+        return [ends[0]] if ends[0].isdigit() else []
+    if len(ends) != 2 or not ends[0].isdigit() or not ends[1].isdigit():
+        return []
+    start, stop = int(ends[0]), int(ends[1])
+    if stop < start or stop - start > 400:
+        return []
+    return [str(number) for number in range(start, stop + 1)]
+
+
+def _number_groups(text):
+    """[(TYPE, [numbers])] from 'STANDARD ROOM 101-110, FAMILY ROOM 201-210'."""
+    rows = []
+    name = []
+    numbers = []
+
+    def flush():
+        label = " ".join(name).strip().upper()
+        if label and numbers and label not in [row[0] for row in rows]:
+            rows.append((label, list(numbers)))
+        name.clear()
+        numbers.clear()
+
+    raw = str(text or "").replace(";", " ").replace(",", " ")
+    for token in raw.split():
+        expanded = _span_numbers(token)
+        if expanded:
+            for number in expanded:
+                if number not in numbers:
+                    numbers.append(number)
+            continue
+        if numbers:
+            flush()
+        name.append(token)
+    flush()
+    return rows
+
+
+def _range_blocks(text):
+    """[[numbers], ...] for a list of pure ranges such as '101-110, 201-210'."""
+    blocks = []
+    for part in str(text or "").replace(";", ",").split(","):
+        token = part.strip()
+        if "-" not in token:
+            continue
+        expanded = _span_numbers(token)
+        if expanded:
+            blocks.append(expanded)
+    return blocks
+
+
+def _flat_numbers(text):
+    found = []
+    for part in str(text or "").split(","):
+        for number in _span_numbers(part.strip()):
+            if number not in found:
+                found.append(number)
+    return found
+
+
+def _numbers_by_type(fields, rates):
+    """{TYPE: [numbers]} stated for these room types. A bare list belongs to one type only."""
+    grouped = _number_groups(fields.get("room_numbers"))
+    if grouped:
+        return {name: numbers for name, numbers in grouped}
+    names = [name for name, _amount in rates]
+    blocks = _range_blocks(fields.get("room_numbers"))
+    if blocks and len(blocks) == len(names):
+        return {name: numbers for name, numbers in zip(names, blocks)}
+    flat = _flat_numbers(fields.get("room_numbers"))
+    if len(names) == 1 and flat:
+        return {names[0]: flat}
+    return {}
+
+
+def _show_numbers(numbers):
+    try:
+        values = [int(number) for number in numbers]
+    except ValueError:
+        return ", ".join(numbers)
+    ordered = sorted(values)
+    if len(ordered) > 1 and ordered == list(range(ordered[0], ordered[-1] + 1)):
+        return str(ordered[0]) + "-" + str(ordered[-1])
+    return ", ".join(numbers)
+
+
 def _write_rooms(fields, owner):
     from booking_system import inventory_manager, room_manager
     hotel, user_id = _owner(fields, owner)
     if not user_id:
         return "missing", "", {}
     rates = _rate_rows(fields)
-    numbers = _numbers(fields["room_numbers"])
-    named = str(fields.get("room_type") or "").strip().upper()
+    stated = _numbers_by_type(fields, rates)
     if not rates:
         fields["nightly_price"] = ""
         return "missing", "", {}
     _remember_rates(fields, rates)
+    fields["room_numbers"] = "; ".join(name + " " + _show_numbers(stated[name]) for name, _amount in rates if stated.get(name))
     if not fields["price_from"] or not fields["price_to"]:
         return "missing", "", {}
     if not _nights(fields["price_from"], fields["price_to"]):
         return "failed", "Failed rooms. The price dates are not a range of nights.", {}
     by_type = _room_numbers_by_type(hotel["hotel_id"])
+    for name, _amount in rates:
+        wanted = stated.get(name) or []
+        owned = list(by_type.get(name) or [])
+        extra = [number for number in owned if number not in wanted] if wanted else []
+        if not extra:
+            continue
+        removed = room_manager.remove_rooms(hotel["hotel_id"], user_id, hotel["timezone"], name, extra)
+        if removed.get("error"):
+            return "failed", "Failed rooms. " + removed["error"], {}
+        by_type[name] = [number for number in owned if number not in extra]
     saved = []
     pending = []
     for name, amount in rates:
-        owned = by_type.get(name) or []
-        use_numbers = numbers if name == named and numbers else []
-        if owned and use_numbers and set(use_numbers) != set(owned):
-            return "clarify", "Already on record. " + name + " rooms at " + fields["hotel_name"] + ": " + ", ".join(owned) + ".", {}
-        if not owned and not use_numbers:
+        wanted = stated.get(name) or []
+        owned = list(by_type.get(name) or [])
+        if not wanted and not owned:
             pending.append((name, amount))
             continue
-        other = [number + " " + kind for kind, rooms in by_type.items() if kind != name for number in rooms if number in use_numbers]
-        if other:
-            return "clarify", "Already on record. " + ", ".join(other) + " at " + fields["hotel_name"] + ".", {}
         if not owned:
-            created = room_manager.create_room_type(hotel["hotel_id"], user_id, hotel["timezone"], name, {}, use_numbers, amount)
+            created = room_manager.create_room_type(hotel["hotel_id"], user_id, hotel["timezone"], name, {}, wanted, amount)
             if created.get("error"):
                 return "failed", "Failed rooms. " + created["error"], {}
-            by_type[name] = use_numbers
+            by_type[name] = list(wanted)
+        else:
+            missing = [number for number in wanted if number not in owned]
+            if missing:
+                added = room_manager.add_rooms(hotel["hotel_id"], user_id, hotel["timezone"], name, missing)
+                if added.get("error"):
+                    return "failed", "Failed rooms. " + added["error"], {}
+                owned.extend(missing)
+            by_type[name] = owned
         priced = inventory_manager.set_prices(hotel["hotel_id"], user_id, name, fields["price_from"], fields["price_to"], amount)
         if priced.get("error"):
             return "failed", "Failed rooms. " + priced["error"], {}
-        listed = ", ".join(by_type.get(name) or use_numbers)
-        saved.append(name + " " + listed + " at " + _money(amount))
+        saved.append(name + " " + _show_numbers(by_type.get(name) or []) + " at " + _money(amount))
     if pending:
         fields["room_type"] = pending[0][0]
         fields["nightly_price"] = _money(pending[0][1])
-        fields["room_numbers"] = ""
         note = ("Saved rooms. " + "; ".join(saved) + ". ") if saved else ""
         return "missing", note + "Need room numbers for " + pending[0][0] + ".", {}
     if not saved:
         return "saved", "", {}
     fields["room_type"] = rates[0][0]
     fields["nightly_price"] = _money(rates[0][1])
-    fields["room_numbers"] = ", ".join(by_type.get(rates[0][0]) or [])
     return "saved", "Saved rooms. " + "; ".join(saved) + ".", {}
 
 
