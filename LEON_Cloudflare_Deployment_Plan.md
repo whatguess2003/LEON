@@ -48,7 +48,7 @@ Scope: backend code only, so the FastAPI server stays deployable later behind a 
 
 Verified from this repo's code (this session):
 - `workers/pms.js` and `workers/cm.js` already use the Durable Object container API (`ctx.container.start({ env, enableInternet })`, `getTcpPort(8080).fetch`, `setInactivityTimeout(1h)`). Env reaches the container only through `start({ env })`.
-- `wrangler.pms.jsonc` uses `instance_type: standard-1` and `max_instances: 2`, with no Hyperdrive binding yet.
+- `wrangler.jsonc` uses `instance_type: standard-1` and `max_instances: 2`, with no Hyperdrive binding yet.
 
 Not verified against the Cloudflare docs (research stopped before the docs lookup finished). Confirm these before deploying:
 - Whether a Container can use a Hyperdrive binding directly, or must get the connection string from the Worker, or connect to the origin database itself.
