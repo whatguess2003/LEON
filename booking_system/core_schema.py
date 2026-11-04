@@ -352,7 +352,6 @@ INDEXES = (
     ("brn_booking_idx", "booking_room_night (booking_id)"),
     ("room_block_room_idx", "room_block (room_id, start_date, end_date)"),
     ("payment_booking_idx", "payment (hotel_id, booking_id)"),
-    ("payment_guest_idx", "payment (hotel_id, guest_id)"),
     ("cleaning_task_room_idx", "cleaning_task (hotel_id, room_id, task_status)"),
     ("maintenance_request_hotel_idx", "maintenance_request (hotel_id, request_status)"),
     ("maintenance_schedule_due_idx", "maintenance_schedule (hotel_id, next_due_date) WHERE active"),
@@ -503,6 +502,7 @@ def _guest_payments(cur):
                FOREIGN KEY (hotel_id, guest_id) REFERENCES guest (hotel_id, guest_id) NOT VALID"""
         )
         cur.execute("ALTER TABLE payment VALIDATE CONSTRAINT payment_guest_fk")
+    cur.execute("CREATE INDEX IF NOT EXISTS payment_guest_idx ON payment (hotel_id, guest_id)")
 
 
 def ensure_schema(cur):
