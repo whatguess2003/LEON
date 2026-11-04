@@ -28,11 +28,52 @@ const NAMES = [
   "TAVILY_API_KEY",
 ];
 
+function databaseUrl(value, env) {
+  const host = env.DATABASE_ORIGIN_HOST;
+  const port = env.DATABASE_ORIGIN_PORT;
+  const parsed = parsedDatabase(value && value.connectionString);
+  const configuredUser = typeof env.DATABASE_ORIGIN_USER === "string" ? env.DATABASE_ORIGIN_USER : "";
+  const user = configuredUser || parsed.user || (value && value.user);
+  const password = parsed.password || (value && value.password);
+  const database = parsed.database || (value && value.database);
+  const parts = [host, port, user, password, database];
+  const ready = parts.every((part) => typeof part === "string" && part !== "");
+  if (!ready) return "";
+  return [
+    "postgres://",
+    encodeURIComponent(user),
+    ":",
+    encodeURIComponent(password),
+    "@",
+    host,
+    ":",
+    port,
+    "/",
+    encodeURIComponent(database),
+    "?sslmode=require",
+  ].join("");
+}
+
+function parsedDatabase(connectionString) {
+  if (typeof connectionString !== "string" || connectionString === "") return {};
+  const parsed = new URL(connectionString);
+  return {
+    user: decodeURIComponent(parsed.username),
+    password: decodeURIComponent(parsed.password),
+    database: decodeURIComponent(parsed.pathname.replace(/^\//, "")),
+  };
+}
+
 function passedEnv(env) {
   const out = { PORT: String(PORT) };
   for (const name of NAMES) {
     const value = env[name];
-    if (typeof value === "string" && value !== "") out[name] = value;
+    if (typeof value === "string" && value !== "") {
+      out[name] = value;
+      continue;
+    }
+    const url = databaseUrl(value, env);
+    if (url) out[name] = url;
   }
   return out;
 }
@@ -69,7 +110,7 @@ export class PmsService extends DurableObject {
 
   async startAndWait() {
     const container = this.ctx.container;
-    const stamp = "anthropic-key";
+    const stamp = "database-branch";
     const booted = await this.ctx.storage.get("containerEnv");
     if (booted !== stamp && container.running) {
       await container.destroy("reload container env");

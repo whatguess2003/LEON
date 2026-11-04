@@ -3,6 +3,7 @@
   "name": "pms",
   "main": "workers/pms.js",
   "compatibility_date": "2026-10-22",
+  "keep_vars": true,
   "observability": {
     "enabled": true
   },
