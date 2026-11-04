@@ -3,9 +3,16 @@
   "name": "pms",
   "main": "workers/pms.js",
   "compatibility_date": "2026-10-22",
+  "keep_vars": true,
   "observability": {
     "enabled": true
   },
+  "hyperdrive": [
+    {
+      "binding": "DATABASE_URL",
+      "id": "ff0f7ba9bb09464baa17495513a9575f"
+    }
+  ],
   "containers": [
     {
       "class_name": "PmsService",
@@ -38,6 +45,8 @@
     }
   },
   "vars": {
+    "DATABASE_ORIGIN_HOST": "aws-ap-southeast-1-2.pg.psdb.cloud",
+    "DATABASE_ORIGIN_PORT": "5432",
     "CHANNEL_MANAGER_URL": "https://cm.inap.ai",
     "FRONTEND_ORIGINS": "https://inap.ai,https://leon.whatguess2003.workers.dev,https://static.whatguess2003.workers.dev,https://beta.inap.ai",
     "AIOSSELL_PARTNER_ID": "sample-pms"

@@ -28,11 +28,37 @@ const NAMES = [
   "TAVILY_API_KEY",
 ];
 
+function databaseUrl(value, env) {
+  const host = env.DATABASE_ORIGIN_HOST;
+  const port = env.DATABASE_ORIGIN_PORT;
+  const user = value && value.user;
+  const password = value && value.password;
+  const database = value && value.database;
+  const parts = [host, port, user, password, database];
+  const ready = parts.every((part) => typeof part === "string" && part !== "");
+  if (!ready) return "";
+  return [
+    "postgres://",
+    encodeURIComponent(user),
+    ":",
+    encodeURIComponent(password),
+    "@",
+    host,
+    ":",
+    port,
+    "/",
+    encodeURIComponent(database),
+    "?sslmode=require",
+  ].join("");
+}
+
 function passedEnv(env) {
   const out = { PORT: String(PORT) };
   for (const name of NAMES) {
     const value = env[name];
     if (typeof value === "string" && value !== "") out[name] = value;
+    const url = databaseUrl(value, env);
+    if (url) out[name] = url;
   }
   return out;
 }
@@ -69,7 +95,7 @@ export class PmsService extends DurableObject {
 
   async startAndWait() {
     const container = this.ctx.container;
-    const stamp = "anthropic-key";
+    const stamp = "database-origin";
     const booted = await this.ctx.storage.get("containerEnv");
     if (booted !== stamp && container.running) {
       await container.destroy("reload container env");
