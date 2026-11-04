@@ -32,13 +32,13 @@ function databaseUrl(value, env) {
   const host = env.DATABASE_ORIGIN_HOST;
   const port = env.DATABASE_ORIGIN_PORT;
   const parsed = parsedDatabase(value && value.connectionString);
-  const user = parsed.user || (typeof env.DATABASE_ORIGIN_USER === "string" ? env.DATABASE_ORIGIN_USER : value && value.user);
+  const configuredUser = typeof env.DATABASE_ORIGIN_USER === "string" ? env.DATABASE_ORIGIN_USER : "";
+  const user = configuredUser || parsed.user || (value && value.user);
   const password = parsed.password || (value && value.password);
   const database = parsed.database || (value && value.database);
   const parts = [host, port, user, password, database];
   const ready = parts.every((part) => typeof part === "string" && part !== "");
   if (!ready) return "";
-  console.log("database url", "userHasBranch", user.includes("."), "passwordLength", password.length, "fromConnectionString", Boolean(parsed.user));
   return [
     "postgres://",
     encodeURIComponent(user),
@@ -107,7 +107,7 @@ export class PmsService extends DurableObject {
 
   async startAndWait() {
     const container = this.ctx.container;
-    const stamp = "database-connstring";
+    const stamp = "database-branch";
     const booted = await this.ctx.storage.get("containerEnv");
     if (booted !== stamp && container.running) {
       await container.destroy("reload container env");
