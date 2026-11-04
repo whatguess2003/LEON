@@ -1082,6 +1082,26 @@ class FrontDesk:
             sent["body"] = str(sentence or "").strip() or template_name
         return sent
 
+    def send_whatsapp_otp(self, guest_phone: str, code: str) -> dict:
+        """Send the sign-in code with an approved authentication template. The code is not written to the log."""
+        from booking_system.whatsapp_templates import ensure_otp_template
+        template = ensure_otp_template()
+        if template.get("error"):
+            return template
+        sent = self.send_whatsapp_template(
+            guest_phone,
+            template["template_name"],
+            template["language"],
+            [str(code or "").strip()],
+            button=str(code or "").strip(),
+            sentence="verification code",
+        )
+        if sent.get("error"):
+            print("whatsapp otp send failed: " + sent["error"], flush=True)
+        elif sent.get("message_id"):
+            print("whatsapp otp sent " + sent["message_id"], flush=True)
+        return sent
+
 
 intelligent_front_desk = FrontDesk()
 

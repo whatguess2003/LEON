@@ -296,6 +296,51 @@ def render_named(name, context):
     return _render(item, context)
 
 
+def _copy_code(item):
+    for component in item.get("components") or []:
+        if str(component.get("type") or "").upper() != "BUTTONS":
+            continue
+        for button in component.get("buttons") or []:
+            kind = str(button.get("otp_type") or button.get("type") or "").upper()
+            if kind == "COPY_CODE" or kind == "OTP":
+                return True
+    return False
+
+
+def ensure_otp_template():
+    """An approved authentication template, creating the sign-in code template when this account has none."""
+    loaded = _fetch_templates()
+    if isinstance(loaded, dict):
+        return loaded
+    approved = [item for item in loaded if str(item.get("category") or "").upper() == "AUTHENTICATION" and str(item.get("status") or "") == "APPROVED" and item.get("name") and item.get("language")]
+    copy_codes = [item for item in approved if _copy_code(item)]
+    english = [item for item in (copy_codes or approved) if str(item.get("language") or "").lower().startswith("en")]
+    chosen = (english or copy_codes or approved or [None])[0]
+    if chosen:
+        return {"template_name": str(chosen.get("name") or ""), "language": str(chosen.get("language") or "")}
+    if any(str(item.get("name") or "") == "leon_sign_in_code" for item in loaded):
+        return {"error": "WhatsApp verification template is still in review"}
+    waba, failed = _waba_id()
+    if failed:
+        return failed
+    created = _post_graph(waba + "/message_templates", {
+        "name": "leon_sign_in_code",
+        "language": "en_US",
+        "category": "AUTHENTICATION",
+        "components": [
+            {"type": "BODY", "add_security_recommendation": True},
+            {"type": "FOOTER", "code_expiration_minutes": 10},
+            {"type": "BUTTONS", "buttons": [{"type": "OTP", "otp_type": "COPY_CODE", "text": "Copy code"}]},
+        ],
+    })
+    forget_templates()
+    if created.get("error"):
+        return created
+    if str(created.get("status") or "") == "APPROVED":
+        return {"template_name": "leon_sign_in_code", "language": "en_US"}
+    return {"error": "WhatsApp verification template was submitted and is waiting for approval"}
+
+
 def link_template_key():
     """The approved template that carries the verify-account button."""
     loaded = _approved()

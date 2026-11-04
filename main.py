@@ -428,7 +428,9 @@ async def signin_otp_send(request: OtpSendRequest):
         return JSONResponse(content={"success": False, "message": "That address is not usable."})
     if state == "waiting":
         return JSONResponse(content={"success": True, "message": "A code is already on its way. Share it here."})
-    return JSONResponse(content={"success": True, "message": "A code was sent. Share it here to sign in."})
+    if state == "sent":
+        return JSONResponse(content={"success": True, "message": "A code was sent. Share it here to sign in."})
+    return JSONResponse(content={"success": False, "message": state})
 
 
 @app.post("/api/auth/signin/otp")

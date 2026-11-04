@@ -247,6 +247,19 @@ def _profile_definitions(user_id):
     return {field: known[item["key"]] for field, item in _DEFINITION_BY_FIELD.items() if known.get(item["key"])}
 
 
+def _otp_result(state, place, renewed):
+    """(ready, line) for a send result. A send error is the line Leon can say."""
+    if state == "sent" and renewed:
+        return False, "OTP sent. A new code was sent to their " + place + "."
+    if state == "sent":
+        return False, "OTP sent. A code was sent to their " + place + "."
+    if state == "waiting":
+        return False, "OTP waiting. A code was already sent to their " + place + "."
+    if state == "invalid":
+        return False, "OTP failed. That address is not usable."
+    return False, "OTP failed. " + state
+
+
 def _code_step(channel, address_value, given):
     """(ready, line). Ready once this address is confirmed. A live code that does not match is a miss; otherwise a code is sent."""
     from booking_system import contact_otp
@@ -258,16 +271,11 @@ def _code_step(channel, address_value, given):
     if typed and contact_otp.check(channel, address_value, typed):
         return True, "OTP confirmed. Their " + noun + " is confirmed."
     if typed and contact_otp.exhausted(channel, address_value):
-        contact_otp.issue(channel, address_value)
-        return False, "OTP sent. A new code was sent to their " + place + "."
+        return _otp_result(contact_otp.issue(channel, address_value), place, True)
     state = contact_otp.issue(channel, address_value)
     if typed and state == "waiting":
         return False, "OTP failed. That code did not match."
-    if state == "waiting":
-        return False, "OTP waiting. A code was already sent to their " + place + "."
-    if state == "sent":
-        return False, "OTP sent. A code was sent to their " + place + "."
-    return False, "OTP failed. That address is not usable."
+    return _otp_result(state, place, False)
 
 
 def _write_account(fields, owner, otp=None):
