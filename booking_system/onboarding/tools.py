@@ -60,9 +60,7 @@ def _signed(turn, user_id, signed):
 
 
 def _create_account(turn, full_name, phone, primary_language, nationality):
-    from booking_system import contact_otp, db, user_manager
-    if not contact_otp.confirmed("whatsapp", phone):
-        return _outcome(turn, "create_account", {"ok": False, "error": "confirm the WhatsApp number with the Leon code first"}, "")
+    from booking_system import db, user_manager
     if not turn["secret"]:
         return _outcome(turn, "create_account", {"ok": False, "error": "no password was typed in the password box"}, "")
     if db.transaction(lambda cur: user_manager.find_user(cur, "phone", phone)):

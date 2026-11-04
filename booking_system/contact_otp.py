@@ -1,6 +1,6 @@
 """One-time codes for a WhatsApp number or an email address.
 
-A WhatsApp code goes out as a normal Cloud API message. A confirmed code stays valid for the rest of onboarding."""
+An email code goes out from otp@inap.ai. WhatsApp is not used for the code. A confirmed code stays valid for the rest of onboarding."""
 
 import hashlib
 import hmac
@@ -64,7 +64,47 @@ def _send_whatsapp(address_value, code):
 
 
 def _send_email(address_value, code):
-    return "Email delivery is not configured"
+    import json
+    import os
+    import urllib.error
+    import urllib.request
+    token = str(os.getenv("CLOUDFLARE_API_TOKEN") or "").strip()
+    account = str(os.getenv("CLOUDFLARE_ACCOUNT_ID") or "").strip()
+    sender = str(os.getenv("OTP_FROM") or "otp@inap.ai").strip()
+    if not token or not account:
+        return "Email sending is not configured"
+    payload = {
+        "from": {"address": sender, "name": "Leon"},
+        "to": address_value,
+        "subject": "Your Leon code",
+        "text": "Your Leon code is " + str(code) + ". It expires in 10 minutes.",
+    }
+    request = urllib.request.Request(
+        "https://api.cloudflare.com/client/v4/accounts/" + account + "/email/sending/send",
+        data=json.dumps(payload).encode(),
+        headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            body = json.loads(response.read().decode())
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode()
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = {}
+        message = str(((parsed.get("errors") or [{}])[0] or {}).get("message") or "Email send failed")
+        print("email otp send failed: " + message, flush=True)
+        return message
+    except Exception as exc:
+        print("email otp send failed: " + str(exc), flush=True)
+        return str(exc)
+    if not body.get("success"):
+        message = str(((body.get("errors") or [{}])[0] or {}).get("message") or "Email send failed")
+        print("email otp send failed: " + message, flush=True)
+        return message
+    print("email otp sent", flush=True)
+    return ""
 
 
 _SEND = {"whatsapp": _send_whatsapp, "email": _send_email}
