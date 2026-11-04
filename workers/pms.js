@@ -68,7 +68,10 @@ function passedEnv(env) {
   const out = { PORT: String(PORT) };
   for (const name of NAMES) {
     const value = env[name];
-    if (typeof value === "string" && value !== "") out[name] = value;
+    if (typeof value === "string" && value !== "") {
+      out[name] = value;
+      continue;
+    }
     const url = databaseUrl(value, env);
     if (url) out[name] = url;
   }
