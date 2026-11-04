@@ -292,7 +292,7 @@ def _leaves():
         ("read.property", "admin", "read", "Property", "Hotel profile", "The property profile for {hotel_name}.", "property_setup.html", "button", "", "", "", (), True, ""),
         ("input.property_save", "admin", "input", "Save property", "Update the profile", "Reply with the field and the new value.", "property_setup.html", "button", "", "", "", (), True, ""),
         ("read.policies", "admin", "read", "Policies", "Payment and booking", "Which policy?", "property_setup.html", "list", "Policies", "", "", (("Payment", "How the guest pays", "input.payment_policy"), ("Booking", "Cancellation rules", "input.booking_policy")), True, ""),
-        ("input.payment_policy", "admin", "input", "Payment policy", "When payment is due", "Reply with the threshold, the window, and the methods.", "property_setup.html", "button", "", "", "", (), True, ""),
+        ("input.payment_policy", "admin", "input", "Payment policy", "How the guest pays", "Reply with the methods. A deposit is a payment on the guest account.", "property_setup.html", "button", "", "", "", (), True, ""),
         ("input.booking_policy", "admin", "input", "Booking policy", "Cancellation rules", "Reply with the window, the penalty, and the refund.", "property_setup.html", "button", "", "", "", (), True, ""),
         ("read.registration_card", "admin", "read", "Reg card", "Registration card", "The registration card.", "property_setup.html", "button", "", "", "", (), True, ""),
         ("input.registration_card", "admin", "input", "Save reg card", "Update the card", "Reply with the card text.", "property_setup.html", "button", "", "", "", (), True, ""),

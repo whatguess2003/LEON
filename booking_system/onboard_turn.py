@@ -26,7 +26,6 @@ _FIELDS = (
     "room_rates",
     "price_from",
     "price_to",
-    "payment_percent",
     "guest_name",
     "guest_phone",
     "stay_night",
@@ -35,7 +34,7 @@ _STEPS = (
     ("account", ("manager_email", "manager_name", "role", "nationality", "primary_language")),
     ("hotel", ("hotel_name", "hotel_timezone", "hotel_currency")),
     ("rooms", ("room_type", "room_numbers", "nightly_price", "price_from", "price_to")),
-    ("policies", ("payment_percent",)),
+    ("policies", ()),
     ("settings", ()),
     ("definitions", _DEFINITION_FIELDS),
     ("booking", ("guest_name", "guest_phone", "stay_night")),
@@ -52,7 +51,7 @@ _INSTRUCTIONS = (
     "Tomorrow, a month ahead, and tomorrow night are the offered dates. "
     "A phone starts with + and the country code, with no spaces. "
     "hotel_name, manager_name, room_type, and guest_name are capitals. "
-    "city_name is the city they named, in capitals. hotel_timezone is an IANA name for that city. hotel_currency is three letters. payment_percent is digits. "
+    "city_name is the city they named, in capitals. hotel_timezone is an IANA name for that city. hotel_currency is three letters. "
     "A time of day is HH:MM. room_numbers are separated by commas. A range 101-110 means every number from 101 through 110. Dates are YYYY-MM-DD. "
     "Tomorrow and a month ahead are the offered dates. price_from and price_to are the first and last night the price covers. stay_night is the night the guest sleeps. "
     "today is the Today date above. N month or N months runs from price_from for that many months: price_to is one day before the same calendar day N months later. "
@@ -150,7 +149,6 @@ def _offers(today):
         "primary_language": "English",
         "hotel_timezone": "Asia/Kuala_Lumpur",
         "hotel_currency": "MYR",
-        "payment_percent": "30",
         "price_from": tomorrow.isoformat(),
         "price_to": (tomorrow + timedelta(days=30)).isoformat(),
         "stay_night": tomorrow.isoformat(),
@@ -792,10 +790,7 @@ def _fields_from_hotel(hotel_id):
         fields["price_from"] = start
         fields["price_to"] = end
         fields["nightly_price"] = price
-    payment_details = (read_policy(hotel_id, "payment") or {}).get("details") or {}
     fields.update(_stated_settings(hotel_id))
-    percent = payment_details.get("payment_threshold_percent")
-    fields["payment_percent"] = _money(percent) if percent is not None else ""
     booking = db.row(
         """SELECT b.booking_id, g.guest_name, b.check_in_date, t.room_type_name,
                   (SELECT i.identity_value FROM guest_identity i WHERE i.guest_id = g.guest_id AND i.identity_type = 'phone' LIMIT 1) AS phone
@@ -818,36 +813,22 @@ def _fields_from_hotel(hotel_id):
 
 def _policies_on_file(hotel_id):
     from booking_system.policy_manager import read_policy
-    return all(read_policy(hotel_id, kind) for kind in ("booking", "payment"))
+    return read_policy(hotel_id, "booking") is not None
 
 
 def _write_policies(fields, owner):
-    """READ the hotel's booking and payment policies; create the missing ones from the stated times and deposit."""
+    """READ the booking policy and create the cancellation rules when they are missing. A deposit is a payment on the guest, not a policy."""
     from booking_system.policy_manager import create_policy, read_policy
     hotel, user_id = _owner(fields, owner)
     if not user_id:
         return "missing", "", {}
     hotel_id = hotel["hotel_id"]
-    have_booking = read_policy(hotel_id, "booking") is not None
-    have_payment = read_policy(hotel_id, "payment") is not None
-    if have_booking and have_payment:
+    if read_policy(hotel_id, "booking") is not None:
         return "saved", "", {}
-    if _missing(fields, _NAMES["policies"]):
-        return "missing", "", {}
-    try:
-        percent = float(fields["payment_percent"])
-    except ValueError:
-        return "failed", "Failed policies. The payment percent is not a number.", {}
-    wanted = []
-    if not have_booking:
-        wanted.append(("booking", {"cancellation_policy": {"window_hours": 48, "penalty_nights": 1, "refund_percent": 50}}))
-    if not have_payment:
-        wanted.append(("payment", {"payment_threshold_percent": percent, "payment_window_days": 7, "methods_allowed": ["CASH"]}))
-    for kind, details in wanted:
-        created = create_policy(hotel_id, user_id, kind, details)
-        if created.get("error"):
-            return "failed", "Failed policies. " + created["error"], {}
-    return "saved", "Saved policies. Deposit " + str(percent) + " percent.", {}
+    created = create_policy(hotel_id, user_id, "booking", {"cancellation_policy": {"window_hours": 48, "penalty_nights": 1, "refund_percent": 50}})
+    if created.get("error"):
+        return "failed", "Failed policies. " + created["error"], {}
+    return "saved", "Saved policies. Cancellation is 48 hours, one night, half refunded.", {}
 
 
 def _stated_settings(hotel_id):
@@ -967,7 +948,7 @@ def _prompt(message, history, fields, offers, saved, booking_id):
     gap = _next_name(fields, saved)
     lines.append("Next field: " + gap)
     lines.append("Booking id: " + str(booking_id or ""))
-    lines.append("The booking policy uses a 48 hour cancellation window, a one night penalty, and a 50 percent refund. Payment is due in 7 days by cash.")
+    lines.append("The booking policy uses a 48 hour cancellation window, a one night penalty, and a 50 percent refund. A deposit is not part of that policy.")
     lines.append("Conversation")
     for item in list(history or [])[-16:]:
         speaker = "Person" if str((item or {}).get("role") or "") == "person" else "Leon"
@@ -993,7 +974,6 @@ _QUESTIONS = {
     "nightly_price": "What is the nightly price?",
     "price_from": "Does the price start tomorrow?",
     "price_to": "Does the price run for a month?",
-    "payment_percent": "Is the deposit 30 percent?",
     "guest_name": "Who is the first guest?",
     "guest_phone": "What is the guest's phone number, with the country code?",
     "stay_night": "Is the stay tomorrow night?",
@@ -1005,7 +985,6 @@ _CHIPS = {
     "primary_language": "English",
     "hotel_timezone": "Kuala Lumpur time",
     "hotel_currency": "ringgit",
-    "payment_percent": "30 percent",
     "price_from": "tomorrow",
     "price_to": "a month ahead",
     "stay_night": "tomorrow night",
@@ -1028,7 +1007,6 @@ _HIGHLIGHTS = {
     "room_rates": "Rates",
     "price_from": "Price from",
     "price_to": "Price to",
-    "payment_percent": "Deposit",
     "guest_name": "Guest",
     "guest_phone": "Guest phone",
     "stay_night": "Stay night",
@@ -1071,7 +1049,7 @@ def _recap(step, fields, booking_id):
         "account": fields["manager_name"] + " " + fields["manager_phone"],
         "hotel": fields["hotel_name"],
         "rooms": fields["room_type"] + " " + fields["room_numbers"] + " at " + fields["nightly_price"],
-        "policies": "Deposit " + fields["payment_percent"] + "%",
+        "policies": "48 hours, one night, half refunded",
         "settings": str(len(answered)) + " answered",
         "definitions": str(len(STANDARD) - len(_missing(fields, _DEFINITION_FIELDS))) + " of " + str(len(STANDARD)) + " set",
         "booking": fields["guest_name"] + " " + str(booking_id or ""),

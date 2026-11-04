@@ -8,7 +8,7 @@ from booking_system.hotel_registry import new_id
 
 
 def _booking(cur, hotel_id, booking_id):
-    cur.execute("SELECT b.booking_id, h.currency FROM booking b JOIN hotel h ON h.hotel_id = b.hotel_id "
+    cur.execute("SELECT b.booking_id, b.guest_id, h.currency FROM booking b JOIN hotel h ON h.hotel_id = b.hotel_id "
                 "WHERE b.hotel_id = %s AND b.booking_id = %s FOR UPDATE OF b", (hotel_id, booking_id))
     found = cur.fetchone()
     if not found:
@@ -16,13 +16,20 @@ def _booking(cur, hotel_id, booking_id):
     return found
 
 
-def _insert(cur, hotel_id, user_id, booking_id, kind, amount, currency, method, reference):
+def _insert(cur, hotel_id, user_id, booking_id, kind, amount, currency, method, reference, guest_id=None):
+    """A payment is the guest's. booking_id is set only when the money is also attached to one stay."""
+    if not guest_id and booking_id:
+        cur.execute("SELECT guest_id FROM booking WHERE hotel_id = %s AND booking_id = %s", (hotel_id, booking_id))
+        found = cur.fetchone()
+        guest_id = found["guest_id"] if found else None
+    if not guest_id:
+        raise Refused("A payment needs a guest")
     payment_id = new_id("pay")
     cur.execute(
-        """INSERT INTO payment (payment_id, hotel_id, booking_id, payment_kind, amount, currency, payment_method, payment_status,
-                                reference, recorded_by_user_id)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, 'received', %s, %s)""",
-        (payment_id, hotel_id, booking_id, kind, amount, currency.strip(), method, reference, user_id),
+        """INSERT INTO payment (payment_id, hotel_id, guest_id, booking_id, payment_kind, amount, currency, payment_method,
+                                payment_status, reference, recorded_by_user_id)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'received', %s, %s)""",
+        (payment_id, hotel_id, guest_id, booking_id, kind, amount, currency.strip(), method, reference, user_id),
     )
     return payment_id
 
@@ -88,7 +95,7 @@ def record_payment(hotel_id, user_id, booking_id, amount, payment_method, refere
         if not method:
             raise Refused("Payment method is required")
         payment_id = _insert(cur, hotel_id, user_id, booking_id, payment_kind, amount, booking["currency"], method,
-                             str(reference).strip() or None if reference is not None else None)
+                             str(reference).strip() or None if reference is not None else None, booking["guest_id"])
         folio = _mirror_folio(cur, hotel_id, user_id, booking_id, payment_id, amount, method) if payment_kind == "payment" else {
             "mirrored": False, "reason": "not a receipt"}
         cur.execute("SELECT balance_due FROM booking_balance WHERE booking_id = %s", (booking_id,))

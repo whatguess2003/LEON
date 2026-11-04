@@ -389,13 +389,10 @@ class FrontDesk:
                 raise Refused("Check-in opens on " + booking["check_in_date"].isoformat())
             if today >= booking["check_out_date"]:
                 raise Refused("The stay ended on " + booking["check_out_date"].isoformat())
-            from booking_system.stay_rules import checkin_clock_refusal, deposit_refusal
+            from booking_system.stay_rules import checkin_clock_refusal
             clock = checkin_clock_refusal(cur, hotel_id, zone, today, booking["check_in_date"])
             if clock:
                 raise Refused(clock)
-            deposit = deposit_refusal(cur, hotel_id, today, booking)
-            if deposit:
-                raise Refused(deposit)
             tonight = [night for night in _nights(cur, hotel_id, booking_id)
                        if night["stay_date"] == today and night["night_status"] == "booked" and night["room_id"]
                        and (not wanted or night["room_number"] == wanted) and (not chosen or night["booking_night_id"] == chosen)]
