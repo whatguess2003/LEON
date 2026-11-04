@@ -31,12 +31,14 @@ const NAMES = [
 function databaseUrl(value, env) {
   const host = env.DATABASE_ORIGIN_HOST;
   const port = env.DATABASE_ORIGIN_PORT;
-  const user = typeof env.DATABASE_ORIGIN_USER === "string" && env.DATABASE_ORIGIN_USER !== "" ? env.DATABASE_ORIGIN_USER : value && value.user;
-  const password = value && value.password;
-  const database = value && value.database;
+  const parsed = parsedDatabase(value && value.connectionString);
+  const user = parsed.user || (typeof env.DATABASE_ORIGIN_USER === "string" ? env.DATABASE_ORIGIN_USER : value && value.user);
+  const password = parsed.password || (value && value.password);
+  const database = parsed.database || (value && value.database);
   const parts = [host, port, user, password, database];
   const ready = parts.every((part) => typeof part === "string" && part !== "");
   if (!ready) return "";
+  console.log("database url", "userHasBranch", user.includes("."), "passwordLength", password.length, "fromConnectionString", Boolean(parsed.user));
   return [
     "postgres://",
     encodeURIComponent(user),
@@ -50,6 +52,16 @@ function databaseUrl(value, env) {
     encodeURIComponent(database),
     "?sslmode=require",
   ].join("");
+}
+
+function parsedDatabase(connectionString) {
+  if (typeof connectionString !== "string" || connectionString === "") return {};
+  const parsed = new URL(connectionString);
+  return {
+    user: decodeURIComponent(parsed.username),
+    password: decodeURIComponent(parsed.password),
+    database: decodeURIComponent(parsed.pathname.replace(/^\//, "")),
+  };
 }
 
 function passedEnv(env) {
@@ -95,7 +107,7 @@ export class PmsService extends DurableObject {
 
   async startAndWait() {
     const container = this.ctx.container;
-    const stamp = "database-user";
+    const stamp = "database-connstring";
     const booted = await this.ctx.storage.get("containerEnv");
     if (booted !== stamp && container.running) {
       await container.destroy("reload container env");
