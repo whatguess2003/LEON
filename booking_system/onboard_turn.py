@@ -840,6 +840,61 @@ def _recap(step, fields, booking_id):
     return lines.get(step) or ""
 
 
+# Quick answers the interface shows under the composer for the field being asked. Each is only a suggested message: it is sent
+# as chat text and read by the same extraction step, so it grants nothing a typed answer would not.
+_QUICK = {
+    "role": ["I'm the hotel manager", "I'm the owner", "I run the front desk"],
+    "nationality": ["Malaysian", "Singaporean", "Indonesian", "Thai", "Filipino"],
+    "primary_language": ["English", "Bahasa Melayu", "中文", "Bahasa Indonesia"],
+    "hotel_timezone": ["Kuala Lumpur time", "Singapore time", "Jakarta time", "Bangkok time"],
+    "hotel_currency": ["Singapore dollar (SGD)", "rupiah (IDR)", "baht (THB)", "US dollar (USD)"],
+    "room_type": ["Deluxe", "Standard", "Superior", "Family", "Suite"],
+    "payment_percent": ["No deposit", "30 percent", "50 percent", "Full payment upfront"],
+}
+_TIMES = {"front_desk.checkin_time": ["14:00", "15:00"], "front_desk.checkout_time": ["11:00", "12:00"],
+          "front_desk.night_audit_time": ["00:00", "02:00", "03:00"]}
+
+
+def _choices(name):
+    """[{label, text}] quick answers for the field being asked: fixed lists, the field's offer chip, or the settings catalog."""
+    found = []
+    chip = _CHIPS.get(name)
+    if chip:
+        found.append({"label": chip, "text": chip})
+    for text in _QUICK.get(name, []):
+        if text != chip:
+            found.append({"label": text, "text": text})
+    row = _setting_fields().get(name) if name.startswith(_SETTING) else None
+    if row:
+        if row["value_type"] == "boolean":
+            found += [{"label": "Yes", "text": "Yes"}, {"label": "No", "text": "No"}]
+        for option in row["options"]:
+            found.append({"label": option["meaning"][:1].upper() + option["meaning"][1:], "text": option["meaning"]})
+        for time in _TIMES.get(row["setting_key"], []):
+            found.append({"label": time, "text": time})
+        if row["value_type"] == "amount" and not row["required"]:
+            found.append({"label": "No fee", "text": "There is no fee"})
+    return found[:6]
+
+
+def _input_kind(name):
+    """A hint for a better input than free text: phone, email, code, room numbers, money, date or time."""
+    if name in ("manager_phone", "guest_phone"):
+        return "phone"
+    if name == "manager_email":
+        return "email"
+    if name in ("otp_phone", "otp_email"):
+        return "code"
+    if name == "room_numbers":
+        return "room_numbers"
+    if name == "nightly_price":
+        return "money"
+    row = _setting_fields().get(name) if name.startswith(_SETTING) else None
+    if row and row["value_type"] == "time":
+        return "time"
+    return "text"
+
+
 def build_guide(fields, saved, booking_id):
     """The to-do, the accepted facts, and the one offered answer."""
     highlights = []
@@ -853,6 +908,7 @@ def build_guide(fields, saved, booking_id):
     todos = []
     opened = False
     suggestion = ""
+    gap = ""
     for step, _names in _STEPS:
         label = _STEP_LABELS[step]
         if step in saved:
@@ -870,6 +926,9 @@ def build_guide(fields, saved, booking_id):
         "highlights": highlights,
         "todos": todos,
         "suggestion": suggestion,
+        "asking": gap,
+        "choices": _choices(gap) if gap else [],
+        "input": _input_kind(gap) if gap else "text",
         "booking_id": str(booking_id or ""),
         "fields": _public(fields, saved),
     }
@@ -1031,6 +1090,9 @@ def onboard_turn(message, history, fields, signed_user_id=None):
         "todos": guide["todos"],
         "highlights": guide["highlights"],
         "suggestion": guide["suggestion"],
+        "asking": guide["asking"],
+        "choices": guide["choices"],
+        "input": guide["input"],
         "token": extra.get("token") or "",
         "cookie_hotel": extra.get("hotel_name") or "",
     }
