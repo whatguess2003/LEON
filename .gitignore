@@ -11,3 +11,4 @@ node_modules/
 .dev.vars
 _desk_natural20_result.txt
 list_action_recipe.txt
+.pytest_cache/

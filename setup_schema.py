@@ -1,4 +1,4 @@
-"""Startup DDL: the hotel registry and core tables, the workflow tables, complaints, then the department modules."""
+"""Startup DDL: the hotel registry and core tables, the workflow tables, complaints, the department modules, then the world tables."""
 
 from dotenv import load_dotenv
 
@@ -16,6 +16,8 @@ def setup_schema():
     ensure_workflow_tables()
     _with(complaints_ddl)
     schema_areas.ensure_departments()
+    from booking_system.world import schema as world_schema
+    world_schema.ensure_schema()
     print("PostgreSQL schema setup complete.", flush=True)
 
 

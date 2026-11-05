@@ -1084,6 +1084,11 @@ for _area in (rooms_routes, bookings_routes, frontdesk_routes, operations_routes
     access.register(_area.ACCESS)
     app.include_router(_area.router)
 
+from booking_system.world import api as world_api
+
+access.register(world_api.ACCESS)
+app.include_router(world_api.router)
+
 access.PUBLIC_ROUTES.update(guests_routes.PUBLIC)
 access.register([
     ("GET /api/guide", "front_desk", "view"),
