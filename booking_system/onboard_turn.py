@@ -31,7 +31,7 @@ _FIELDS = (
     "stay_night",
 ) + _DEFINITION_FIELDS
 _STEPS = (
-    ("account", ("manager_phone", "manager_email", "manager_name", "role", "nationality", "primary_language")),
+    ("account", ("manager_email", "manager_name", "role", "nationality", "primary_language")),
     ("hotel", ("hotel_name", "hotel_timezone", "hotel_currency")),
     ("rooms", ("room_type", "room_numbers", "nightly_price", "price_from", "price_to")),
     ("policies", ("payment_percent",)),
@@ -56,8 +56,8 @@ _INSTRUCTIONS = (
     "Tomorrow and a month ahead are the offered dates. price_from and price_to are the first and last night the price covers. stay_night is the night the guest sleeps. "
     "When the person mentions several values, copy each of them. "
     "Do not invent a phone, an email, a hotel, a guest, a date, or a code. "
-    "otp_phone and otp_email are codes. Copy otp_phone only when the person's latest message is the WhatsApp code, and otp_email only when it is the email code. "
-    "Leave both empty when that message is not a code. Never copy a code from earlier in the chat. "
+    "otp_email is a code. Copy otp_email only when the person's latest message is the email code. "
+    "Leave it empty when that message is not a code. Never copy a code from earlier in the chat. "
     "The def_ fields are what this manager means when asking Leon about arrivals, in-house guests, departures, and reservations. "
     "A def_ field holds the offer they accepted, or what they mean. "
     "The set_ fields are how this hotel operates, one per setting question listed under Settings. They have no offer: copy only what "
@@ -74,9 +74,8 @@ _REWRITE = (
     "When a result says Saved, say what is now in place, then ask for the next field. "
     "Ask for the next field in your own words, keeping the meaning of its question. When it has an offer, offer that value the way you would say it. "
     "Before an account exists, answer what they just said first. Use their name once you know it. "
-    "Say in a few words why the next thing matters. The phone is how you reach them on WhatsApp and open the account. "
-    "The email is another way to reach them and to sign in. "
-    "When a result says OTP sent, tell them a code was sent to that WhatsApp or email and ask them to share it here to confirm. "
+    "Say in a few words why the next thing matters. The email is how they sign in and how the account is opened. "
+    "When a result says OTP sent, tell them a code was sent to that email and ask them to share it here to confirm. "
     "When a result says OTP waiting, ask again for the code already sent. "
     "When a result says OTP failed, say the reason in that line. "
     "When a result says OTP confirmed, say that contact is confirmed, then ask the next question. "
@@ -114,12 +113,11 @@ def _property(name):
 def _schema():
     names = _all_fields()
     properties = {name: _property(name) for name in names}
-    properties["otp_phone"] = {"type": "string"}
     properties["otp_email"] = {"type": "string"}
     return {
         "type": "object",
         "properties": properties,
-        "required": list(names) + ["otp_phone", "otp_email"],
+        "required": list(names) + ["otp_email"],
         "additionalProperties": False,
     }
 
@@ -186,35 +184,54 @@ def _hotel_row(hotel_name):
     return (read_hotel(hotel_name) if hotel_name else None) or {}
 
 
-def _account_by_phone(fields):
-    """The person holding this WhatsApp number: user_id, user_name, profile language and nationality, and their hotels; or None."""
+def _account_by_user(user_id):
+    """The person for this user id: name, email, hotels, and profile; or None. A phone is not required."""
     from booking_system import db
-    from booking_system.user_manager import find_user, hotels_of, profile_col
-    phone = str(fields.get("manager_phone") or "").strip()
-    if not phone:
+    from booking_system.user_manager import read_user
+    if not user_id:
+        return None
+    user = read_user(user_id)
+    if not user:
+        return None
+    email = db.row(
+        "SELECT identity_value FROM user_identity WHERE user_id = %s AND identity_type = 'email' LIMIT 1",
+        (user_id,),
+    )
+    first = user["hotels"][0] if user["hotels"] else {}
+    return {"user_id": user["user_id"], "manager_name": user["user_name"],
+            "manager_email": str((email or {}).get("identity_value") or ""), "hotels": user["hotels"],
+            "hotel_name": first.get("hotel_name") or "", "role": first.get("role_name") or "",
+            "nationality": user.get("nationality") or "", "primary_language": user.get("primary_language") or ""}
+
+
+def _account_by_email(fields):
+    """The person holding this email, or None."""
+    from booking_system import db
+    from booking_system.user_manager import find_user
+    email = str(fields.get("manager_email") or "").strip()
+    if not email:
         return None
 
     def read(cur):
-        user = find_user(cur, "phone", phone)
-        return dict(user, hotels=hotels_of(cur, user["user_id"])) if user else None
-    user = db.transaction(read)
-    if not user:
-        return None
-    profile = profile_col.find_one({"user_id": user["user_id"]}) or {}
-    first = user["hotels"][0] if user["hotels"] else {}
-    return {"user_id": user["user_id"], "manager_name": user["user_name"], "manager_phone": phone, "hotels": user["hotels"],
-            "hotel_name": first.get("hotel_name") or "", "role": first.get("role_name") or "",
-            "nationality": profile.get("nationality") or "", "primary_language": profile.get("primary_language") or ""}
+        user = find_user(cur, "email", email)
+        return user["user_id"] if user else ""
+    return _account_by_user(db.transaction(read))
 
 
 def _account_doc(fields, owner):
-    """The account on this phone only when it is the signed-in person (owner user_id); a phone alone proves nothing."""
-    doc = _account_by_phone(fields) if owner else None
-    return doc if doc and doc["user_id"] == owner else None
+    """The signed-in person's account. The stated email must be theirs when both sides have one."""
+    doc = _account_by_user(owner) if owner else None
+    if not doc:
+        return None
+    stated = str(fields.get("manager_email") or "").strip().lower()
+    held = str(doc.get("manager_email") or "").strip().lower()
+    if stated and held and stated != held:
+        return None
+    return doc
 
 
 def _account_exact(doc, fields):
-    return str(doc.get("manager_phone") or "") == fields["manager_phone"] and str(doc.get("manager_name") or "").upper() == fields["manager_name"]
+    return str(doc.get("manager_email") or "").lower() == fields["manager_email"] and str(doc.get("manager_name") or "").upper() == fields["manager_name"]
 
 
 def _hotel_of(doc, hotel_name):
@@ -230,7 +247,7 @@ def _recall(fields, owner):
     stored_name = str(doc.get("manager_name") or "").upper()
     if fields["manager_name"] and fields["manager_name"] != stored_name:
         return fields
-    for name in ("manager_name", "role", "nationality", "primary_language", "hotel_name"):
+    for name in ("manager_name", "manager_email", "role", "nationality", "primary_language", "hotel_name"):
         if not fields[name] and doc.get(name):
             fields[name] = str(doc.get(name) or "")
     row = _hotel_row(fields["hotel_name"])
@@ -252,68 +269,63 @@ def _code_step(channel, address_value, given):
     from booking_system import contact_otp
     if contact_otp.confirmed(channel, address_value):
         return True, ""
-    place = "WhatsApp" if channel == "whatsapp" else "email"
-    noun = "WhatsApp number" if channel == "whatsapp" else "email"
     typed = str(given or "").strip()
     if typed and contact_otp.check(channel, address_value, typed):
-        return True, "OTP confirmed. Their " + noun + " is confirmed."
+        return True, "OTP confirmed. Their email is confirmed."
     if typed and contact_otp.exhausted(channel, address_value):
         contact_otp.issue(channel, address_value)
-        return False, "OTP sent. A new code was sent to their " + place + "."
+        return False, "OTP sent. A new code was sent to their email."
     state = contact_otp.issue(channel, address_value)
     if typed and state == "waiting":
         return False, "OTP failed. That code did not match."
     if state == "waiting":
-        return False, "OTP waiting. A code was already sent to their " + place + "."
+        return False, "OTP waiting. A code was already sent to their email."
     if state == "sent":
-        return False, "OTP sent. A code was sent to their " + place + "."
+        return False, "OTP sent. A code was sent to their email."
     return False, "OTP failed. That address is not usable."
 
 
 def _write_account(fields, owner, otp=None):
-    """READ the phone first. A code confirms it, then an existing person signs in. A new person confirms an email, then the account is created with no password."""
+    """READ the email first. A code confirms it, then an existing person signs in. A new person is created with no password.
+    A phone number is not read, required, or sent."""
     from booking_system import contact_otp, user_manager
-    phone = fields["manager_phone"]
-    if owner and phone:
-        held = _account_by_phone(fields)
-        if held and held["user_id"] == owner:
-            return "saved", "", {"user_id": owner}
-    if not phone:
+    email = fields["manager_email"]
+    held = _account_by_user(owner) if owner else None
+    owned = str((held or {}).get("manager_email") or "").lower()
+    if held and owned and (not email or owned == email):
+        return "saved", "", {"user_id": owner}
+    if not email:
         return "missing", "", {}
     note = ""
-    if not contact_otp.confirmed("whatsapp", phone):
-        ready, note = _code_step("whatsapp", phone, (otp or {}).get("phone"))
+    if not contact_otp.confirmed("email", email):
+        ready, note = _code_step("email", email, (otp or {}).get("email"))
         if not ready:
             return "clarify", note, {}
-    doc = _account_by_phone(fields)
+    doc = _account_by_email(fields)
     if doc:
         if owner and doc["user_id"] != owner:
-            return "failed", "Failed account. That WhatsApp number belongs to another account.", {}
+            return "failed", "Failed account. That email belongs to another account.", {}
         if not fields["manager_name"]:
             fields["manager_name"] = doc["manager_name"]
         signed = user_manager.session_for(doc["user_id"])
         if signed.get("error"):
             return "failed", "Failed account. " + signed["error"], {}
-        line = (note + " " if note else "") + "Saved account. " + fields["manager_name"] + " is signed in on " + phone + "."
+        line = (note + " " if note else "") + "Saved account. " + fields["manager_name"] + " is signed in on " + email + "."
         return "saved", line.strip(), {"token": signed.get("token") or "", "user_id": doc["user_id"]}
-    email = fields["manager_email"]
-    if not email:
-        return "missing", note, {}
-    if not contact_otp.confirmed("email", email):
-        ready, email_line = _code_step("email", email, (otp or {}).get("email"))
-        note = " ".join(part for part in (note, email_line) if part)
-        if not ready:
-            return "clarify", note, {}
+    if owner:
+        if _missing(fields, _STEPS[0][1]):
+            return "missing", note, {}
+        return "saved", note, {"user_id": owner}
     if _missing(fields, _STEPS[0][1]):
         return "missing", note, {}
-    created = user_manager.signup(fields["manager_name"], {"phone": phone, "email": email}, None,
+    created = user_manager.signup(fields["manager_name"], {"email": email}, None,
                                   fields["primary_language"], fields["nationality"])
     if created.get("error"):
         return "failed", "Failed account. " + created["error"], {}
     signed = user_manager.session_for(created["user_id"])
     if signed.get("error"):
         return "failed", "Failed account. " + signed["error"], {}
-    line = " ".join(part for part in (note, "Saved account. " + fields["manager_name"] + " is signed in on " + phone + " and " + email + ".") if part)
+    line = " ".join(part for part in (note, "Saved account. " + fields["manager_name"] + " is signed in on " + email + ".") if part)
     return "saved", line, {"token": signed.get("token") or "", "user_id": created["user_id"]}
 
 
@@ -523,7 +535,7 @@ def _fields_from_hotel(hotel_id):
         return None, "", None
     manager = db.row(
         """SELECT a.user_id, a.user_name, r.role_name,
-                  (SELECT i.identity_value FROM user_identity i WHERE i.user_id = a.user_id AND i.identity_type = 'phone' LIMIT 1) AS phone
+                  (SELECT i.identity_value FROM user_identity i WHERE i.user_id = a.user_id AND i.identity_type = 'email' LIMIT 1) AS email
            FROM hotel_user u JOIN access_role r ON r.role_id = u.role_id JOIN user_account a ON a.user_id = u.user_id
            WHERE u.hotel_id = %s AND r.role_name = 'GENERAL_MANAGER' ORDER BY u.activated_at LIMIT 1""",
         (hotel_id,),
@@ -534,7 +546,7 @@ def _fields_from_hotel(hotel_id):
     fields = _clean({
         "hotel_name": row["hotel_name"],
         "manager_name": manager["user_name"],
-        "manager_phone": manager["phone"],
+        "manager_email": manager["email"],
         "role": manager["role_name"],
         "nationality": profile.get("nationality"),
         "primary_language": profile.get("primary_language"),
@@ -738,9 +750,7 @@ def _prompt(message, history, fields, offers, saved, booking_id):
 _QUESTIONS = {
     "hotel_name": "What's the hotel called?",
     "manager_name": "What's your name?",
-    "manager_phone": "What's the WhatsApp number for your account, with the country code?",
     "manager_email": "What's your email?",
-    "otp_phone": "An OTP has been sent to your WhatsApp. Please share it here to confirm your phone number.",
     "otp_email": "An OTP has been sent to your email. Please share it here to confirm your email.",
     "role": "Are you the hotel manager?",
     "nationality": "Are you Malaysian?",
@@ -773,7 +783,6 @@ _CHIPS = {
 _HIGHLIGHTS = {
     "hotel_name": "Hotel",
     "manager_name": "Manager",
-    "manager_phone": "WhatsApp",
     "manager_email": "Email",
     "role": "Role",
     "nationality": "Nationality",
@@ -811,13 +820,11 @@ def _question(name):
 
 def _next_name(fields, saved):
     if "account" not in saved:
-        from booking_system import contact_otp
-        phone = str(fields.get("manager_phone") or "").strip()
         email = str(fields.get("manager_email") or "").strip()
-        if phone and not contact_otp.confirmed("whatsapp", phone):
-            return "otp_phone"
-        if phone and email and contact_otp.confirmed("whatsapp", phone) and not _account_by_phone(fields) and not contact_otp.confirmed("email", email):
-            return "otp_email"
+        if email:
+            from booking_system import contact_otp
+            if not contact_otp.confirmed("email", email):
+                return "otp_email"
     for step, names in _STEPS:
         if step in saved:
             continue
@@ -829,7 +836,7 @@ def _next_name(fields, saved):
 def _recap(step, fields, booking_id):
     answered = [name for name in _setting_fields() if name.startswith(_SETTING) and fields.get(name)]
     lines = {
-        "account": fields["manager_name"] + " " + fields["manager_phone"],
+        "account": fields["manager_name"] + " " + fields["manager_email"],
         "hotel": fields["hotel_name"],
         "rooms": fields["room_type"] + " " + fields["room_numbers"] + " at " + fields["nightly_price"],
         "policies": "Deposit " + fields["payment_percent"] + "%",
@@ -879,11 +886,11 @@ def _choices(name):
 
 def _input_kind(name):
     """A hint for a better input than free text: phone, email, code, room numbers, money, date or time."""
-    if name in ("manager_phone", "guest_phone"):
+    if name == "guest_phone":
         return "phone"
     if name == "manager_email":
         return "email"
-    if name in ("otp_phone", "otp_email"):
+    if name == "otp_email":
         return "code"
     if name == "room_numbers":
         return "room_numbers"
@@ -1047,7 +1054,7 @@ def _signup_graph(message, history, incoming, offers, known_saved, known_booking
             if value:
                 stored[name] = value
         stored = _clean(stored)
-        otp = {"phone": str(parsed.get("otp_phone") or "").strip(), "email": str(parsed.get("otp_email") or "").strip()}
+        otp = {"email": str(parsed.get("otp_email") or "").strip()}
         lines, saved, extra = _apply(stored, signed_user_id, otp)
         return {"stored": stored, "lines": lines, "saved": saved, "extra": extra}
 
@@ -1070,7 +1077,7 @@ def _signup_graph(message, history, incoming, offers, known_saved, known_booking
 
 def onboard_turn(message, history, fields, signed_user_id=None):
     """Read the chat, keep the stated fields, then create the step that is complete. signed_user_id is the person on the
-    request's token. A phone is confirmed with a code before an existing account is opened or a new one is created."""
+    request's token. An email is confirmed with a code before an existing account is opened or a new one is created."""
     incoming = _recall(_clean(fields), signed_user_id)
     known_saved, known_booking = _already(incoming, signed_user_id)
     offers = _offers(date.today())
