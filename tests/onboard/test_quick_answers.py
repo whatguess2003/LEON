@@ -15,9 +15,19 @@ def test_offer_first_then_alternatives_without_duplicates():
 
 
 def test_fields_without_choices():
-    assert _choices("hotel_name") == [] and _choices("manager_phone") == []
+    assert _choices("hotel_name") == [] and _choices("manager_email") == []
 
 
 def test_input_kinds():
-    assert [_input_kind(n) for n in ("manager_phone", "guest_phone", "manager_email", "otp_phone", "otp_email", "room_numbers", "nightly_price", "hotel_name")] == \
-        ["phone", "phone", "email", "code", "code", "room_numbers", "money", "text"]
+    assert [_input_kind(n) for n in ("guest_phone", "manager_email", "otp_email", "room_numbers", "nightly_price", "hotel_name", "manager_phone")] == \
+        ["phone", "email", "code", "room_numbers", "money", "text", "text"]
+
+
+def test_account_starts_with_email():
+    from booking_system.onboard_turn import _next_name, _question
+    assert _next_name({}, []) == "manager_email"
+    assert _question("manager_email") == "What's your email?"
+    assert _question("otp_email").startswith("An OTP has been sent to your email")
+    assert _question("manager_phone") == ""
+    assert _question("otp_phone") == ""
+    assert "whatsapp" not in _question("guest_phone").lower()
